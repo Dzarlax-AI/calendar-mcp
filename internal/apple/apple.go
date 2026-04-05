@@ -93,6 +93,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	if event.Location != "" {
 		vevent.Props.SetText(ical.PropLocation, event.Location)
 	}
+	addAttendees(vevent, event.Attendees)
 	cal.Children = append(cal.Children, vevent.Component)
 
 	path := calendarID + uid + ".ics"
@@ -156,6 +157,52 @@ func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	return p.client.RemoveAll(ctx, path)
 }
 
+func addAttendees(vevent *ical.Event, attendees []calendar.Attendee) {
+	for _, a := range attendees {
+		prop := ical.NewProp("ATTENDEE")
+		prop.Value = "mailto:" + a.Email
+		if a.Name != "" {
+			prop.Params.Set("CN", a.Name)
+		}
+		role := "REQ-PARTICIPANT"
+		if a.Optional {
+			role = "OPT-PARTICIPANT"
+		}
+		prop.Params.Set("ROLE", role)
+		prop.Params.Set("RSVP", "TRUE")
+		vevent.Props.Add(prop)
+	}
+}
+
+func parseAttendees(ev ical.Event) []calendar.Attendee {
+	var out []calendar.Attendee
+	for _, prop := range ev.Props.Values("ATTENDEE") {
+		email := prop.Value
+		if len(email) > 7 && email[:7] == "mailto:" {
+			email = email[7:]
+		}
+		name := ""
+		if cn := prop.Params.Get("CN"); cn != "" {
+			name = cn
+		}
+		status := ""
+		if ps := prop.Params.Get("PARTSTAT"); ps != "" {
+			status = ps
+		}
+		optional := false
+		if role := prop.Params.Get("ROLE"); role == "OPT-PARTICIPANT" {
+			optional = true
+		}
+		out = append(out, calendar.Attendee{
+			Email:    email,
+			Name:     name,
+			Status:   status,
+			Optional: optional,
+		})
+	}
+	return out
+}
+
 func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
 	uid, _ := ev.Props.Text(ical.PropUID)
 	summary, _ := ev.Props.Text(ical.PropSummary)
@@ -172,5 +219,6 @@ func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
 		Location:    loc,
 		Start:       dtStart,
 		End:         dtEnd,
+		Attendees:   parseAttendees(ev),
 	}
 }

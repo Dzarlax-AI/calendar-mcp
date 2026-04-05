@@ -99,6 +99,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	if event.Location != "" {
 		body.Location = &graphLocation{DisplayName: event.Location}
 	}
+	body.Attendees = toGraphAttendees(event.Attendees)
 
 	var created graphEvent
 	if err := p.post(ctx, path, body, &created); err != nil {
@@ -125,6 +126,9 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	}
 	if event.End != nil {
 		patch["end"] = graphDateTime{DateTime: event.End.Format("2006-01-02T15:04:05"), TimeZone: "UTC"}
+	}
+	if len(event.Attendees) > 0 {
+		patch["attendees"] = toGraphAttendees(event.Attendees)
 	}
 
 	var updated graphEvent
@@ -208,11 +212,23 @@ type graphEvent struct {
 	Body    struct {
 		Content string `json:"content"`
 	} `json:"body"`
-	Start       graphDateTime  `json:"start"`
-	End         graphDateTime  `json:"end"`
-	Location    graphLocation  `json:"location"`
-	IsAllDay    bool           `json:"isAllDay"`
-	ShowAs      string         `json:"showAs"`
+	Start       graphDateTime   `json:"start"`
+	End         graphDateTime   `json:"end"`
+	Location    graphLocation   `json:"location"`
+	IsAllDay    bool            `json:"isAllDay"`
+	ShowAs      string          `json:"showAs"`
+	Attendees   []graphAttendee `json:"attendees,omitempty"`
+}
+
+type graphAttendee struct {
+	EmailAddress struct {
+		Address string `json:"address"`
+		Name    string `json:"name"`
+	} `json:"emailAddress"`
+	Type   string `json:"type"` // required, optional
+	Status struct {
+		Response string `json:"response"` // accepted, declined, tentativelyAccepted, none
+	} `json:"status,omitempty"`
 }
 
 type graphDateTime struct {
@@ -230,11 +246,49 @@ type graphLocation struct {
 }
 
 type graphEventCreate struct {
-	Subject  string         `json:"subject"`
-	Body     *graphBody     `json:"body,omitempty"`
-	Start    graphDateTime  `json:"start"`
-	End      graphDateTime  `json:"end"`
-	Location *graphLocation `json:"location,omitempty"`
+	Subject   string          `json:"subject"`
+	Body      *graphBody      `json:"body,omitempty"`
+	Start     graphDateTime   `json:"start"`
+	End       graphDateTime   `json:"end"`
+	Location  *graphLocation  `json:"location,omitempty"`
+	Attendees []graphAttendee `json:"attendees,omitempty"`
+}
+
+func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {
+	if len(attendees) == 0 {
+		return nil
+	}
+	var out []graphAttendee
+	for _, a := range attendees {
+		typ := "required"
+		if a.Optional {
+			typ = "optional"
+		}
+		out = append(out, graphAttendee{
+			EmailAddress: struct {
+				Address string `json:"address"`
+				Name    string `json:"name"`
+			}{Address: a.Email, Name: a.Name},
+			Type: typ,
+		})
+	}
+	return out
+}
+
+func fromGraphAttendees(attendees []graphAttendee) []calendar.Attendee {
+	if len(attendees) == 0 {
+		return nil
+	}
+	var out []calendar.Attendee
+	for _, a := range attendees {
+		out = append(out, calendar.Attendee{
+			Email:    a.EmailAddress.Address,
+			Name:     a.EmailAddress.Name,
+			Status:   a.Status.Response,
+			Optional: a.Type == "optional",
+		})
+	}
+	return out
 }
 
 func (e *graphEvent) toEvent(calendarID string) calendar.Event {
@@ -246,6 +300,7 @@ func (e *graphEvent) toEvent(calendarID string) calendar.Event {
 		Location:    e.Location.DisplayName,
 		AllDay:      e.IsAllDay,
 		Status:      e.ShowAs,
+		Attendees:   fromGraphAttendees(e.Attendees),
 	}
 	ev.Start, _ = time.Parse("2006-01-02T15:04:05.0000000", e.Start.DateTime)
 	if ev.Start.IsZero() {

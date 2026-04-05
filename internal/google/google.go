@@ -72,8 +72,9 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 		Location:    event.Location,
 		Start:       &gcal.EventDateTime{DateTime: event.Start.Format(time.RFC3339)},
 		End:         &gcal.EventDateTime{DateTime: event.End.Format(time.RFC3339)},
+		Attendees:   toGoogleAttendees(event.Attendees),
 	}
-	created, err := p.svc.Events.Insert(calendarID, ge).Context(ctx).Do()
+	created, err := p.svc.Events.Insert(calendarID, ge).SendUpdates("all").Context(ctx).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,10 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if event.End != nil {
 		existing.End = &gcal.EventDateTime{DateTime: event.End.Format(time.RFC3339)}
 	}
-	updated, err := p.svc.Events.Update(calendarID, eventID, existing).Context(ctx).Do()
+	if len(event.Attendees) > 0 {
+		existing.Attendees = toGoogleAttendees(event.Attendees)
+	}
+	updated, err := p.svc.Events.Update(calendarID, eventID, existing).SendUpdates("all").Context(ctx).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +117,37 @@ func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	return p.svc.Events.Delete(calendarID, eventID).Context(ctx).Do()
 }
 
+func toGoogleAttendees(attendees []calendar.Attendee) []*gcal.EventAttendee {
+	if len(attendees) == 0 {
+		return nil
+	}
+	var out []*gcal.EventAttendee
+	for _, a := range attendees {
+		out = append(out, &gcal.EventAttendee{
+			Email:       a.Email,
+			DisplayName: a.Name,
+			Optional:    a.Optional,
+		})
+	}
+	return out
+}
+
+func fromGoogleAttendees(attendees []*gcal.EventAttendee) []calendar.Attendee {
+	if len(attendees) == 0 {
+		return nil
+	}
+	var out []calendar.Attendee
+	for _, a := range attendees {
+		out = append(out, calendar.Attendee{
+			Email:    a.Email,
+			Name:     a.DisplayName,
+			Status:   a.ResponseStatus,
+			Optional: a.Optional,
+		})
+	}
+	return out
+}
+
 func convertEvent(e *gcal.Event, calendarID string) calendar.Event {
 	ev := calendar.Event{
 		ID:          e.Id,
@@ -121,6 +156,7 @@ func convertEvent(e *gcal.Event, calendarID string) calendar.Event {
 		Description: e.Description,
 		Location:    e.Location,
 		Status:      e.Status,
+		Attendees:   fromGoogleAttendees(e.Attendees),
 	}
 	if e.Start != nil {
 		if e.Start.DateTime != "" {

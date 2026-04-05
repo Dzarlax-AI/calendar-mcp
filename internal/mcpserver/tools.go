@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -55,6 +56,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		mcp.WithString("end", mcp.Required(), mcp.Description("End datetime ISO8601")),
 		mcp.WithString("description", mcp.Description("Event description")),
 		mcp.WithString("location", mcp.Description("Event location")),
+		mcp.WithString("attendees", mcp.Description("JSON array of attendees: [{\"email\":\"a@b.com\",\"name\":\"Name\",\"optional\":false}]")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		calID := req.GetString("calendar_id", "")
 		title := req.GetString("title", "")
@@ -70,12 +72,20 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			return mcp.NewToolResultError("invalid end: " + err.Error()), nil
 		}
 
+		var attendees []calendar.Attendee
+		if raw := req.GetString("attendees", ""); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
+				return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+			}
+		}
+
 		ev, err := reg.CreateEvent(ctx, calID, calendar.EventCreate{
 			Title:       title,
 			Start:       start,
 			End:         end,
 			Description: req.GetString("description", ""),
 			Location:    req.GetString("location", ""),
+			Attendees:   attendees,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -92,6 +102,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		mcp.WithString("end", mcp.Description("New end datetime ISO8601")),
 		mcp.WithString("description", mcp.Description("New description")),
 		mcp.WithString("location", mcp.Description("New location")),
+		mcp.WithString("attendees", mcp.Description("JSON array of attendees (replaces existing): [{\"email\":\"a@b.com\",\"name\":\"Name\"}]")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		calID := req.GetString("calendar_id", "")
 		eventID := req.GetString("event_id", "")
@@ -119,6 +130,14 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 				return mcp.NewToolResultError("invalid end: " + err.Error()), nil
 			}
 			upd.End = &t
+		}
+
+		if raw := req.GetString("attendees", ""); raw != "" {
+			var attendees []calendar.Attendee
+			if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
+				return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+			}
+			upd.Attendees = attendees
 		}
 
 		ev, err := reg.UpdateEvent(ctx, calID, eventID, upd)
