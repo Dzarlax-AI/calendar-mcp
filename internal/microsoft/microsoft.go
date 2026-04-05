@@ -220,15 +220,17 @@ type graphEvent struct {
 	Attendees   []graphAttendee `json:"attendees,omitempty"`
 }
 
+type graphAttendeeStatus struct {
+	Response string `json:"response"` // accepted, declined, tentativelyAccepted, none
+}
+
 type graphAttendee struct {
 	EmailAddress struct {
 		Address string `json:"address"`
 		Name    string `json:"name"`
 	} `json:"emailAddress"`
-	Type   string `json:"type"` // required, optional
-	Status struct {
-		Response string `json:"response"` // accepted, declined, tentativelyAccepted, none
-	} `json:"status,omitempty"`
+	Type   string               `json:"type"`             // required, optional
+	Status *graphAttendeeStatus `json:"status,omitempty"` // nil when creating
 }
 
 type graphDateTime struct {
@@ -281,10 +283,14 @@ func fromGraphAttendees(attendees []graphAttendee) []calendar.Attendee {
 	}
 	var out []calendar.Attendee
 	for _, a := range attendees {
+		status := ""
+		if a.Status != nil {
+			status = a.Status.Response
+		}
 		out = append(out, calendar.Attendee{
 			Email:    a.EmailAddress.Address,
 			Name:     a.EmailAddress.Name,
-			Status:   a.Status.Response,
+			Status:   status,
 			Optional: a.Type == "optional",
 		})
 	}
