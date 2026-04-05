@@ -1,0 +1,10 @@
+services:
+  calendar-mcp:
+    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    container_name: calendar-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
