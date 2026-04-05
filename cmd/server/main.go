@@ -10,6 +10,7 @@ import (
 	"calendar-mcp/internal/google"
 	"calendar-mcp/internal/mcpserver"
 	"calendar-mcp/internal/microsoft"
+	"calendar-mcp/internal/restapi"
 )
 
 func main() {
@@ -57,6 +58,17 @@ func main() {
 	})
 	mcpserver.Register(mux, reg, cfg.APIKey)
 
-	log.Printf("calendar-mcp listening on %s (%d providers)", cfg.ListenAddr, len(providers))
+	// Internal REST API on separate port (only exposed to Docker infra network)
+	if cfg.RESTListenAddr != "" {
+		rest := restapi.New(reg, cfg.APIKey)
+		go func() {
+			log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
+			if err := http.ListenAndServe(cfg.RESTListenAddr, rest.Handler()); err != nil {
+				log.Fatalf("REST API: %v", err)
+			}
+		}()
+	}
+
+	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(providers))
 	log.Fatal(http.ListenAndServe(cfg.ListenAddr, mux))
 }

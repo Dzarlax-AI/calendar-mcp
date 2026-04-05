@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	ListenAddr string
-	APIKey     string
-	TokenDir   string
+	ListenAddr     string
+	RESTListenAddr string
+	APIKey         string
+	TokenDir       string
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -27,9 +28,10 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ListenAddr: envStr("LISTEN_ADDR", ":8080"),
-		APIKey:     envStr("API_KEY", ""),
-		TokenDir:   envStr("TOKEN_DIR", "/app/data"),
+		ListenAddr:     envStr("LISTEN_ADDR", ":8080"),
+		RESTListenAddr: envStr("REST_LISTEN_ADDR", ""),
+		APIKey:         envStr("API_KEY", ""),
+		TokenDir:       envStr("TOKEN_DIR", "/app/data"),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
