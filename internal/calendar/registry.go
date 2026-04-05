@@ -3,6 +3,7 @@ package calendar
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -85,7 +86,8 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 	var all []Event
 	for res := range ch {
 		if res.err != nil {
-			return nil, res.err
+			log.Printf("GetEvents fan-out (skipping): %v", res.err)
+			continue
 		}
 		all = append(all, res.events...)
 	}
