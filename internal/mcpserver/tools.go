@@ -57,6 +57,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		mcp.WithString("description", mcp.Description("Event description")),
 		mcp.WithString("location", mcp.Description("Event location")),
 		mcp.WithString("attendees", mcp.Description("JSON array of attendees: [{\"email\":\"a@b.com\",\"name\":\"Name\",\"optional\":false}]")),
+		mcp.WithBoolean("video_call", mcp.Description("Auto-create Google Meet or MS Teams link")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		calID := req.GetString("calendar_id", "")
 		title := req.GetString("title", "")
@@ -86,6 +87,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			Description: req.GetString("description", ""),
 			Location:    req.GetString("location", ""),
 			Attendees:   attendees,
+			VideoCall:   req.GetBool("video_call", false),
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
