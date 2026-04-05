@@ -1,6 +1,7 @@
 package token
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func (s *FileStore) Save(tok *oauth2.Token) error {
 func (s *FileStore) TokenSource(cfg *oauth2.Config, initial *oauth2.Token) oauth2.TokenSource {
 	return &persistingTokenSource{
 		store: s,
-		src:   cfg.TokenSource(nil, initial),
+		src:   cfg.TokenSource(context.Background(), initial),
 	}
 }
 
