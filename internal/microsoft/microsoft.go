@@ -100,6 +100,10 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 		body.Location = &graphLocation{DisplayName: event.Location}
 	}
 	body.Attendees = toGraphAttendees(event.Attendees)
+	if event.VideoCall {
+		body.IsOnlineMeeting = true
+		body.OnlineMeetingProvider = "teamsForBusiness"
+	}
 
 	var created graphEvent
 	if err := p.post(ctx, path, body, &created); err != nil {
@@ -212,12 +216,15 @@ type graphEvent struct {
 	Body    struct {
 		Content string `json:"content"`
 	} `json:"body"`
-	Start       graphDateTime   `json:"start"`
-	End         graphDateTime   `json:"end"`
-	Location    graphLocation   `json:"location"`
-	IsAllDay    bool            `json:"isAllDay"`
-	ShowAs      string          `json:"showAs"`
-	Attendees   []graphAttendee `json:"attendees,omitempty"`
+	Start          graphDateTime   `json:"start"`
+	End            graphDateTime   `json:"end"`
+	Location       graphLocation   `json:"location"`
+	IsAllDay       bool            `json:"isAllDay"`
+	ShowAs         string          `json:"showAs"`
+	Attendees      []graphAttendee `json:"attendees,omitempty"`
+	OnlineMeeting  *struct {
+		JoinUrl string `json:"joinUrl"`
+	} `json:"onlineMeeting,omitempty"`
 }
 
 type graphAttendeeStatus struct {
@@ -248,12 +255,14 @@ type graphLocation struct {
 }
 
 type graphEventCreate struct {
-	Subject   string          `json:"subject"`
-	Body      *graphBody      `json:"body,omitempty"`
-	Start     graphDateTime   `json:"start"`
-	End       graphDateTime   `json:"end"`
-	Location  *graphLocation  `json:"location,omitempty"`
-	Attendees []graphAttendee `json:"attendees,omitempty"`
+	Subject                string          `json:"subject"`
+	Body                   *graphBody      `json:"body,omitempty"`
+	Start                  graphDateTime   `json:"start"`
+	End                    graphDateTime   `json:"end"`
+	Location               *graphLocation  `json:"location,omitempty"`
+	Attendees              []graphAttendee `json:"attendees,omitempty"`
+	IsOnlineMeeting        bool            `json:"isOnlineMeeting,omitempty"`
+	OnlineMeetingProvider  string          `json:"onlineMeetingProvider,omitempty"`
 }
 
 func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {
@@ -315,6 +324,9 @@ func (e *graphEvent) toEvent(calendarID string) calendar.Event {
 	ev.End, _ = time.Parse("2006-01-02T15:04:05.0000000", e.End.DateTime)
 	if ev.End.IsZero() {
 		ev.End, _ = time.Parse("2006-01-02T15:04:05", e.End.DateTime)
+	}
+	if e.OnlineMeeting != nil && e.OnlineMeeting.JoinUrl != "" {
+		ev.OnlineMeeting = e.OnlineMeeting.JoinUrl
 	}
 	return ev
 }

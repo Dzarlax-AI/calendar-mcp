@@ -19,17 +19,18 @@ type Attendee struct {
 }
 
 type Event struct {
-	ID          string     `json:"id"`
-	CalendarID  string     `json:"calendar_id"`
-	Provider    string     `json:"provider"`
-	Title       string     `json:"title"`
-	Description string     `json:"description,omitempty"`
-	Location    string     `json:"location,omitempty"`
-	Start       time.Time  `json:"start"`
-	End         time.Time  `json:"end"`
-	AllDay      bool       `json:"all_day,omitempty"`
-	Status      string     `json:"status,omitempty"`
-	Attendees   []Attendee `json:"attendees,omitempty"`
+	ID             string     `json:"id"`
+	CalendarID     string     `json:"calendar_id"`
+	Provider       string     `json:"provider"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description,omitempty"`
+	Location       string     `json:"location,omitempty"`
+	Start          time.Time  `json:"start"`
+	End            time.Time  `json:"end"`
+	AllDay         bool       `json:"all_day,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	Attendees      []Attendee `json:"attendees,omitempty"`
+	OnlineMeeting  string     `json:"online_meeting,omitempty"` // video call URL
 }
 
 type EventCreate struct {
@@ -39,6 +40,7 @@ type EventCreate struct {
 	Description string     `json:"description,omitempty"`
 	Location    string     `json:"location,omitempty"`
 	Attendees   []Attendee `json:"attendees,omitempty"`
+	VideoCall   bool       `json:"video_call,omitempty"` // auto-create Google Meet / Teams
 }
 
 type EventUpdate struct {

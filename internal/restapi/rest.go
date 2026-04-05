@@ -100,6 +100,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		Description string             `json:"description"`
 		Location    string             `json:"location"`
 		Attendees   []calendar.Attendee `json:"attendees"`
+		VideoCall   bool               `json:"video_call"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -129,6 +130,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Location:    req.Location,
 		Attendees:   req.Attendees,
+		VideoCall:   req.VideoCall,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

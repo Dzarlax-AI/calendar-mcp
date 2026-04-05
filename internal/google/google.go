@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	gcal "google.golang.org/api/calendar/v3"
@@ -74,7 +75,19 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 		End:         &gcal.EventDateTime{DateTime: event.End.Format(time.RFC3339)},
 		Attendees:   toGoogleAttendees(event.Attendees),
 	}
-	created, err := p.svc.Events.Insert(calendarID, ge).SendUpdates("all").Context(ctx).Do()
+	if event.VideoCall {
+		ge.ConferenceData = &gcal.ConferenceData{
+			CreateRequest: &gcal.CreateConferenceRequest{
+				RequestId:             fmt.Sprintf("book-%d", time.Now().UnixNano()),
+				ConferenceSolutionKey: &gcal.ConferenceSolutionKey{Type: "hangoutsMeet"},
+			},
+		}
+	}
+	insertCall := p.svc.Events.Insert(calendarID, ge).SendUpdates("all").Context(ctx)
+	if event.VideoCall {
+		insertCall = insertCall.ConferenceDataVersion(1)
+	}
+	created, err := insertCall.Do()
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +184,14 @@ func convertEvent(e *gcal.Event, calendarID string) calendar.Event {
 			ev.End, _ = time.Parse(time.RFC3339, e.End.DateTime)
 		} else if e.End.Date != "" {
 			ev.End, _ = time.Parse("2006-01-02", e.End.Date)
+		}
+	}
+	if e.ConferenceData != nil && len(e.ConferenceData.EntryPoints) > 0 {
+		for _, ep := range e.ConferenceData.EntryPoints {
+			if ep.EntryPointType == "video" {
+				ev.OnlineMeeting = ep.Uri
+				break
+			}
 		}
 	}
 	return ev
