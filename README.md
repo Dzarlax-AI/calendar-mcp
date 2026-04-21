@@ -46,9 +46,18 @@ MS365_REFRESH_TOKEN=
 APPLE_USERNAME=
 APPLE_APP_PASSWORD=
 APPLE_CALDAV_URL=https://caldav.icloud.com/
+
+# Fan-out filtering (affects get_events without calendar_id only)
+EXCLUDE_CALENDAR_IDS=            # comma-separated prefixed IDs to skip
+INCLUDE_IMPORTED_CALENDARS=      # set true to include google:*@import.calendar.google.com
+
+# Internal REST API (optional, separate port)
+REST_LISTEN_ADDR=
 ```
 
 Providers are enabled automatically when their credentials are set. You can run with any subset (e.g. Google only).
+
+By default fan-out skips Google ICS subscriptions (typical M365/iCloud mirrors) to avoid duplicate events. Explicit `calendar_id` queries and `list_calendars` are unaffected — downstream consumers like Granola can still reach them.
 
 ## Getting OAuth Tokens
 
