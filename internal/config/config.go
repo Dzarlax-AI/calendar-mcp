@@ -24,6 +24,12 @@ type Config struct {
 	AppleUsername    string
 	AppleAppPassword string
 	AppleCalDAVURL   string
+
+	// Fan-out filtering for get_events without an explicit calendar_id.
+	// Both settings only affect fan-out — list_calendars and explicit
+	// calendar_id queries always see every calendar.
+	ExcludeCalendarIDs       []string // prefixed IDs (e.g. "google:abc@import.calendar.google.com")
+	IncludeImportedCalendars bool     // if true, disables the default @import.calendar.google.com skip
 }
 
 func Load() *Config {
@@ -45,7 +51,21 @@ func Load() *Config {
 		AppleUsername:    envStr("APPLE_USERNAME", ""),
 		AppleAppPassword: envStr("APPLE_APP_PASSWORD", ""),
 		AppleCalDAVURL:   envStr("APPLE_CALDAV_URL", "https://caldav.icloud.com"),
+
+		ExcludeCalendarIDs:       envList("EXCLUDE_CALENDAR_IDS"),
+		IncludeImportedCalendars: envBool("INCLUDE_IMPORTED_CALENDARS", false),
 	}
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.ToLower(os.Getenv(key))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
 }
 
 func envStr(key, def string) string {

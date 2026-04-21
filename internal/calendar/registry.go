@@ -10,16 +10,43 @@ import (
 )
 
 type Registry struct {
-	providers []Provider
-	byName    map[string]Provider
+	providers       []Provider
+	byName          map[string]Provider
+	excludeIDs      map[string]struct{} // prefixed IDs to skip in fan-out
+	includeImported bool                // if false, skip google:*@import.calendar.google.com in fan-out
 }
 
-func NewRegistry(providers []Provider) *Registry {
+type RegistryOptions struct {
+	ExcludeIDs              []string
+	IncludeImportedCalendars bool
+}
+
+func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
 	byName := make(map[string]Provider, len(providers))
 	for _, p := range providers {
 		byName[p.Name()] = p
 	}
-	return &Registry{providers: providers, byName: byName}
+	r := &Registry{providers: providers, byName: byName, excludeIDs: map[string]struct{}{}}
+	if len(opts) > 0 {
+		for _, id := range opts[0].ExcludeIDs {
+			r.excludeIDs[id] = struct{}{}
+		}
+		r.includeImported = opts[0].IncludeImportedCalendars
+	}
+	return r
+}
+
+// skipInFanOut reports whether a prefixed calendar ID should be dropped from
+// fan-out queries. It does NOT affect list_calendars or explicit calendar_id
+// requests — users can always query excluded calendars directly.
+func (r *Registry) skipInFanOut(prefixedID string) bool {
+	if _, ok := r.excludeIDs[prefixedID]; ok {
+		return true
+	}
+	if !r.includeImported && strings.HasPrefix(prefixedID, "google:") && strings.Contains(prefixedID, "@import.calendar.google.com") {
+		return true
+	}
+	return false
 }
 
 func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
@@ -70,6 +97,9 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 			}
 			var all []Event
 			for _, cal := range cals {
+				if r.skipInFanOut(p.Name() + ":" + cal.ID) {
+					continue
+				}
 				events, err := p.GetEvents(ctx, cal.ID, start, end)
 				if err != nil {
 					ch <- result{err: fmt.Errorf("%s/%s: %w", p.Name(), cal.ID, err)}

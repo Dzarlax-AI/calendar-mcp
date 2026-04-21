@@ -51,6 +51,8 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>`
 | `APPLE_USERNAME` | | iCloud username |
 | `APPLE_APP_PASSWORD` | | Apple app-specific password |
 | `APPLE_CALDAV_URL` | `https://caldav.icloud.com` | CalDAV endpoint |
+| `EXCLUDE_CALENDAR_IDS` | _(empty)_ | Comma-separated prefixed calendar IDs skipped in fan-out `get_events` (e.g. `google:xyz@import.calendar.google.com`). Explicit `calendar_id` queries still work. |
+| `INCLUDE_IMPORTED_CALENDARS` | `false` | By default fan-out auto-skips Google ICS subscriptions (`google:*@import.calendar.google.com`) to avoid duplicates from M365/iCloud mirrors. Set `true` to include them. |
 
 Providers initialize only if their credentials are set. No credentials = provider skipped silently.
 

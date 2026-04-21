@@ -49,7 +49,16 @@ func main() {
 		log.Fatal("no calendar providers configured")
 	}
 
-	reg := calendar.NewRegistry(providers)
+	reg := calendar.NewRegistry(providers, calendar.RegistryOptions{
+		ExcludeIDs:               cfg.ExcludeCalendarIDs,
+		IncludeImportedCalendars: cfg.IncludeImportedCalendars,
+	})
+	if len(cfg.ExcludeCalendarIDs) > 0 {
+		log.Printf("fan-out excludes %d calendar(s): %v", len(cfg.ExcludeCalendarIDs), cfg.ExcludeCalendarIDs)
+	}
+	if !cfg.IncludeImportedCalendars {
+		log.Printf("fan-out auto-skips google:*@import.calendar.google.com (set INCLUDE_IMPORTED_CALENDARS=true to disable)")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
