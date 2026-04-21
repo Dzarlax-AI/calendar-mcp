@@ -59,17 +59,22 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 }
 
 func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
-	path := fmt.Sprintf("/me/calendars/%s/events", calendarID)
+	path := fmt.Sprintf("/me/calendars/%s/calendarView", calendarID)
 	params := url.Values{
-		"$filter":  {fmt.Sprintf("start/dateTime ge '%s' and end/dateTime le '%s'", start.Format(time.RFC3339), end.Format(time.RFC3339))},
-		"$orderby": {"start/dateTime"},
-		"$top":     {"250"},
+		"startDateTime": {start.UTC().Format("2006-01-02T15:04:05Z")},
+		"endDateTime":   {end.UTC().Format("2006-01-02T15:04:05Z")},
+		"$orderby":      {"start/dateTime"},
+		"$top":          {"250"},
+		"$select":       {"id,subject,body,start,end,location,isAllDay,showAs,attendees,onlineMeeting"},
 	}
 
 	var resp struct {
 		Value []graphEvent `json:"value"`
 	}
-	if err := p.getWithParams(ctx, path, params, &resp); err != nil {
+	headers := http.Header{
+		"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`},
+	}
+	if err := p.getWithParamsAndHeaders(ctx, path, params, headers, &resp); err != nil {
 		return nil, err
 	}
 	var events []calendar.Event
@@ -155,11 +160,20 @@ func (p *Provider) get(ctx context.Context, path string, out any) error {
 }
 
 func (p *Provider) getWithParams(ctx context.Context, path string, params url.Values, out any) error {
+	return p.getWithParamsAndHeaders(ctx, path, params, nil, out)
+}
+
+func (p *Provider) getWithParamsAndHeaders(ctx context.Context, path string, params url.Values, headers http.Header, out any) error {
 	u := graphBase + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	for k, vs := range headers {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	return p.do(req, out)
 }
 
