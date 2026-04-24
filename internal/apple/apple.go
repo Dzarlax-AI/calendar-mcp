@@ -3,6 +3,8 @@ package apple
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-ical"
@@ -65,6 +67,12 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 	}
 	objects, err := p.client.QueryCalendar(ctx, calendarID, query)
 	if err != nil {
+		// Apple returns HTTP 500 with malformed XML for shared/delegated calendars
+		// that don't support CalDAV REPORT. Treat as empty rather than an error.
+		if strings.Contains(err.Error(), "XML syntax error") || strings.Contains(err.Error(), "unexpected EOF") {
+			log.Printf("apple: calendar %s returned unparseable response (likely shared/delegated, skipping): %v", calendarID, err)
+			return nil, nil
+		}
 		return nil, err
 	}
 	var events []calendar.Event
