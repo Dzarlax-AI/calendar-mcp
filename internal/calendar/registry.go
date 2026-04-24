@@ -102,8 +102,8 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 				}
 				events, err := p.GetEvents(ctx, cal.ID, start, end)
 				if err != nil {
-					ch <- result{err: fmt.Errorf("%s/%s: %w", p.Name(), cal.ID, err)}
-					return
+					log.Printf("GetEvents fan-out (skipping calendar %s:%s): %v", p.Name(), cal.ID, err)
+					continue
 				}
 				all = append(all, events...)
 			}
