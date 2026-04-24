@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-ical"
@@ -221,8 +222,10 @@ func parseAttendees(ev ical.Event) []calendar.Attendee {
 	return out
 }
 
-// getEventsFallback retrieves events via PROPFIND (list .ics paths) + individual
-// GETs for calendars where Apple's CalDAV REPORT is broken (e.g. Family Sharing).
+const fallbackConcurrency = 20
+
+// getEventsFallback retrieves events via PROPFIND (list .ics paths) + concurrent
+// individual GETs for calendars where Apple's CalDAV REPORT is broken (Family Sharing).
 func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
 	paths, err := p.propfindCalendarObjects(ctx, calendarID)
 	if err != nil {
@@ -233,24 +236,46 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 		return nil, nil
 	}
 
-	log.Printf("apple: GET fallback for %s: fetching %d objects", calendarID, len(paths))
+	log.Printf("apple: GET fallback for %s: fetching %d objects (concurrency=%d)", calendarID, len(paths), fallbackConcurrency)
+
+	type slot struct {
+		events []calendar.Event
+	}
+	results := make([]slot, len(paths))
+	sem := make(chan struct{}, fallbackConcurrency)
+	var wg sync.WaitGroup
+
+	for i, path := range paths {
+		wg.Add(1)
+		go func(i int, path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			obj, err := p.client.GetCalendarObject(ctx, path)
+			if err != nil {
+				return
+			}
+			var evs []calendar.Event
+			for _, ev := range obj.Data.Events() {
+				dtStart, errS := ev.DateTimeStart(nil)
+				dtEnd, errE := ev.DateTimeEnd(nil)
+				if errS != nil || errE != nil {
+					continue
+				}
+				if dtEnd.After(start) && dtStart.Before(end) {
+					evs = append(evs, convertEvent(ev, calendarID, obj.Path))
+				}
+			}
+			results[i] = slot{events: evs}
+		}(i, path)
+	}
+
+	wg.Wait()
+
 	var events []calendar.Event
-	for _, path := range paths {
-		obj, err := p.client.GetCalendarObject(ctx, path)
-		if err != nil {
-			log.Printf("apple: GET %s failed: %v", path, err)
-			continue
-		}
-		for _, ev := range obj.Data.Events() {
-			dtStart, errS := ev.DateTimeStart(nil)
-			dtEnd, errE := ev.DateTimeEnd(nil)
-			if errS != nil || errE != nil {
-				continue
-			}
-			if dtEnd.After(start) && dtStart.Before(end) {
-				events = append(events, convertEvent(ev, calendarID, obj.Path))
-			}
-		}
+	for _, r := range results {
+		events = append(events, r.events...)
 	}
 	return events, nil
 }
