@@ -23,6 +23,14 @@ Go version: 1.25 (from go.mod)
 - `internal/token/` — File-based OAuth2 token persistence
 - `internal/config/` — Env-based config
 
+## Apple CalDAV Notes
+
+- Family Sharing calendars have hash-based paths (`/calendars/<64-char-hex>/`) — different from regular UUID paths
+- Apple's CalDAV REPORT (`calendar-query`) is broken for these: returns HTTP 500 + malformed/truncated XML
+- `calendar-multiget` REPORT also returns 404 for these calendars
+- Fallback implemented in `GetEvents`: PROPFIND Depth:1 to list `.ics` paths → 20 concurrent GETs → filter by date range in code
+- This matches how DAVx5 and other clients handle Apple Family Sharing
+
 ## MCP Tools
 
 - `list_calendars` — all calendars from all providers

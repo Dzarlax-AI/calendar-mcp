@@ -109,6 +109,15 @@ Docker image built via GitHub Actions: `ghcr.io/dzarlax-ai/calendar-mcp:latest`
 
 MCP endpoint: `https://mcp.dzarlax.dev/calendar` (Traefik path rewrite `/calendar` → `/mcp`)
 
+## Apple CalDAV Notes
+
+Apple iCloud CalDAV has quirks for certain calendar types:
+
+- **Family Sharing calendars** have hash-based paths (`/calendars/<64-char-hex>/`) instead of UUID paths
+- Apple's server returns HTTP 500 with malformed XML for CalDAV `REPORT` (calendar-query) on these calendars — a known Apple server-side bug
+- **Workaround**: the server automatically falls back to `PROPFIND Depth:1` (enumerate `.ics` paths) + 20 concurrent `GET` requests when `REPORT` fails, then filters by date range in code
+- This is transparent to the caller — events are returned normally, just with slightly higher latency for large calendars
+
 ## Architecture
 
 ```
