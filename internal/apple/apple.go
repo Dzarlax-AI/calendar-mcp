@@ -221,8 +221,8 @@ func parseAttendees(ev ical.Event) []calendar.Attendee {
 	return out
 }
 
-// getEventsFallback retrieves events via PROPFIND (list .ics paths) + MultiGet
-// for calendars where Apple's CalDAV REPORT is broken (e.g. Family Sharing).
+// getEventsFallback retrieves events via PROPFIND (list .ics paths) + individual
+// GETs for calendars where Apple's CalDAV REPORT is broken (e.g. Family Sharing).
 func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
 	paths, err := p.propfindCalendarObjects(ctx, calendarID)
 	if err != nil {
@@ -233,16 +233,14 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 		return nil, nil
 	}
 
-	objects, err := p.client.MultiGetCalendar(ctx, calendarID, &caldav.CalendarMultiGet{
-		Paths: paths,
-	})
-	if err != nil {
-		log.Printf("apple: MultiGet fallback failed for %s: %v", calendarID, err)
-		return nil, nil
-	}
-
+	log.Printf("apple: GET fallback for %s: fetching %d objects", calendarID, len(paths))
 	var events []calendar.Event
-	for _, obj := range objects {
+	for _, path := range paths {
+		obj, err := p.client.GetCalendarObject(ctx, path)
+		if err != nil {
+			log.Printf("apple: GET %s failed: %v", path, err)
+			continue
+		}
 		for _, ev := range obj.Data.Events() {
 			dtStart, errS := ev.DateTimeStart(nil)
 			dtEnd, errE := ev.DateTimeEnd(nil)
