@@ -1,9 +1,13 @@
 package apple
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,19 +18,24 @@ import (
 )
 
 type Provider struct {
-	client   *caldav.Client
-	username string
+	client     *caldav.Client
+	username   string
+	httpClient *http.Client
+	caldavURL  string
 }
 
 func New(username, appPassword, caldavURL string) (*Provider, error) {
-	client, err := caldav.NewClient(
-		newBasicAuthClient(username, appPassword),
-		caldavURL,
-	)
+	httpClient := newBasicAuthClient(username, appPassword)
+	client, err := caldav.NewClient(httpClient, caldavURL)
 	if err != nil {
 		return nil, fmt.Errorf("caldav client: %w", err)
 	}
-	return &Provider{client: client, username: username}, nil
+	return &Provider{
+		client:     client,
+		username:   username,
+		httpClient: httpClient,
+		caldavURL:  strings.TrimSuffix(caldavURL, "/"),
+	}, nil
 }
 
 func (p *Provider) Name() string { return "apple" }
@@ -67,11 +76,12 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 	}
 	objects, err := p.client.QueryCalendar(ctx, calendarID, query)
 	if err != nil {
-		// Apple returns HTTP 500 with malformed XML for shared/delegated calendars
-		// that don't support CalDAV REPORT. Treat as empty rather than an error.
+		// Apple returns HTTP 500 with malformed XML for Family Sharing and
+		// delegated calendars where REPORT is broken server-side. Fall back to
+		// PROPFIND + MultiGet which Apple handles correctly for these calendars.
 		if strings.Contains(err.Error(), "XML syntax error") || strings.Contains(err.Error(), "unexpected EOF") {
-			log.Printf("apple: calendar %s returned unparseable response (likely shared/delegated, skipping): %v", calendarID, err)
-			return nil, nil
+			log.Printf("apple: calendar %s REPORT failed, trying PROPFIND+MultiGet fallback: %v", calendarID, err)
+			return p.getEventsFallback(ctx, calendarID, start, end)
 		}
 		return nil, err
 	}
@@ -209,6 +219,89 @@ func parseAttendees(ev ical.Event) []calendar.Attendee {
 		})
 	}
 	return out
+}
+
+// getEventsFallback retrieves events via PROPFIND (list .ics paths) + MultiGet
+// for calendars where Apple's CalDAV REPORT is broken (e.g. Family Sharing).
+func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
+	paths, err := p.propfindCalendarObjects(ctx, calendarID)
+	if err != nil {
+		log.Printf("apple: PROPFIND fallback failed for %s: %v", calendarID, err)
+		return nil, nil
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	objects, err := p.client.MultiGetCalendar(ctx, calendarID, &caldav.CalendarMultiGet{
+		Paths: paths,
+	})
+	if err != nil {
+		log.Printf("apple: MultiGet fallback failed for %s: %v", calendarID, err)
+		return nil, nil
+	}
+
+	var events []calendar.Event
+	for _, obj := range objects {
+		for _, ev := range obj.Data.Events() {
+			dtStart, errS := ev.DateTimeStart(nil)
+			dtEnd, errE := ev.DateTimeEnd(nil)
+			if errS != nil || errE != nil {
+				continue
+			}
+			if dtEnd.After(start) && dtStart.Before(end) {
+				events = append(events, convertEvent(ev, calendarID, obj.Path))
+			}
+		}
+	}
+	return events, nil
+}
+
+// propfindCalendarObjects does a PROPFIND Depth:1 and returns paths of all
+// .ics objects in the given calendar collection.
+func (p *Provider) propfindCalendarObjects(ctx context.Context, calendarPath string) ([]string, error) {
+	url := p.caldavURL + calendarPath
+	body := []byte(`<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`)
+
+	req, err := http.NewRequestWithContext(ctx, "PROPFIND", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
+	req.Header.Set("Depth", "1")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 207 {
+		return nil, fmt.Errorf("PROPFIND returned HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var ms struct {
+		XMLName   xml.Name `xml:"DAV: multistatus"`
+		Responses []struct {
+			Href string `xml:"DAV: href"`
+		} `xml:"DAV: response"`
+	}
+	if err := xml.Unmarshal(data, &ms); err != nil {
+		return nil, fmt.Errorf("PROPFIND parse: %w", err)
+	}
+
+	var paths []string
+	for _, r := range ms.Responses {
+		if strings.HasSuffix(r.Href, ".ics") {
+			paths = append(paths, r.Href)
+		}
+	}
+	return paths, nil
 }
 
 func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
