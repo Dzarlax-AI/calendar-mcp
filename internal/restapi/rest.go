@@ -23,6 +23,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/calendars", s.listCalendars)
 	mux.HandleFunc("GET /api/events", s.getEvents)
 	mux.HandleFunc("POST /api/events", s.createEvent)
+	mux.HandleFunc("PATCH /api/events", s.updateEvent)
 	mux.HandleFunc("DELETE /api/events", s.deleteEvent)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -137,6 +138,60 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, ev)
+}
+
+// PATCH /api/events?calendar_id=google:primary&event_id=abc123
+func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
+	calID := r.URL.Query().Get("calendar_id")
+	eventID := r.URL.Query().Get("event_id")
+
+	if calID == "" || eventID == "" {
+		writeError(w, http.StatusBadRequest, "calendar_id and event_id are required")
+		return
+	}
+
+	var req struct {
+		Title       *string            `json:"title"`
+		Start       *string            `json:"start"`
+		End         *string            `json:"end"`
+		Description *string            `json:"description"`
+		Location    *string            `json:"location"`
+		Attendees   []calendar.Attendee `json:"attendees"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	upd := calendar.EventUpdate{
+		Title:       req.Title,
+		Description: req.Description,
+		Location:    req.Location,
+		Attendees:   req.Attendees,
+	}
+	if req.Start != nil {
+		t, err := time.Parse(time.RFC3339, *req.Start)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start: "+err.Error())
+			return
+		}
+		upd.Start = &t
+	}
+	if req.End != nil {
+		t, err := time.Parse(time.RFC3339, *req.End)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid end: "+err.Error())
+			return
+		}
+		upd.End = &t
+	}
+
+	ev, err := s.reg.UpdateEvent(r.Context(), calID, eventID, upd)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ev)
 }
 
 // DELETE /api/events?calendar_id=google:primary&event_id=abc123

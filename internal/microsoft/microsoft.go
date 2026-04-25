@@ -320,6 +320,21 @@ func fromGraphAttendees(attendees []graphAttendee) []calendar.Attendee {
 	return out
 }
 
+func parseGraphTime(dt graphDateTime) time.Time {
+	loc := time.UTC
+	if dt.TimeZone != "" && dt.TimeZone != "UTC" {
+		if tz, err := time.LoadLocation(dt.TimeZone); err == nil {
+			loc = tz
+		}
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05.0000000", "2006-01-02T15:04:05"} {
+		if t, err := time.ParseInLocation(layout, dt.DateTime, loc); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
 func (e *graphEvent) toEvent(calendarID string) calendar.Event {
 	ev := calendar.Event{
 		ID:          e.ID,
@@ -331,14 +346,8 @@ func (e *graphEvent) toEvent(calendarID string) calendar.Event {
 		Status:      e.ShowAs,
 		Attendees:   fromGraphAttendees(e.Attendees),
 	}
-	ev.Start, _ = time.Parse("2006-01-02T15:04:05.0000000", e.Start.DateTime)
-	if ev.Start.IsZero() {
-		ev.Start, _ = time.Parse("2006-01-02T15:04:05", e.Start.DateTime)
-	}
-	ev.End, _ = time.Parse("2006-01-02T15:04:05.0000000", e.End.DateTime)
-	if ev.End.IsZero() {
-		ev.End, _ = time.Parse("2006-01-02T15:04:05", e.End.DateTime)
-	}
+	ev.Start = parseGraphTime(e.Start)
+	ev.End = parseGraphTime(e.End)
 	if e.OnlineMeeting != nil && e.OnlineMeeting.JoinUrl != "" {
 		ev.OnlineMeeting = e.OnlineMeeting.JoinUrl
 	}

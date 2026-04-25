@@ -2,6 +2,8 @@
 
 Unified Calendar MCP server that aggregates Google Calendar, Microsoft 365, and Apple iCloud (CalDAV) into a single MCP endpoint.
 
+> **Related:** [calendar-sync](https://github.com/dzarlax/calendar-sync) — one-way M365 → Google Calendar sync built on top of this server's REST API.
+
 ## Features
 
 - **Google Calendar** — full CRUD via Calendar API v3 (OAuth2)
