@@ -104,8 +104,8 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	uid := fmt.Sprintf("%d@calendar-mcp", time.Now().UnixNano())
 	vevent.Props.SetText(ical.PropUID, uid)
 	vevent.Props.SetText(ical.PropSummary, event.Title)
-	vevent.Props.SetDateTime(ical.PropDateTimeStart, event.Start)
-	vevent.Props.SetDateTime(ical.PropDateTimeEnd, event.End)
+	setAppleEventTime(*vevent, ical.PropDateTimeStart, event.Start, event.AllDay)
+	setAppleEventTime(*vevent, ical.PropDateTimeEnd, event.End, event.AllDay)
 	if event.Description != "" {
 		vevent.Props.SetText(ical.PropDescription, event.Description)
 	}
@@ -120,15 +120,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	if err != nil {
 		return nil, err
 	}
-	ev := calendar.Event{
-		ID:          uid,
-		CalendarID:  calendarID,
-		Title:       event.Title,
-		Description: event.Description,
-		Location:    event.Location,
-		Start:       event.Start,
-		End:         event.End,
-	}
+	ev := newCreatedEvent(calendarID, uid, event)
 	return &ev, nil
 }
 
@@ -153,11 +145,15 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 		if event.Location != nil {
 			vevent.Props.SetText(ical.PropLocation, *event.Location)
 		}
+		allDay := appleEventAllDay(vevent)
+		if event.AllDay != nil {
+			allDay = *event.AllDay
+		}
 		if event.Start != nil {
-			vevent.Props.SetDateTime(ical.PropDateTimeStart, *event.Start)
+			setAppleEventTime(vevent, ical.PropDateTimeStart, *event.Start, allDay)
 		}
 		if event.End != nil {
-			vevent.Props.SetDateTime(ical.PropDateTimeEnd, *event.End)
+			setAppleEventTime(vevent, ical.PropDateTimeEnd, *event.End, allDay)
 		}
 	}
 
@@ -174,6 +170,32 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	path := calendarID + eventID + ".ics"
 	return p.client.RemoveAll(ctx, path)
+}
+
+func newCreatedEvent(calendarID, uid string, event calendar.EventCreate) calendar.Event {
+	return calendar.Event{
+		ID:          uid,
+		CalendarID:  calendarID,
+		Title:       event.Title,
+		Description: event.Description,
+		Location:    event.Location,
+		Start:       event.Start,
+		End:         event.End,
+		AllDay:      event.AllDay,
+	}
+}
+
+func setAppleEventTime(vevent ical.Event, name string, t time.Time, allDay bool) {
+	if allDay {
+		vevent.Props.SetDate(name, t)
+		return
+	}
+	vevent.Props.SetDateTime(name, t)
+}
+
+func appleEventAllDay(ev ical.Event) bool {
+	prop := ev.Props.Get(ical.PropDateTimeStart)
+	return prop != nil && prop.ValueType() == ical.ValueDate
 }
 
 func addAttendees(vevent *ical.Event, attendees []calendar.Attendee) {
@@ -343,6 +365,7 @@ func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
 		Location:    loc,
 		Start:       dtStart,
 		End:         dtEnd,
+		AllDay:      appleEventAllDay(ev),
 		Attendees:   parseAttendees(ev),
 	}
 }

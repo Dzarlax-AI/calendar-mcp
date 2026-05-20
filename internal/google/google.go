@@ -71,8 +71,8 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 		Summary:     event.Title,
 		Description: event.Description,
 		Location:    event.Location,
-		Start:       &gcal.EventDateTime{DateTime: event.Start.Format(time.RFC3339)},
-		End:         &gcal.EventDateTime{DateTime: event.End.Format(time.RFC3339)},
+		Start:       toGoogleEventTime(event.Start, event.AllDay),
+		End:         toGoogleEventTime(event.End, event.AllDay),
 		Attendees:   toGoogleAttendees(event.Attendees),
 	}
 	if event.VideoCall {
@@ -109,11 +109,17 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if event.Location != nil {
 		existing.Location = *event.Location
 	}
+	allDay := false
+	if event.AllDay != nil {
+		allDay = *event.AllDay
+	} else if existing.Start != nil && existing.Start.Date != "" {
+		allDay = true
+	}
 	if event.Start != nil {
-		existing.Start = &gcal.EventDateTime{DateTime: event.Start.Format(time.RFC3339)}
+		existing.Start = toGoogleEventTime(*event.Start, allDay)
 	}
 	if event.End != nil {
-		existing.End = &gcal.EventDateTime{DateTime: event.End.Format(time.RFC3339)}
+		existing.End = toGoogleEventTime(*event.End, allDay)
 	}
 	if len(event.Attendees) > 0 {
 		existing.Attendees = toGoogleAttendees(event.Attendees)
@@ -128,6 +134,13 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	return p.svc.Events.Delete(calendarID, eventID).Context(ctx).Do()
+}
+
+func toGoogleEventTime(t time.Time, allDay bool) *gcal.EventDateTime {
+	if allDay {
+		return &gcal.EventDateTime{Date: t.Format(calendar.DateLayout)}
+	}
+	return &gcal.EventDateTime{DateTime: t.Format(time.RFC3339)}
 }
 
 func toGoogleAttendees(attendees []calendar.Attendee) []*gcal.EventAttendee {
