@@ -35,7 +35,17 @@ func ParseEventTimeRange(startValue, endValue string) (start time.Time, end time
 	if startParsed.AllDay != endParsed.AllDay {
 		return time.Time{}, time.Time{}, false, fmt.Errorf("start and end must both be date-only or both be RFC3339 datetimes")
 	}
+	if err := ValidateEventTimeRange(startParsed.Time, endParsed.Time); err != nil {
+		return time.Time{}, time.Time{}, false, err
+	}
 	return startParsed.Time, endParsed.Time, startParsed.AllDay, nil
+}
+
+func ValidateEventTimeRange(start, end time.Time) error {
+	if !end.After(start) {
+		return fmt.Errorf("end must be after start")
+	}
+	return nil
 }
 
 func MergeOptionalAllDay(current *bool, parsed ParsedEventTime) (*bool, error) {

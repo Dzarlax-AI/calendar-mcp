@@ -191,6 +191,12 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if upd.Start != nil && upd.End != nil {
+		if err := calendar.ValidateEventTimeRange(*upd.Start, *upd.End); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	ev, err := s.reg.UpdateEvent(r.Context(), calID, eventID, upd)
 	if err != nil {

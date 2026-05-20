@@ -120,15 +120,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	if err != nil {
 		return nil, err
 	}
-	ev := calendar.Event{
-		ID:          uid,
-		CalendarID:  calendarID,
-		Title:       event.Title,
-		Description: event.Description,
-		Location:    event.Location,
-		Start:       event.Start,
-		End:         event.End,
-	}
+	ev := newCreatedEvent(calendarID, uid, event)
 	return &ev, nil
 }
 
@@ -178,6 +170,19 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	path := calendarID + eventID + ".ics"
 	return p.client.RemoveAll(ctx, path)
+}
+
+func newCreatedEvent(calendarID, uid string, event calendar.EventCreate) calendar.Event {
+	return calendar.Event{
+		ID:          uid,
+		CalendarID:  calendarID,
+		Title:       event.Title,
+		Description: event.Description,
+		Location:    event.Location,
+		Start:       event.Start,
+		End:         event.End,
+		AllDay:      event.AllDay,
+	}
 }
 
 func setAppleEventTime(vevent ical.Event, name string, t time.Time, allDay bool) {

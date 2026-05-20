@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
+
+	"calendar-mcp/internal/calendar"
 )
 
 func TestSetAppleEventTime_AllDayUsesDate(t *testing.T) {
@@ -30,6 +32,18 @@ func TestConvertEventMarksAllDay(t *testing.T) {
 	ev.Props.SetDate(ical.PropDateTimeEnd, time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC))
 
 	got := convertEvent(*ev, "cal", "cal/event-1.ics")
+	if !got.AllDay {
+		t.Fatalf("AllDay = false, want true")
+	}
+}
+
+func TestCreateEventResponsePreservesAllDay(t *testing.T) {
+	got := newCreatedEvent("cal", "event-1", calendar.EventCreate{
+		Title:  "All day",
+		Start:  time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC),
+		End:    time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC),
+		AllDay: true,
+	})
 	if !got.AllDay {
 		t.Fatalf("AllDay = false, want true")
 	}

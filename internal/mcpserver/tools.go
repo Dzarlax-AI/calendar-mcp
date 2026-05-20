@@ -138,6 +138,11 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 		}
+		if upd.Start != nil && upd.End != nil {
+			if err := calendar.ValidateEventTimeRange(*upd.Start, *upd.End); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		}
 
 		if raw := req.GetString("attendees", ""); raw != "" {
 			var attendees []calendar.Attendee

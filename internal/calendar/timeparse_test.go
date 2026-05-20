@@ -34,3 +34,24 @@ func TestParseEventTimeRange_RejectsMixedFormats(t *testing.T) {
 		t.Fatalf("ParseEventTimeRange returned nil error for mixed formats")
 	}
 }
+
+func TestParseEventTimeRange_RejectsNonPositiveRanges(t *testing.T) {
+	tests := []struct {
+		name  string
+		start string
+		end   string
+	}{
+		{name: "same_day_all_day", start: "2026-05-30", end: "2026-05-30"},
+		{name: "reversed_all_day", start: "2026-05-31", end: "2026-05-30"},
+		{name: "same_time_datetime", start: "2026-05-30T13:00:00Z", end: "2026-05-30T13:00:00Z"},
+		{name: "reversed_datetime", start: "2026-05-30T14:00:00Z", end: "2026-05-30T13:00:00Z"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, _, err := ParseEventTimeRange(tt.start, tt.end); err == nil {
+				t.Fatalf("ParseEventTimeRange(%q, %q) returned nil error", tt.start, tt.end)
+			}
+		})
+	}
+}
