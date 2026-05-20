@@ -23,6 +23,8 @@ Unified Calendar MCP server that aggregates Google Calendar, Microsoft 365, and 
 | `update_event` | Partial update of an existing event |
 | `delete_event` | Delete an event |
 
+`create_event` and `update_event` accept either RFC3339 datetimes (`2026-05-30T13:00:00+02:00`) or all-day date-only boundaries (`2026-05-30` to `2026-05-31`). Date-only boundaries are exclusive on `end`, matching Google Calendar and iCalendar all-day semantics.
+
 ## Configuration
 
 All configuration via environment variables:

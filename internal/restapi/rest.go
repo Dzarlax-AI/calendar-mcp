@@ -94,14 +94,14 @@ func (s *Server) getEvents(w http.ResponseWriter, r *http.Request) {
 // Body: { "calendar_id": "...", "title": "...", "start": "...", "end": "...", "description": "...", "location": "...", "attendees": [...] }
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CalendarID  string             `json:"calendar_id"`
-		Title       string             `json:"title"`
-		Start       string             `json:"start"`
-		End         string             `json:"end"`
-		Description string             `json:"description"`
-		Location    string             `json:"location"`
+		CalendarID  string              `json:"calendar_id"`
+		Title       string              `json:"title"`
+		Start       string              `json:"start"`
+		End         string              `json:"end"`
+		Description string              `json:"description"`
+		Location    string              `json:"location"`
 		Attendees   []calendar.Attendee `json:"attendees"`
-		VideoCall   bool               `json:"video_call"`
+		VideoCall   bool                `json:"video_call"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -113,14 +113,9 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, err := time.Parse(time.RFC3339, req.Start)
+	start, end, allDay, err := calendar.ParseEventTimeRange(req.Start, req.End)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid start: "+err.Error())
-		return
-	}
-	end, err := time.Parse(time.RFC3339, req.End)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid end: "+err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -128,6 +123,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		Title:       req.Title,
 		Start:       start,
 		End:         end,
+		AllDay:      allDay,
 		Description: req.Description,
 		Location:    req.Location,
 		Attendees:   req.Attendees,
@@ -151,11 +147,11 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Title       *string            `json:"title"`
-		Start       *string            `json:"start"`
-		End         *string            `json:"end"`
-		Description *string            `json:"description"`
-		Location    *string            `json:"location"`
+		Title       *string             `json:"title"`
+		Start       *string             `json:"start"`
+		End         *string             `json:"end"`
+		Description *string             `json:"description"`
+		Location    *string             `json:"location"`
 		Attendees   []calendar.Attendee `json:"attendees"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -170,20 +166,30 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 		Attendees:   req.Attendees,
 	}
 	if req.Start != nil {
-		t, err := time.Parse(time.RFC3339, *req.Start)
+		parsed, err := calendar.ParseEventTime(*req.Start)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid start: "+err.Error())
 			return
 		}
-		upd.Start = &t
+		upd.Start = &parsed.Time
+		upd.AllDay, err = calendar.MergeOptionalAllDay(upd.AllDay, parsed)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if req.End != nil {
-		t, err := time.Parse(time.RFC3339, *req.End)
+		parsed, err := calendar.ParseEventTime(*req.End)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid end: "+err.Error())
 			return
 		}
-		upd.End = &t
+		upd.End = &parsed.Time
+		upd.AllDay, err = calendar.MergeOptionalAllDay(upd.AllDay, parsed)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	ev, err := s.reg.UpdateEvent(r.Context(), calID, eventID, upd)

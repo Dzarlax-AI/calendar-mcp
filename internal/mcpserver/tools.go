@@ -52,8 +52,8 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		mcp.WithDescription("Create a new calendar event."),
 		mcp.WithString("calendar_id", mcp.Required(), mcp.Description("Calendar ID to create event in (e.g. google:primary)")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Event title")),
-		mcp.WithString("start", mcp.Required(), mcp.Description("Start datetime ISO8601")),
-		mcp.WithString("end", mcp.Required(), mcp.Description("End datetime ISO8601")),
+		mcp.WithString("start", mcp.Required(), mcp.Description("Start datetime ISO8601 or all-day date (YYYY-MM-DD)")),
+		mcp.WithString("end", mcp.Required(), mcp.Description("End datetime ISO8601 or all-day exclusive date (YYYY-MM-DD)")),
 		mcp.WithString("description", mcp.Description("Event description")),
 		mcp.WithString("location", mcp.Description("Event location")),
 		mcp.WithString("attendees", mcp.Description("JSON array of attendees: [{\"email\":\"a@b.com\",\"name\":\"Name\",\"optional\":false}]")),
@@ -64,13 +64,9 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		startStr := req.GetString("start", "")
 		endStr := req.GetString("end", "")
 
-		start, err := time.Parse(time.RFC3339, startStr)
+		start, end, allDay, err := calendar.ParseEventTimeRange(startStr, endStr)
 		if err != nil {
-			return mcp.NewToolResultError("invalid start: " + err.Error()), nil
-		}
-		end, err := time.Parse(time.RFC3339, endStr)
-		if err != nil {
-			return mcp.NewToolResultError("invalid end: " + err.Error()), nil
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		var attendees []calendar.Attendee
@@ -84,6 +80,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			Title:       title,
 			Start:       start,
 			End:         end,
+			AllDay:      allDay,
 			Description: req.GetString("description", ""),
 			Location:    req.GetString("location", ""),
 			Attendees:   attendees,
@@ -100,8 +97,8 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		mcp.WithString("calendar_id", mcp.Required(), mcp.Description("Calendar ID")),
 		mcp.WithString("event_id", mcp.Required(), mcp.Description("Event ID to update")),
 		mcp.WithString("title", mcp.Description("New title")),
-		mcp.WithString("start", mcp.Description("New start datetime ISO8601")),
-		mcp.WithString("end", mcp.Description("New end datetime ISO8601")),
+		mcp.WithString("start", mcp.Description("New start datetime ISO8601 or all-day date (YYYY-MM-DD)")),
+		mcp.WithString("end", mcp.Description("New end datetime ISO8601 or all-day exclusive date (YYYY-MM-DD)")),
 		mcp.WithString("description", mcp.Description("New description")),
 		mcp.WithString("location", mcp.Description("New location")),
 		mcp.WithString("attendees", mcp.Description("JSON array of attendees (replaces existing): [{\"email\":\"a@b.com\",\"name\":\"Name\"}]")),
@@ -120,18 +117,26 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			upd.Location = &v
 		}
 		if v := req.GetString("start", ""); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
+			parsed, err := calendar.ParseEventTime(v)
 			if err != nil {
 				return mcp.NewToolResultError("invalid start: " + err.Error()), nil
 			}
-			upd.Start = &t
+			upd.Start = &parsed.Time
+			upd.AllDay, err = calendar.MergeOptionalAllDay(upd.AllDay, parsed)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 		}
 		if v := req.GetString("end", ""); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
+			parsed, err := calendar.ParseEventTime(v)
 			if err != nil {
 				return mcp.NewToolResultError("invalid end: " + err.Error()), nil
 			}
-			upd.End = &t
+			upd.End = &parsed.Time
+			upd.AllDay, err = calendar.MergeOptionalAllDay(upd.AllDay, parsed)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 		}
 
 		if raw := req.GetString("attendees", ""); raw != "" {

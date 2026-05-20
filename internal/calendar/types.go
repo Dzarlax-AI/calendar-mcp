@@ -14,29 +14,30 @@ type Calendar struct {
 type Attendee struct {
 	Email    string `json:"email"`
 	Name     string `json:"name,omitempty"`
-	Status   string `json:"status,omitempty"`   // accepted, declined, tentative, needsAction
+	Status   string `json:"status,omitempty"` // accepted, declined, tentative, needsAction
 	Optional bool   `json:"optional,omitempty"`
 }
 
 type Event struct {
-	ID             string     `json:"id"`
-	CalendarID     string     `json:"calendar_id"`
-	Provider       string     `json:"provider"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description,omitempty"`
-	Location       string     `json:"location,omitempty"`
-	Start          time.Time  `json:"start"`
-	End            time.Time  `json:"end"`
-	AllDay         bool       `json:"all_day,omitempty"`
-	Status         string     `json:"status,omitempty"`
-	Attendees      []Attendee `json:"attendees,omitempty"`
-	OnlineMeeting  string     `json:"online_meeting,omitempty"` // video call URL
+	ID            string     `json:"id"`
+	CalendarID    string     `json:"calendar_id"`
+	Provider      string     `json:"provider"`
+	Title         string     `json:"title"`
+	Description   string     `json:"description,omitempty"`
+	Location      string     `json:"location,omitempty"`
+	Start         time.Time  `json:"start"`
+	End           time.Time  `json:"end"`
+	AllDay        bool       `json:"all_day,omitempty"`
+	Status        string     `json:"status,omitempty"`
+	Attendees     []Attendee `json:"attendees,omitempty"`
+	OnlineMeeting string     `json:"online_meeting,omitempty"` // video call URL
 }
 
 type EventCreate struct {
 	Title       string     `json:"title"`
 	Start       time.Time  `json:"start"`
 	End         time.Time  `json:"end"`
+	AllDay      bool       `json:"all_day,omitempty"`
 	Description string     `json:"description,omitempty"`
 	Location    string     `json:"location,omitempty"`
 	Attendees   []Attendee `json:"attendees,omitempty"`
@@ -47,6 +48,7 @@ type EventUpdate struct {
 	Title       *string    `json:"title,omitempty"`
 	Start       *time.Time `json:"start,omitempty"`
 	End         *time.Time `json:"end,omitempty"`
+	AllDay      *bool      `json:"all_day,omitempty"`
 	Description *string    `json:"description,omitempty"`
 	Location    *string    `json:"location,omitempty"`
 	Attendees   []Attendee `json:"attendees,omitempty"`

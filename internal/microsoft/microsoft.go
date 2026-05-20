@@ -38,7 +38,7 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 			Owner struct {
 				Name string `json:"name"`
 			} `json:"owner"`
-			CanEdit          bool `json:"canEdit"`
+			CanEdit           bool `json:"canEdit"`
 			IsDefaultCalendar bool `json:"isDefaultCalendar"`
 		} `json:"value"`
 	}
@@ -87,7 +87,8 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event calendar.EventCreate) (*calendar.Event, error) {
 	path := fmt.Sprintf("/me/calendars/%s/events", calendarID)
 	body := graphEventCreate{
-		Subject: event.Title,
+		Subject:  event.Title,
+		IsAllDay: event.AllDay,
 		Body: &graphBody{
 			ContentType: "text",
 			Content:     event.Description,
@@ -135,6 +136,9 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	}
 	if event.End != nil {
 		patch["end"] = graphDateTime{DateTime: event.End.Format("2006-01-02T15:04:05"), TimeZone: "UTC"}
+	}
+	if event.AllDay != nil {
+		patch["isAllDay"] = *event.AllDay
 	}
 	if len(event.Attendees) > 0 {
 		patch["attendees"] = toGraphAttendees(event.Attendees)
@@ -230,13 +234,13 @@ type graphEvent struct {
 	Body    struct {
 		Content string `json:"content"`
 	} `json:"body"`
-	Start          graphDateTime   `json:"start"`
-	End            graphDateTime   `json:"end"`
-	Location       graphLocation   `json:"location"`
-	IsAllDay       bool            `json:"isAllDay"`
-	ShowAs         string          `json:"showAs"`
-	Attendees      []graphAttendee `json:"attendees,omitempty"`
-	OnlineMeeting  *struct {
+	Start         graphDateTime   `json:"start"`
+	End           graphDateTime   `json:"end"`
+	Location      graphLocation   `json:"location"`
+	IsAllDay      bool            `json:"isAllDay"`
+	ShowAs        string          `json:"showAs"`
+	Attendees     []graphAttendee `json:"attendees,omitempty"`
+	OnlineMeeting *struct {
 		JoinUrl string `json:"joinUrl"`
 	} `json:"onlineMeeting,omitempty"`
 }
@@ -269,14 +273,15 @@ type graphLocation struct {
 }
 
 type graphEventCreate struct {
-	Subject                string          `json:"subject"`
-	Body                   *graphBody      `json:"body,omitempty"`
-	Start                  graphDateTime   `json:"start"`
-	End                    graphDateTime   `json:"end"`
-	Location               *graphLocation  `json:"location,omitempty"`
-	Attendees              []graphAttendee `json:"attendees,omitempty"`
-	IsOnlineMeeting        bool            `json:"isOnlineMeeting,omitempty"`
-	OnlineMeetingProvider  string          `json:"onlineMeetingProvider,omitempty"`
+	Subject               string          `json:"subject"`
+	Body                  *graphBody      `json:"body,omitempty"`
+	Start                 graphDateTime   `json:"start"`
+	End                   graphDateTime   `json:"end"`
+	Location              *graphLocation  `json:"location,omitempty"`
+	Attendees             []graphAttendee `json:"attendees,omitempty"`
+	IsAllDay              bool            `json:"isAllDay,omitempty"`
+	IsOnlineMeeting       bool            `json:"isOnlineMeeting,omitempty"`
+	OnlineMeetingProvider string          `json:"onlineMeetingProvider,omitempty"`
 }
 
 func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {
