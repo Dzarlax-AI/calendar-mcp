@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -115,17 +116,17 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 	addAttendees(vevent, event.Attendees)
 	cal.Children = append(cal.Children, vevent.Component)
 
-	path := calendarID + uid + ".ics"
+	path := appleObjectPath(calendarID, uid)
 	_, err := p.client.PutCalendarObject(ctx, path, cal)
 	if err != nil {
 		return nil, err
 	}
-	ev := newCreatedEvent(calendarID, uid, event)
+	ev := newCreatedEvent(calendarID, path, event)
 	return &ev, nil
 }
 
 func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, event calendar.EventUpdate) (*calendar.Event, error) {
-	path := calendarID + eventID + ".ics"
+	path := appleObjectPath(calendarID, eventID)
 
 	objects, err := p.client.MultiGetCalendar(ctx, calendarID, &caldav.CalendarMultiGet{
 		Paths: []string{path},
@@ -155,6 +156,10 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 		if event.End != nil {
 			setAppleEventTime(vevent, ical.PropDateTimeEnd, *event.End, allDay)
 		}
+		if event.Attendees != nil {
+			vevent.Props.Del("ATTENDEE")
+			addAttendees(&vevent, *event.Attendees)
+		}
 	}
 
 	_, err = p.client.PutCalendarObject(ctx, path, obj.Data)
@@ -168,13 +173,13 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 }
 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	path := calendarID + eventID + ".ics"
+	path := appleObjectPath(calendarID, eventID)
 	return p.client.RemoveAll(ctx, path)
 }
 
-func newCreatedEvent(calendarID, uid string, event calendar.EventCreate) calendar.Event {
+func newCreatedEvent(calendarID, eventID string, event calendar.EventCreate) calendar.Event {
 	return calendar.Event{
-		ID:          uid,
+		ID:          eventID,
 		CalendarID:  calendarID,
 		Title:       event.Title,
 		Description: event.Description,
@@ -183,6 +188,13 @@ func newCreatedEvent(calendarID, uid string, event calendar.EventCreate) calenda
 		End:         event.End,
 		AllDay:      event.AllDay,
 	}
+}
+
+func appleObjectPath(calendarID, eventID string) string {
+	if strings.HasSuffix(eventID, ".ics") {
+		return eventID
+	}
+	return strings.TrimSuffix(calendarID, "/") + "/" + eventID + ".ics"
 }
 
 func setAppleEventTime(vevent ical.Event, name string, t time.Time, allDay bool) {
@@ -251,8 +263,7 @@ const fallbackConcurrency = 20
 func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
 	paths, err := p.propfindCalendarObjects(ctx, calendarID)
 	if err != nil {
-		log.Printf("apple: PROPFIND fallback failed for %s: %v", calendarID, err)
-		return nil, nil
+		return nil, fmt.Errorf("apple PROPFIND fallback for %s: %w", calendarID, err)
 	}
 	if len(paths) == 0 {
 		return nil, nil
@@ -262,6 +273,7 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 
 	type slot struct {
 		events []calendar.Event
+		err    error
 	}
 	results := make([]slot, len(paths))
 	sem := make(chan struct{}, fallbackConcurrency)
@@ -276,6 +288,7 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 
 			obj, err := p.client.GetCalendarObject(ctx, path)
 			if err != nil {
+				results[i].err = fmt.Errorf("GET %s: %w", path, err)
 				return
 			}
 			var evs []calendar.Event
@@ -283,6 +296,7 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 				dtStart, errS := ev.DateTimeStart(nil)
 				dtEnd, errE := ev.DateTimeEnd(nil)
 				if errS != nil || errE != nil {
+					results[i].err = fmt.Errorf("parse event time from %s", path)
 					continue
 				}
 				if dtEnd.After(start) && dtStart.Before(end) {
@@ -296,8 +310,15 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 	wg.Wait()
 
 	var events []calendar.Event
+	var objectErrs []error
 	for _, r := range results {
 		events = append(events, r.events...)
+		if r.err != nil {
+			objectErrs = append(objectErrs, r.err)
+		}
+	}
+	if len(objectErrs) > 0 {
+		return nil, fmt.Errorf("apple GET fallback incomplete: %w", errors.Join(objectErrs...))
 	}
 	return events, nil
 }
@@ -350,7 +371,6 @@ func (p *Provider) propfindCalendarObjects(ctx context.Context, calendarPath str
 }
 
 func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
-	uid, _ := ev.Props.Text(ical.PropUID)
 	summary, _ := ev.Props.Text(ical.PropSummary)
 	desc, _ := ev.Props.Text(ical.PropDescription)
 	loc, _ := ev.Props.Text(ical.PropLocation)
@@ -358,7 +378,7 @@ func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {
 	dtEnd, _ := ev.DateTimeEnd(nil)
 
 	return calendar.Event{
-		ID:          uid,
+		ID:          path,
 		CalendarID:  calendarID,
 		Title:       summary,
 		Description: desc,

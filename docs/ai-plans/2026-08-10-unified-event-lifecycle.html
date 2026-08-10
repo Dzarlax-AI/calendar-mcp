@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Unified Calendar Event Lifecycle</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fa; --card:#fff; --ink:#172033; --muted:#5c667a; --line:#dfe4ec; --blue:#2457d6; --green:#18794e; --amber:#a15c00; --red:#b42318; --code:#111827; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); line-height:1.55; }
+    main { max-width:1180px; margin:0 auto; padding:32px 22px 72px; }
+    header, section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; margin:0 0 18px; box-shadow:0 1px 2px rgba(16,24,40,.04); }
+    h1,h2,h3 { line-height:1.2; margin-top:0; }
+    h1 { font-size:2rem; margin-bottom:10px; }
+    h2 { font-size:1.35rem; border-bottom:1px solid var(--line); padding-bottom:10px; }
+    h3 { margin-top:24px; font-size:1.06rem; }
+    p,li { max-width:95ch; }
+    code { background:#eef1f6; border-radius:4px; padding:2px 5px; }
+    pre { background:var(--code); color:#e5e7eb; border-radius:8px; padding:15px; overflow:auto; font-size:.88rem; line-height:1.45; }
+    pre code { background:transparent; padding:0; }
+    table { border-collapse:collapse; width:100%; font-size:.94rem; }
+    th,td { border:1px solid var(--line); padding:9px 11px; text-align:left; vertical-align:top; }
+    th { background:#f3f5f8; }
+    .badge { display:inline-block; border-radius:999px; padding:5px 11px; font-size:.78rem; font-weight:700; background:#fff0cc; color:#714300; }
+    .meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; margin-top:18px; }
+    .meta div { background:#f7f9fc; border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .callout { border-left:5px solid var(--blue); }
+    .risk { border-left:5px solid var(--red); }
+    .approval { border-left:5px solid var(--amber); }
+    .success { border-left:5px solid var(--green); }
+    .phase { border-left:4px solid #8ba6eb; padding-left:16px; margin:24px 0 30px; }
+    .checklist { list-style:none; padding-left:0; }
+    .checklist li { margin:8px 0; }
+    .checklist li::before { content:"☐"; margin-right:9px; color:var(--blue); font-weight:700; }
+    .small { color:var(--muted); font-size:.9rem; }
+    a { color:var(--blue); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Approval required before implementation</span>
+    <h1>Unified Calendar Event Lifecycle</h1>
+    <p><strong>Goal:</strong> build a safe, predictable event-management MCP for Google Calendar, Microsoft 365, and Apple CalDAV, with Google as the first complete reference implementation and full recurring-event lifecycle support.</p>
+    <p><strong>Architecture:</strong> introduce a typed V2 domain and application layer between MCP/REST transports and provider adapters. Keep legacy tools as compatibility wrappers, validate per-calendar capabilities before writes, and return structured partial failures instead of silent omissions.</p>
+    <p><strong>Tech stack:</strong> Go 1.25, mcp-go, Google Calendar API v3, Microsoft Graph REST, CalDAV/iCalendar, net/http, table-driven tests, httptest provider fakes.</p>
+    <div class="meta">
+      <div><strong>Repository</strong><br><code>calendar-mcp</code></div>
+      <div><strong>Branch inspected</strong><br><code>main</code> at <code>317229d</code></div>
+      <div><strong>Plan date</strong><br>2026-08-10</div>
+      <div><strong>Execution model</strong><br>7 gated release phases</div>
+    </div>
+  </header>
+
+  <section class="callout">
+    <h2>1. Scope and Planning Decision</h2>
+    <p>The approved design is intentionally broader than one safe implementation batch. This master plan decomposes it into release phases that each leave the service buildable, testable, and rollback-ready. Implementation should pause for a cumulative diff review after every phase.</p>
+    <p><strong>Included:</strong> all review fixes; V2 event types and patches; capabilities; Google list/get/search/create/update/delete/import/move/instances/response behavior; series/single/following recurrence; reminders, colors, visibility, transparency, attachments, Meet, guest controls, extended properties, and Google special event types; Microsoft and Apple alignment where natively supported.</p>
+    <p><strong>Excluded:</strong> ACL, Calendar settings, free/busy, event watch/webhooks, and general calendar-management APIs. These require separate designs.</p>
+  </section>
+
+  <section>
+    <h2>2. Current Behavior</h2>
+    <ul>
+      <li>A single <code>calendar.Provider</code> interface exposes five basic operations.</li>
+      <li>MCP and REST duplicate parsing and patch-building logic.</li>
+      <li>Google lists only one page, expands recurring events unconditionally, and sends updates to all attendees for create/update.</li>
+      <li>Microsoft formats local wall time while labeling it UTC and does not follow Graph pagination.</li>
+      <li>Apple returns iCalendar UID but reconstructs mutation hrefs from that UID; fallback failures can appear as empty success.</li>
+      <li>Update DTOs cannot distinguish omitted fields from explicit clearing; Apple ignores attendee updates.</li>
+      <li>An empty API key disables authentication without an explicit unsafe-mode switch.</li>
+      <li>Tests cover date parsing and a small set of provider conversions, but not transports, registry semantics, pagination, recurrence, or error mapping.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Desired Behavior and Invariants</h2>
+    <ul>
+      <li>No notification or invitation is sent unless the caller explicitly requests a supported notification policy.</li>
+      <li>No provider field or operation is silently ignored.</li>
+      <li>No paginated or failed provider response is presented as a complete successful result.</li>
+      <li>Timed recurrence preserves IANA time zone and wall-clock time across DST.</li>
+      <li>All-day end dates remain exclusive; timed and all-day representations cannot be mixed.</li>
+      <li>Apple mutations use the actual CalDAV resource href, not an inferred filename.</li>
+      <li>Mutations support optimistic concurrency through ETag/version where the provider supports it.</li>
+      <li>Legacy MCP inputs remain accepted. Advanced typed behavior lives in V2.</li>
+      <li><code>following</code> is reported as a composite, recoverable operation, never as a falsely atomic write.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Target File Map</h2>
+    <table>
+      <thead><tr><th>Path</th><th>Action</th><th>Responsibility</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/calendar/types.go</code></td><td>Modify</td><td>Keep legacy DTOs stable.</td></tr>
+        <tr><td><code>internal/calendar/types_v2.go</code></td><td>Create</td><td>EventV2, EventTime, recurrence, attendee, reminder, attachment, conference, and provider extension types.</td></tr>
+        <tr><td><code>internal/calendar/patch.go</code></td><td>Create</td><td>Presence-aware generic patch fields and EventPatchV2.</td></tr>
+        <tr><td><code>internal/calendar/errors.go</code></td><td>Create</td><td>Stable typed error codes and provider context.</td></tr>
+        <tr><td><code>internal/calendar/capabilities.go</code></td><td>Create</td><td>Per-calendar feature and notification capabilities.</td></tr>
+        <tr><td><code>internal/calendar/recurrence.go</code></td><td>Create</td><td>RRULE validation, mutation scopes, boundary calculations.</td></tr>
+        <tr><td><code>internal/calendar/provider.go</code></td><td>Modify</td><td>Legacy interface plus focused V2 capability interfaces.</td></tr>
+        <tr><td><code>internal/application/events.go</code></td><td>Create</td><td>Shared V2 use cases and capability validation.</td></tr>
+        <tr><td><code>internal/application/fanout.go</code></td><td>Create</td><td>Bounded fan-out and source-status aggregation.</td></tr>
+        <tr><td><code>internal/application/following.go</code></td><td>Create</td><td>Preview, idempotency, split-series workflow, compensation.</td></tr>
+        <tr><td><code>internal/httpx/client.go</code></td><td>Create</td><td>Provider deadlines, bounded retry, Retry-After handling.</td></tr>
+        <tr><td><code>internal/google/google.go</code></td><td>Split/modify</td><td>Provider construction and legacy delegation.</td></tr>
+        <tr><td><code>internal/google/events_v2.go</code></td><td>Create</td><td>Google EventV2 CRUD and field mapping.</td></tr>
+        <tr><td><code>internal/google/recurrence.go</code></td><td>Create</td><td>Instances, recurrence views, scopes, ETag writes.</td></tr>
+        <tr><td><code>internal/google/operations.go</code></td><td>Create</td><td>Search, import, move, invitation response, Meet.</td></tr>
+        <tr><td><code>internal/google/pagination.go</code></td><td>Create</td><td>Calendar and event page traversal.</td></tr>
+        <tr><td><code>internal/microsoft/microsoft.go</code></td><td>Split/modify</td><td>Fix legacy behavior and delegate to V2 mappings.</td></tr>
+        <tr><td><code>internal/microsoft/events_v2.go</code></td><td>Create</td><td>Portable Graph behavior and capabilities.</td></tr>
+        <tr><td><code>internal/microsoft/pagination.go</code></td><td>Create</td><td>Validated <code>@odata.nextLink</code> traversal.</td></tr>
+        <tr><td><code>internal/apple/apple.go</code></td><td>Split/modify</td><td>Legacy behavior and CalDAV provider wiring.</td></tr>
+        <tr><td><code>internal/apple/events_v2.go</code></td><td>Create</td><td>Href-aware event operations and capability mapping.</td></tr>
+        <tr><td><code>internal/apple/recurrence.go</code></td><td>Create</td><td>iCalendar recurrence/exception conversion.</td></tr>
+        <tr><td><code>internal/mcpserver/tools_v2.go</code></td><td>Create</td><td>Typed V2 tool schemas and handlers.</td></tr>
+        <tr><td><code>internal/mcpserver/tools.go</code></td><td>Modify</td><td>Legacy wrappers and safe defaults.</td></tr>
+        <tr><td><code>internal/restapi/v2.go</code></td><td>Create</td><td><code>/api/v2</code> handlers using application services.</td></tr>
+        <tr><td><code>internal/config/config.go</code></td><td>Modify</td><td>Explicit unauthenticated mode and timeout settings.</td></tr>
+        <tr><td><code>internal/token/store.go</code></td><td>Modify</td><td>Directory creation, atomic persistence, surfaced errors.</td></tr>
+        <tr><td><code>cmd/server/main.go</code></td><td>Modify</td><td>Validated startup, server timeouts, graceful shutdown.</td></tr>
+        <tr><td><code>.dockerignore</code></td><td>Create</td><td>Exclude credentials, repository metadata, binaries, and local data.</td></tr>
+        <tr><td><code>README.md</code>, <code>.env.example</code></td><td>Modify</td><td>V2 usage, safety defaults, migration and deployment notes.</td></tr>
+      </tbody>
+    </table>
+    <p class="small">Tests live beside their packages as <code>*_test.go</code>. Provider HTTP contract fixtures should use <code>httptest.Server</code>; do not add network-dependent CI tests.</p>
+  </section>
+
+  <section>
+    <h2>5. Implementation Tasks</h2>
+
+    <div class="phase">
+      <h3>Phase 1 — Safety and correctness foundation</h3>
+      <p><strong>Outcome:</strong> legacy API remains intact but review findings are fixed and regression-tested.</p>
+      <ul class="checklist">
+        <li>Write failing Microsoft tests proving <code>13:00+02:00</code> is sent as <code>11:00 UTC</code> for create and update.</li>
+        <li>Write auth tests proving startup or handler construction rejects an empty key unless <code>ALLOW_UNAUTHENTICATED=true</code>.</li>
+        <li>Write Google and Graph multi-page tests and implement full traversal with context cancellation.</li>
+        <li>Write Apple tests where UID differs from href; return/use href-derived event IDs for update/delete.</li>
+        <li>Replace hidden Apple and Registry failures with source-status or typed errors.</li>
+        <li>Add notification-policy plumbing to legacy writes, defaulting to <code>none</code>; conservatively reject providers that cannot suppress attendee notifications.</li>
+        <li>Add server/provider timeouts, graceful shutdown, atomic token writes, resource-prefix validation, and <code>.dockerignore</code>.</li>
+      </ul>
+      <pre><code>// Microsoft conversion used by create and update.
+func toGraphDateTime(t time.Time) graphDateTime {
+    return graphDateTime{
+        DateTime: t.UTC().Format("2006-01-02T15:04:05"),
+        TimeZone: "UTC",
+    }
+}
+
+// Startup is fail-closed unless unsafe mode is explicit.
+if cfg.APIKey == "" &amp;&amp; !cfg.AllowUnauthenticated {
+    return errors.New("API_KEY is required unless ALLOW_UNAUTHENTICATED=true")
+}</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/microsoft ./internal/google ./internal/apple ./internal/calendar ./internal/mcpserver ./internal/token
+go test -race -count=1 ./...
+go vet ./...
+CGO_ENABLED=0 go build ./...</code></pre>
+      <p><strong>Expected:</strong> regression tests first fail against current code, then all commands exit 0. Review cumulative <code>git diff</code> before proceeding.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 2 — V2 domain, application layer, and transports</h3>
+      <p><strong>Outcome:</strong> typed V2 tools and REST routes exist behind a configuration flag; legacy tools delegate through shared use cases.</p>
+      <ul class="checklist">
+        <li>Create EventTime validation for mutually exclusive date/date-time forms, IANA zones, exclusive all-day end, and merged-patch range validation.</li>
+        <li>Create presence-aware patch fields and JSON tests for omitted, null, empty, and populated values.</li>
+        <li>Create typed capabilities, errors, page/source status, notification policy, mutation scope, and operation result types.</li>
+        <li>Create focused V2 provider interfaces and application services; retain the legacy Provider interface until wrappers are verified.</li>
+        <li>Register V2 MCP schemas with typed arrays/objects and <code>/api/v2</code> routes; add schema snapshot tests.</li>
+        <li>Add <code>get_calendar_capabilities</code> and strict preflight validation.</li>
+      </ul>
+      <pre><code>type EventTime struct {
+    Date     string `json:"date,omitempty"`
+    DateTime string `json:"date_time,omitempty"`
+    TimeZone string `json:"time_zone,omitempty"`
+}
+
+type PatchField[T any] struct {
+    Present bool `json:"-"`
+    Null    bool `json:"-"`
+    Value   T    `json:"-"`
+}
+
+type EventProviderV2 interface {
+    Capabilities(context.Context, string) (CalendarCapabilities, error)
+    ListEvents(context.Context, ListEventsRequest) (Page[EventV2], error)
+    GetEvent(context.Context, EventRef) (EventV2, error)
+    CreateEventV2(context.Context, CreateEventRequest) (EventV2, error)
+    UpdateEventV2(context.Context, UpdateEventRequest) (OperationResult, error)
+    DeleteEventV2(context.Context, DeleteEventRequest) (OperationResult, error)
+}</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/calendar ./internal/application ./internal/mcpserver ./internal/restapi
+go test -race -count=1 ./...
+go vet ./...</code></pre>
+      <p><strong>Expected:</strong> V2 schema tests prove typed inputs, legacy contract tests remain green, and no provider receives an unsupported write.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 3 — Google recurrence and complete Event mapping</h3>
+      <p><strong>Outcome:</strong> Google implements V2 list/get/search/create/update/delete, recurrence parents, expanded views, instances, and single exceptions.</p>
+      <ul class="checklist">
+        <li>Map every in-scope Google Event field bidirectionally and classify fields as writable, conditionally writable, or read-only.</li>
+        <li>Implement recurrence views using <code>singleEvents</code>, <code>showDeleted</code>, page tokens, and <code>events.instances</code>.</li>
+        <li>Preserve <code>recurringEventId</code> and <code>originalStartTime</code>; include cancelled exceptions when requested.</li>
+        <li>Implement series and single scopes using get-merge-update plus ETag preconditions.</li>
+        <li>Implement reminders, colors, visibility, transparency, attachments with <code>supportsAttachments=true</code>, Meet with <code>conferenceDataVersion=1</code>, guest controls, and extended properties.</li>
+        <li>Implement and validate default, birthday, focus-time, out-of-office, working-location, and read-only <code>fromGmail</code> constraints.</li>
+        <li>Test conference creation's pending state rather than assuming the first response contains a completed Meet link.</li>
+      </ul>
+      <pre><code>type RecurrenceView string
+
+const (
+    RecurrenceSeries   RecurrenceView = "series"
+    RecurrenceExpanded RecurrenceView = "expanded"
+    RecurrenceBoth     RecurrenceView = "both"
+)
+
+type MutationScope string
+
+const (
+    ScopeSeries    MutationScope = "series"
+    ScopeSingle    MutationScope = "single"
+    ScopeFollowing MutationScope = "following"
+)</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/google -run 'Test(EventV2|Pagination|Recurrence|Instances|SpecialEvent|Conference|Notification)'
+go test -race -count=1 ./...
+go vet ./...</code></pre>
+      <p><strong>Expected:</strong> fake Google server verifies exact query parameters and payloads; DST and all-day recurrence matrices pass without live credentials.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 4 — Google convenience operations</h3>
+      <p><strong>Outcome:</strong> V2 supports search, invitation response, move, and import with native restrictions and safe notifications.</p>
+      <ul class="checklist">
+        <li>Implement bounded search using Google <code>q</code>, time range, event types, pagination, and deleted-event policy.</li>
+        <li>Implement invitation response by merging the authenticated attendee response without discarding other attendees.</li>
+        <li>Implement move only for eligible default events and expose destination/calendar permission failures as typed errors.</li>
+        <li>Implement import as a private copy with explicit event-type normalization behavior.</li>
+        <li>Reject invalid combinations before provider calls; include capability reasons in errors.</li>
+      </ul>
+      <pre><code>type OperationResult struct {
+    Status        string            `json:"status"`
+    Event         *EventV2          `json:"event,omitempty"`
+    RelatedEvents []EventV2         `json:"related_events,omitempty"`
+    Steps         []OperationStep   `json:"steps,omitempty"`
+    Recovery      *RecoveryAction   `json:"recovery,omitempty"`
+    Warnings      []string          `json:"warnings,omitempty"`
+}</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/google ./internal/application -run 'Test(Search|Respond|Move|Import)'
+go test -race -count=1 ./...</code></pre>
+      <p><strong>Expected:</strong> unsupported special-event moves fail before HTTP; attendee response preserves unrelated attendees; all pages are returned or expose a continuation token.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 5 — Recoverable this-and-following</h3>
+      <p><strong>Outcome:</strong> clients can preview and execute a split-series mutation with idempotency and explicit recovery.</p>
+      <ul class="checklist">
+        <li>Implement preview that resolves the target occurrence, validates ETag, computes old/new recurrence rules, and reports exceptions after the split that Google will reset.</li>
+        <li>Create the replacement future series with notifications disabled and a private operation marker.</li>
+        <li>Trim the old series with ETag protection using <code>UNTIL</code> or recomputed <code>COUNT</code>.</li>
+        <li>If trim fails, delete the replacement with notifications disabled; if compensation fails, return <code>partial_failure</code> with both IDs.</li>
+        <li>On retry, search for the operation marker before creating another series.</li>
+      </ul>
+      <pre><code>type FollowingRequest struct {
+    Parent        EventRef          `json:"parent"`
+    EffectiveFrom EventTime         `json:"effective_from"`
+    Patch         EventPatchV2      `json:"patch"`
+    ExpectedETag  string            `json:"expected_etag"`
+    OperationID   string            `json:"operation_id"`
+    PreviewOnly   bool              `json:"preview_only"`
+    Notifications NotificationPolicy `json:"notification_policy"`
+}</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/application ./internal/google -run 'TestFollowing'
+go test -race -count=20 ./internal/application -run 'TestFollowing(Idempotent|Concurrent|Compensation)'
+go test -race -count=1 ./...</code></pre>
+      <p><strong>Expected:</strong> tests cover success, stale ETag, create failure, trim failure with successful compensation, compensation failure, retry, and DST boundaries.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 6 — Microsoft and Apple alignment</h3>
+      <p><strong>Outcome:</strong> both providers implement the portable V2 subset and truthfully reject everything else.</p>
+      <ul class="checklist">
+        <li>Map Graph recurrence patterns/ranges, instances/exceptions, online meeting, reminders, attendee response, categories/colors where portable, and <code>@odata.nextLink</code>.</li>
+        <li>Map Windows time-zone identifiers to IANA only through a tested explicit table; reject unknown identifiers rather than silently assuming UTC.</li>
+        <li>Represent Microsoft notification limitations in capabilities; reject <code>none</code> with attendees if Graph cannot guarantee suppression.</li>
+        <li>Map Apple RRULE/RDATE/EXDATE, RECURRENCE-ID exceptions, alarms, attendees, transparency, status, and href-based mutations.</li>
+        <li>Keep Apple fallback bounded; return object-level failures and incomplete status.</li>
+        <li>Add a cross-provider contract suite that runs identical portable scenarios against all adapters.</li>
+      </ul>
+      <pre><code>func RunProviderContract(t *testing.T, factory ProviderFactory) {
+    t.Run("timed event preserves instant and zone", factory.TestTimedEvent)
+    t.Run("all-day end is exclusive", factory.TestAllDayEvent)
+    t.Run("empty attendee list clears attendees", factory.TestClearAttendees)
+    t.Run("unsupported fields fail explicitly", factory.TestUnsupportedCapability)
+    t.Run("partial provider reads are visible", factory.TestPartialRead)
+}</code></pre>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./internal/microsoft ./internal/apple ./internal/providercontract
+go test -race -count=1 ./...
+go vet ./...</code></pre>
+      <p><strong>Expected:</strong> portable scenarios behave consistently; provider differences appear only in capability results or typed errors.</p>
+    </div>
+
+    <div class="phase">
+      <h3>Phase 7 — Documentation, deployment, and test-calendar QA</h3>
+      <p><strong>Outcome:</strong> the feature is documented and verified without risking real invitations.</p>
+      <ul class="checklist">
+        <li>Document every V2 tool with complete request/response examples and recurrence scope guidance.</li>
+        <li>Document legacy compatibility, fail-closed auth, unsafe local mode, notification defaults, and provider capability differences.</li>
+        <li>Update the same HTML plan with actual files changed, commands run, known limitations, and follow-ups.</li>
+        <li>Build the container and verify <code>/health</code> plus authenticated MCP/REST endpoints locally.</li>
+        <li>Before any provider write, confirm dedicated test calendars and notification suppression. Do not use production calendars without a new explicit confirmation.</li>
+        <li>Run the manual QA matrix below and retain provider event IDs needed for cleanup.</li>
+      </ul>
+      <p><strong>Commands:</strong></p>
+      <pre><code>go test -race -count=1 ./...
+go vet ./...
+CGO_ENABLED=0 go build ./...
+docker build -t calendar-mcp:local .
+docker run --rm -e API_KEY=test -e ALLOW_UNAUTHENTICATED=false -p 8080:8080 calendar-mcp:local</code></pre>
+      <p><strong>Expected:</strong> all automated checks exit 0; health returns 200; unauthenticated MCP/REST calls return 401; authenticated schema discovery includes legacy and V2 tools.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. Test Plan</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Required cases</th></tr></thead>
+      <tbody>
+        <tr><td>Time</td><td>Offsets, IANA zones, DST forward/backward, all-day exclusive end, mixed-format rejection, partial boundary merge.</td></tr>
+        <tr><td>Pagination</td><td>One page, multiple pages, empty page with token, repeated token defense, cancellation, Graph next-link host validation.</td></tr>
+        <tr><td>Patches</td><td>Omitted, null, empty string, empty slice, replacement slice, provider-unsupported clear.</td></tr>
+        <tr><td>Recurrence</td><td>Daily/weekly/monthly/yearly; COUNT/UNTIL; RDATE/EXDATE; moved/cancelled instance; all three scopes; DST.</td></tr>
+        <tr><td>Notifications</td><td>Default none, explicit external/all, unsupported provider policy, composite compensation, legacy tools.</td></tr>
+        <tr><td>Concurrency</td><td>Matching/stale/missing ETag, simultaneous following requests, idempotent retry.</td></tr>
+        <tr><td>Provider failure</td><td>401/403/404/409/412/429/5xx, Retry-After, timeout, malformed body, partial CalDAV object failure.</td></tr>
+        <tr><td>Compatibility</td><td>Existing five tool names and input types, current REST routes, prefixed IDs, JSON response fields.</td></tr>
+        <tr><td>Security</td><td>Missing API key, explicit unsafe mode, constant-time key check, request body limits, server timeouts, no credentials in Docker context.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="success">
+    <h2>7. Manual QA Checklist</h2>
+    <ul class="checklist">
+      <li>Confirm Google, Microsoft, and Apple test calendars are empty/dedicated.</li>
+      <li>Confirm no test attendee is a real person and notification policy is <code>none</code>.</li>
+      <li>Create, read, update, clear fields, and delete timed and all-day events.</li>
+      <li>Create a DST-crossing weekly series; verify local wall-clock time in provider UI.</li>
+      <li>Modify one occurrence and verify the parent and adjacent instances are unchanged.</li>
+      <li>Preview then execute a following mutation; verify old/new series boundaries and returned IDs.</li>
+      <li>Create reminders, attachments, Meet, colors, visibility, transparency, and guest controls on Google.</li>
+      <li>Exercise supported Google special event types and verify rejected immutable/unsupported changes.</li>
+      <li>Force a stale ETag and verify conflict rather than overwrite.</li>
+      <li>Force one provider unavailable during fan-out and verify partial status rather than empty success.</li>
+      <li>Clean up every created test event using captured provider IDs.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>8. Risks and Edge Cases</h2>
+    <ul>
+      <li><strong>This-and-following is not atomic.</strong> Preview, idempotency marker, ETag, compensation, and recovery output reduce but cannot eliminate partial-failure risk.</li>
+      <li><strong>Following resets later exceptions in Google.</strong> Preview must enumerate and warn about affected exceptions before mutation.</li>
+      <li><strong>Microsoft notification suppression may be impossible for attendee writes.</strong> Safety wins: reject rather than send unexpectedly.</li>
+      <li><strong>Provider recurrence models differ.</strong> Strict capabilities prevent lossy best-effort translation.</li>
+      <li><strong>Time-zone names differ between Graph and IANA.</strong> Only explicit tested mappings are accepted.</li>
+      <li><strong>Apple Family Sharing remains higher latency.</strong> Concurrency is bounded and failures become visible.</li>
+      <li><strong>Google conference creation is asynchronous.</strong> A pending conference is a valid result, not a failed Meet creation.</li>
+      <li><strong>Special Google event types have account/calendar restrictions.</strong> Capabilities and preflight validation are necessary, but provider permission errors remain possible.</li>
+      <li><strong>Legacy notification behavior changes from “all” to “none”.</strong> This is an intentional safety correction and must be documented prominently.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9. Rollback Plan</h2>
+    <ol>
+      <li>Keep V2 registration behind a configuration switch until manual QA is complete.</li>
+      <li>Do not remove legacy tools or routes during this project.</li>
+      <li>Treat each phase as a deployable rollback boundary; retain the previous image tag, not only <code>latest</code>.</li>
+      <li>If V2 fails in production, disable V2 routing and redeploy the previous artifact while retaining safe auth/notification fixes.</li>
+      <li>For a partial following mutation, use returned old/new series IDs and recovery action to remove overlap or complete the trim.</li>
+      <li>No database migration exists; rollback does not require data transformation.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>10. Assumptions and Resolved Questions</h2>
+    <ul>
+      <li>The product goal is a convenient multi-provider MCP, not a literal wrapper around every Google Calendar resource.</li>
+      <li>Google is the first complete event reference provider; Microsoft and Apple expose truthful portable subsets.</li>
+      <li>V2 tools are preferred over breaking existing MCP schemas.</li>
+      <li>Notification policy defaults to <code>none</code>.</li>
+      <li>Recurrence supports <code>series</code>, <code>single</code>, and recoverable <code>following</code>.</li>
+      <li>Provider writes during QA require a separate explicit confirmation and dedicated calendars.</li>
+      <li>Commits, pushes, PRs, and deployment require separate explicit permission. Phase checkpoints only prepare and show diffs.</li>
+    </ul>
+    <p><strong>Open questions:</strong> none blocking implementation. Provider behavior that cannot be determined from local fakes must remain disabled until verified on dedicated test calendars.</p>
+  </section>
+
+  <section>
+    <h2>11. Primary API References</h2>
+    <ul>
+      <li><a href="https://developers.google.com/workspace/calendar/api/v3/reference/events">Google Calendar Events resource and methods</a></li>
+      <li><a href="https://developers.google.com/workspace/calendar/api/guides/recurringevents">Google recurring events and this-and-following guidance</a></li>
+      <li><a href="https://developers.google.com/workspace/calendar/api/guides/event-types">Google event types and restrictions</a></li>
+      <li><a href="https://developers.google.com/workspace/calendar/api/guides/calendar-status">Google focus-time, out-of-office, and working-location events</a></li>
+      <li><a href="https://developers.google.com/workspace/calendar/api/guides/create-events">Google event creation, attachments, and conference behavior</a></li>
+    </ul>
+  </section>
+
+  <section class="success">
+    <h2>12. Implementation Record — 2026-08-10</h2>
+    <p><strong>Status:</strong> implementation and local automated/container verification are complete in the isolated worktree. Provider-visible writes and manual recurrence QA remain intentionally unrun until dedicated test calendars and notification safety are explicitly confirmed.</p>
+    <h3>What actually changed</h3>
+    <ul>
+      <li>Added fail-closed shared auth, constant-time API-key comparison, request-size limits, HTTP timeouts, graceful shutdown, provider client timeouts, atomic token persistence, and Docker context hygiene.</li>
+      <li>Corrected Google and Graph pagination, Microsoft UTC conversion, Apple href identity/fallback failures, prefixed-ID validation, fan-out completeness, and presence-aware legacy updates.</li>
+      <li>Added typed V2 domain DTOs, presence-aware patches, recurrence validation, capabilities, stable API errors, page/source status, application use cases, MCP tools, and REST routes behind <code>ENABLE_V2</code>.</li>
+      <li>Implemented the Google event lifecycle: series/expanded/both reads, instances, create/update/delete, search, RSVP, move, import, reminders, attachments, Meet, colors, guest permissions, extended properties, special event types, notification policies, and ETags.</li>
+      <li>Implemented previewed and recoverable Google <code>following</code> mutations with an idempotency marker, forced-no-notification replacement creation, ETag-guarded trim, compensation, and explicit recovery metadata.</li>
+      <li>Added truthful Microsoft and Apple V2 subsets. Potentially notifying or lossy writes are rejected through capabilities or typed <code>unsupported_capability</code> errors.</li>
+      <li>Updated README and environment examples with rollout and real-data safety guidance. Legacy APIs remain registered.</li>
+    </ul>
+    <h3>Verification run</h3>
+    <pre><code>go test -race -count=1 ./...       # exit 0; all packages passed
+go vet ./...                       # exit 0
+CGO_ENABLED=0 go build ./...       # exit 0
+docker build -t calendar-mcp:local . # exit 0
+
+# disposable local container, fake credentials, no provider API calls
+GET  /health                       # 200
+POST /mcp without API key          # 401
+GET  REST /api/calendars no key    # 401</code></pre>
+    <h3>Known limitations and follow-ups</h3>
+    <ul>
+      <li>Google <code>following</code> rejects series containing <code>RDATE</code>; splitting arbitrary explicit recurrence dates without overlap is not implemented.</li>
+      <li>Google warns that future exceptions reset after a split; preview currently reports this warning but does not return a separate enumerated exception-impact list.</li>
+      <li>Microsoft V2 exposes expanded reads and safe portable non-recurring writes. Portable recurrence writes, RSVP, move, and import remain disabled rather than translated lossily.</li>
+      <li>Apple V2 exposes series-level recurrence and safe attendee-free writes. Local expansion/instance mutation and ETag preconditions remain disabled.</li>
+      <li>Provider-visible manual QA, DST matrices against provider UIs, deliberate partial-failure injection against a real test calendar, and deployment are not performed in this implementation pass.</li>
+      <li>No commit, push, PR, deployment, or real calendar mutation was performed.</li>
+    </ul>
+    <h3>Rollback</h3>
+    <p>Keep <code>ENABLE_V2=false</code> to expose only compatibility APIs. The foundational auth and notification safety changes are independent of V2 registration. No database or data migration exists.</p>
+  </section>
+
+  <section class="approval">
+    <h2>13. Approval Gate</h2>
+    <p><strong>Implementation must not start until the user explicitly approves this HTML plan.</strong></p>
+    <p>Approval authorizes production-code changes described here, but does not authorize commits, pushes, PR creation, deployment, or writes to real calendars. Those actions require separate explicit permission.</p>
+    <p>After implementation, update this same file with actual changes, commands and results, known limitations, remaining risks, and follow-up recommendations.</p>
+  </section>
+</main>
+</body>
+</html>

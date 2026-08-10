@@ -3,19 +3,23 @@ package restapi
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
+	"calendar-mcp/internal/application"
+	"calendar-mcp/internal/auth"
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/httpx"
 )
 
 type Server struct {
-	reg    *calendar.Registry
-	apiKey string
+	reg      *calendar.Registry
+	app      *application.Service
+	auth     auth.Options
+	enableV2 bool
 }
 
-func New(reg *calendar.Registry, apiKey string) *Server {
-	return &Server{reg: reg, apiKey: apiKey}
+func New(reg *calendar.Registry, app *application.Service, apiKey string, allowUnauthenticated, enableV2 bool) *Server {
+	return &Server{reg: reg, app: app, auth: auth.Options{APIKey: apiKey, AllowUnauthenticated: allowUnauthenticated}, enableV2: enableV2}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -29,25 +33,11 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	return s.withAuth(mux)
-}
-
-func (s *Server) withAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.apiKey == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if key == "" {
-			key = r.Header.Get("X-API-Key")
-		}
-		if key != s.apiKey {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	if s.enableV2 {
+		registerV2Routes(mux, s.app)
+	}
+	limited := httpx.LimitRequestBody(mux, httpx.DefaultMaxRequestBodyBytes)
+	return auth.Middleware(s.auth)(limited)
 }
 
 // GET /api/calendars
@@ -107,7 +97,6 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-
 	if req.CalendarID == "" || req.Title == "" || req.Start == "" || req.End == "" {
 		writeError(w, http.StatusBadRequest, "calendar_id, title, start, end are required")
 		return
@@ -147,15 +136,19 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Title       *string             `json:"title"`
-		Start       *string             `json:"start"`
-		End         *string             `json:"end"`
-		Description *string             `json:"description"`
-		Location    *string             `json:"location"`
-		Attendees   []calendar.Attendee `json:"attendees"`
+		Title       *string              `json:"title"`
+		Start       *string              `json:"start"`
+		End         *string              `json:"end"`
+		Description *string              `json:"description"`
+		Location    *string              `json:"location"`
+		Attendees   *[]calendar.Attendee `json:"attendees"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if (req.Start == nil) != (req.End == nil) {
+		writeError(w, http.StatusBadRequest, "start and end must be provided together")
 		return
 	}
 

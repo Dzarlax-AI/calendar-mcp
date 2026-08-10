@@ -2,6 +2,7 @@ package google
 
 import (
 	"net/http"
+	"time"
 
 	"golang.org/x/oauth2"
 	googleOAuth "golang.org/x/oauth2/google"
@@ -28,5 +29,7 @@ func newHTTPClient(store *token.FileStore, cfg *oauth2.Config, refreshToken stri
 		initial = saved
 	}
 	ts := store.TokenSource(cfg, initial)
-	return oauth2.NewClient(nil, ts)
+	client := oauth2.NewClient(nil, ts)
+	client.Timeout = 30 * time.Second
+	return client
 }

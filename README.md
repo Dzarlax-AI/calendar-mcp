@@ -6,10 +6,10 @@ Unified Calendar MCP server that aggregates Google Calendar, Microsoft 365, and 
 
 ## Features
 
-- **Google Calendar** — full CRUD via Calendar API v3 (OAuth2)
-- **Microsoft 365** — full CRUD via Graph REST API (OAuth2)
-- **Apple iCloud** — full CRUD via CalDAV protocol (app-specific password)
-- **Unified interface** — all calendars accessible through 5 MCP tools
+- **Google Calendar V2** — recurrence series and instances, search, RSVP, import, move, Meet, attachments, reminders, special event types, ETags, and recoverable this-and-following
+- **Microsoft 365** — safe portable CRUD and Teams meetings via Graph REST API (OAuth2), with unsupported V2 fields rejected explicitly
+- **Apple iCloud** — safe series-level CRUD and iCalendar recurrence via CalDAV (app-specific password)
+- **Unified interface** — five compatibility tools plus typed V2 lifecycle tools
 - **Provider-prefixed IDs** — `google:primary`, `microsoft:<id>`, `apple:<path>`
 - **Concurrent fan-out** — `get_events` without calendar_id queries all providers in parallel
 
@@ -23,6 +23,22 @@ Unified Calendar MCP server that aggregates Google Calendar, Microsoft 365, and 
 | `update_event` | Partial update of an existing event |
 | `delete_event` | Delete an event |
 
+The compatibility tools remain available. Set `ENABLE_V2=true` to additionally expose:
+
+| V2 tool | Description |
+|---|---|
+| `get_calendar_capabilities` | Report the exact operations, fields, scopes, and notification policies supported by a calendar |
+| `get_events_v2` / `get_event_v2` | Read typed events with recurrence identity, provider metadata, pagination, and completeness |
+| `get_event_instances_v2` | Read bounded occurrences of a recurring Google series |
+| `search_events_v2` | Search one calendar or fan out across configured providers |
+| `create_event_v2` | Create a typed event; notifications default to `none` |
+| `update_event_v2` / `delete_event_v2` | Mutate `series`, `single`, or recoverable Google `following` scope |
+| `respond_to_event_v2` | RSVP as the authenticated Google user |
+| `move_event_v2` | Move a supported Google event between Google calendars |
+| `import_event_v2` | Import an external Google event using `ical_uid` |
+
+Google `following` is deliberately reported as a composite operation. It supports a non-mutating preview, ETag protection, an idempotency marker, compensation, and explicit recovery metadata if both the primary and compensating writes fail. `RDATE`-based series are rejected for this workflow because they cannot yet be split without ambiguity.
+
 `create_event` and `update_event` accept either RFC3339 datetimes (`2026-05-30T13:00:00+02:00`) or all-day date-only boundaries (`2026-05-30` to `2026-05-31`). Date-only boundaries are exclusive on `end`, matching Google Calendar and iCalendar all-day semantics.
 
 ## Configuration
@@ -33,6 +49,9 @@ All configuration via environment variables:
 # Server
 LISTEN_ADDR=:8080
 API_KEY=your-api-key
+# Explicit local-only opt-in when no API key is configured
+ALLOW_UNAUTHENTICATED=false
+ENABLE_V2=false
 TOKEN_DIR=/app/data
 
 # Google Calendar (OAuth2 — Desktop app type)
@@ -60,6 +79,10 @@ REST_LISTEN_ADDR=
 ```
 
 Providers are enabled automatically when their credentials are set. You can run with any subset (e.g. Google only).
+
+The server fails closed when `API_KEY` is empty. Set `ALLOW_UNAUTHENTICATED=true` only for an intentionally unauthenticated local instance. Keep `ENABLE_V2=false` during rollout, then enable it after clients have adopted the typed schemas. Legacy Google writes suppress attendee notifications by default. V2 writes default to `notification_policy=none`; providers reject writes whose scheduling side effects cannot be suppressed.
+
+Before any first run against real calendar data, use an empty dedicated test calendar, omit attendees, and verify `notification_policy=none`. The automated test suite uses local fake HTTP/CalDAV endpoints and never writes to real providers.
 
 By default fan-out skips Google ICS subscriptions (typical M365/iCloud mirrors) to avoid duplicate events. Explicit `calendar_id` queries and `list_calendars` are unaffected — downstream consumers like Granola can still reach them.
 
@@ -129,6 +152,7 @@ cmd/server/main.go          — entrypoint, provider init, HTTP server
 internal/
   config/                    — env-based configuration
   calendar/                  — Provider interface, Registry (prefix routing), types
+  application/               — V2 use cases, capabilities, fan-out, recoverable composite operations
   google/                    — Google Calendar API v3 + OAuth2
   microsoft/                 — Microsoft Graph REST API + OAuth2
   apple/                     — CalDAV client (go-webdav) + basic auth

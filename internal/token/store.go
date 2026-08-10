@@ -3,6 +3,7 @@ package token
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -42,7 +43,41 @@ func (s *FileStore) Save(tok *oauth2.Token) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0600)
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create token directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".token-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary token file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set token permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write token: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync token: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close token: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("replace token: %w", err)
+	}
+	removeTemp = false
+	return nil
 }
 
 // TokenSource returns an oauth2.TokenSource that persists refreshed tokens to disk.
@@ -68,9 +103,18 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.last == nil || tok.AccessToken != p.last.AccessToken {
-		_ = p.store.Save(tok)
+	if p.last == nil || tokenChanged(tok, p.last) {
+		if err := p.store.Save(tok); err != nil {
+			return nil, fmt.Errorf("persist refreshed token: %w", err)
+		}
 		p.last = tok
 	}
 	return tok, nil
+}
+
+func tokenChanged(current, previous *oauth2.Token) bool {
+	return current.AccessToken != previous.AccessToken ||
+		current.RefreshToken != previous.RefreshToken ||
+		current.TokenType != previous.TokenType ||
+		!current.Expiry.Equal(previous.Expiry)
 }

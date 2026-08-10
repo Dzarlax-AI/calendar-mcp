@@ -1,16 +1,19 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
-	ListenAddr     string
-	RESTListenAddr string
-	APIKey         string
-	TokenDir       string
+	ListenAddr           string
+	RESTListenAddr       string
+	APIKey               string
+	AllowUnauthenticated bool
+	EnableV2             bool
+	TokenDir             string
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -34,10 +37,12 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:     envStr("LISTEN_ADDR", ":8080"),
-		RESTListenAddr: envStr("REST_LISTEN_ADDR", ""),
-		APIKey:         envStr("API_KEY", ""),
-		TokenDir:       envStr("TOKEN_DIR", "/app/data"),
+		ListenAddr:           envStr("LISTEN_ADDR", ":8080"),
+		RESTListenAddr:       envStr("REST_LISTEN_ADDR", ""),
+		APIKey:               envStr("API_KEY", ""),
+		AllowUnauthenticated: envBool("ALLOW_UNAUTHENTICATED", false),
+		EnableV2:             envBool("ENABLE_V2", false),
+		TokenDir:             envStr("TOKEN_DIR", "/app/data"),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
@@ -55,6 +60,13 @@ func Load() *Config {
 		ExcludeCalendarIDs:       envList("EXCLUDE_CALENDAR_IDS"),
 		IncludeImportedCalendars: envBool("INCLUDE_IMPORTED_CALENDARS", false),
 	}
+}
+
+func (c *Config) Validate() error {
+	if c.APIKey == "" && !c.AllowUnauthenticated {
+		return fmt.Errorf("API_KEY is required unless ALLOW_UNAUTHENTICATED=true")
+	}
+	return nil
 }
 
 func envBool(key string, def bool) bool {

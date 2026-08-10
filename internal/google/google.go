@@ -31,37 +31,40 @@ func New(clientID, clientSecret, refreshToken, tokenDir string) (*Provider, erro
 func (p *Provider) Name() string { return "google" }
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
-	list, err := p.svc.CalendarList.List().Context(ctx).Do()
+	var cals []calendar.Calendar
+	err := p.svc.CalendarList.List().Pages(ctx, func(list *gcal.CalendarList) error {
+		for _, c := range list.Items {
+			cals = append(cals, calendar.Calendar{
+				ID:       c.Id,
+				Name:     c.Summary,
+				Color:    c.BackgroundColor,
+				Primary:  c.Primary,
+				ReadOnly: c.AccessRole == "reader" || c.AccessRole == "freeBusyReader",
+			})
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	var cals []calendar.Calendar
-	for _, c := range list.Items {
-		cals = append(cals, calendar.Calendar{
-			ID:       c.Id,
-			Name:     c.Summary,
-			Color:    c.BackgroundColor,
-			Primary:  c.Primary,
-			ReadOnly: c.AccessRole == "reader" || c.AccessRole == "freeBusyReader",
-		})
 	}
 	return cals, nil
 }
 
 func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
-	events, err := p.svc.Events.List(calendarID).
+	call := p.svc.Events.List(calendarID).
 		TimeMin(start.Format(time.RFC3339)).
 		TimeMax(end.Format(time.RFC3339)).
 		SingleEvents(true).
-		OrderBy("startTime").
-		Context(ctx).
-		Do()
+		OrderBy("startTime")
+	var result []calendar.Event
+	err := call.Pages(ctx, func(events *gcal.Events) error {
+		for _, e := range events.Items {
+			result = append(result, convertEvent(e, calendarID))
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	var result []calendar.Event
-	for _, e := range events.Items {
-		result = append(result, convertEvent(e, calendarID))
 	}
 	return result, nil
 }
@@ -83,7 +86,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 			},
 		}
 	}
-	insertCall := p.svc.Events.Insert(calendarID, ge).SendUpdates("all").Context(ctx)
+	insertCall := p.svc.Events.Insert(calendarID, ge).SendUpdates("none").Context(ctx)
 	if event.VideoCall {
 		insertCall = insertCall.ConferenceDataVersion(1)
 	}
@@ -121,10 +124,13 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if event.End != nil {
 		existing.End = toGoogleEventTime(*event.End, allDay)
 	}
-	if len(event.Attendees) > 0 {
-		existing.Attendees = toGoogleAttendees(event.Attendees)
+	if event.Attendees != nil {
+		existing.Attendees = toGoogleAttendees(*event.Attendees)
+		if len(*event.Attendees) == 0 {
+			existing.ForceSendFields = append(existing.ForceSendFields, "Attendees")
+		}
 	}
-	updated, err := p.svc.Events.Update(calendarID, eventID, existing).SendUpdates("all").Context(ctx).Do()
+	updated, err := p.svc.Events.Update(calendarID, eventID, existing).SendUpdates("none").Context(ctx).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +139,7 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 }
 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	return p.svc.Events.Delete(calendarID, eventID).Context(ctx).Do()
+	return p.svc.Events.Delete(calendarID, eventID).SendUpdates("none").Context(ctx).Do()
 }
 
 func toGoogleEventTime(t time.Time, allDay bool) *gcal.EventDateTime {

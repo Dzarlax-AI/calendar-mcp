@@ -45,11 +45,11 @@ type EventCreate struct {
 }
 
 type EventUpdate struct {
-	Title       *string    `json:"title,omitempty"`
-	Start       *time.Time `json:"start,omitempty"`
-	End         *time.Time `json:"end,omitempty"`
-	AllDay      *bool      `json:"all_day,omitempty"`
-	Description *string    `json:"description,omitempty"`
-	Location    *string    `json:"location,omitempty"`
-	Attendees   []Attendee `json:"attendees,omitempty"`
+	Title       *string     `json:"title,omitempty"`
+	Start       *time.Time  `json:"start,omitempty"`
+	End         *time.Time  `json:"end,omitempty"`
+	AllDay      *bool       `json:"all_day,omitempty"`
+	Description *string     `json:"description,omitempty"`
+	Location    *string     `json:"location,omitempty"`
+	Attendees   *[]Attendee `json:"attendees,omitempty"`
 }

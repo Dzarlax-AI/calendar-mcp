@@ -2,8 +2,8 @@ package calendar
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +17,7 @@ type Registry struct {
 }
 
 type RegistryOptions struct {
-	ExcludeIDs              []string
+	ExcludeIDs               []string
 	IncludeImportedCalendars bool
 }
 
@@ -47,6 +47,10 @@ func (r *Registry) skipInFanOut(prefixedID string) bool {
 		return true
 	}
 	return false
+}
+
+func (r *Registry) SkipInFanOut(prefixedID string) bool {
+	return r.skipInFanOut(prefixedID)
 }
 
 func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
@@ -82,7 +86,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 	// Fan-out to all providers concurrently.
 	type result struct {
 		events []Event
-		err    error
+		errs   []error
 	}
 	ch := make(chan result, len(r.providers))
 	var wg sync.WaitGroup
@@ -92,34 +96,36 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 			defer wg.Done()
 			cals, err := p.ListCalendars(ctx)
 			if err != nil {
-				ch <- result{err: fmt.Errorf("%s: %w", p.Name(), err)}
+				ch <- result{errs: []error{fmt.Errorf("%s: %w", p.Name(), err)}}
 				return
 			}
 			var all []Event
+			var providerErrs []error
 			for _, cal := range cals {
 				if r.skipInFanOut(p.Name() + ":" + cal.ID) {
 					continue
 				}
 				events, err := p.GetEvents(ctx, cal.ID, start, end)
 				if err != nil {
-					log.Printf("GetEvents fan-out (skipping calendar %s:%s): %v", p.Name(), cal.ID, err)
+					providerErrs = append(providerErrs, fmt.Errorf("%s:%s: %w", p.Name(), cal.ID, err))
 					continue
 				}
 				all = append(all, events...)
 			}
 			prefixEvents(all, p.Name())
-			ch <- result{events: all}
+			ch <- result{events: all, errs: providerErrs}
 		}(p)
 	}
 	go func() { wg.Wait(); close(ch) }()
 
 	var all []Event
+	var fanOutErrs []error
 	for res := range ch {
-		if res.err != nil {
-			log.Printf("GetEvents fan-out (skipping): %v", res.err)
-			continue
-		}
 		all = append(all, res.events...)
+		fanOutErrs = append(fanOutErrs, res.errs...)
+	}
+	if len(fanOutErrs) > 0 {
+		return nil, fmt.Errorf("get events fan-out incomplete: %w", errors.Join(fanOutErrs...))
 	}
 	return all, nil
 }
@@ -144,7 +150,10 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if err != nil {
 		return nil, err
 	}
-	_, rawEventID := splitPrefix(eventID)
+	rawEventID, err := validateEventProvider(provider.Name(), eventID)
+	if err != nil {
+		return nil, err
+	}
 	ev, err := provider.UpdateEvent(ctx, rawCalID, rawEventID, event)
 	if err != nil {
 		return nil, err
@@ -160,8 +169,25 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	if err != nil {
 		return err
 	}
-	_, rawEventID := splitPrefix(eventID)
+	rawEventID, err := validateEventProvider(provider.Name(), eventID)
+	if err != nil {
+		return err
+	}
 	return provider.DeleteEvent(ctx, rawCalID, rawEventID)
+}
+
+func validateEventProvider(providerName, eventID string) (string, error) {
+	eventProvider, rawEventID := splitPrefix(eventID)
+	if eventProvider == "" {
+		return rawEventID, nil
+	}
+	if eventProvider != providerName {
+		return "", fmt.Errorf("event provider %q does not match calendar provider %q", eventProvider, providerName)
+	}
+	if rawEventID == "" {
+		return "", fmt.Errorf("event ID is empty")
+	}
+	return rawEventID, nil
 }
 
 func (r *Registry) resolve(prefixedID string) (Provider, string, error) {
@@ -171,6 +197,14 @@ func (r *Registry) resolve(prefixedID string) (Provider, string, error) {
 		return nil, "", fmt.Errorf("unknown provider: %s", name)
 	}
 	return p, rawID, nil
+}
+
+func (r *Registry) Resolve(prefixedID string) (Provider, string, error) {
+	return r.resolve(prefixedID)
+}
+
+func (r *Registry) Providers() []Provider {
+	return append([]Provider(nil), r.providers...)
 }
 
 func splitPrefix(id string) (string, string) {
