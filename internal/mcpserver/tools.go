@@ -158,8 +158,10 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		if _, ok := args["attendees"]; ok {
 			raw := req.GetString("attendees", "")
 			var attendees []calendar.Attendee
-			if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
-				return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+			if raw != "" {
+				if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
+					return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+				}
 			}
 			upd.Attendees = &attendees
 		}

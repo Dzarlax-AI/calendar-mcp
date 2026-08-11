@@ -50,6 +50,9 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if err != nil {
 		return nil, err
 	}
+	if err := validateGooglePatchForEventType(existing, request.Patch); err != nil {
+		return nil, invalidGoogleArgument(err)
+	}
 	if err := applyGooglePatch(existing, request.Patch); err != nil {
 		return nil, invalidGoogleArgument(err)
 	}
@@ -58,8 +61,12 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	}
 
 	call := p.svc.Events.Update(request.Ref.CalendarID, request.Ref.EventID, existing).SendUpdates(sendUpdates)
-	if request.ExpectedETag != "" {
-		call.Header().Set("If-Match", request.ExpectedETag)
+	etag := request.ExpectedETag
+	if etag == "" {
+		etag = existing.Etag
+	}
+	if etag != "" {
+		call.Header().Set("If-Match", etag)
 	}
 	if request.Patch.Attachments.Present || len(existing.Attachments) > 0 {
 		call = call.SupportsAttachments(true)
@@ -269,6 +276,15 @@ func validateGoogleEventType(event *gcal.Event, creating bool) error {
 		}
 		return nil
 	case "birthday":
+		if event.BirthdayProperties == nil {
+			return fmt.Errorf("birthday events require birthday properties")
+		}
+		if creating && (event.BirthdayProperties.Contact != "" || event.BirthdayProperties.CustomTypeName != "") {
+			return fmt.Errorf("birthday contact and customTypeName are read-only")
+		}
+		if creating && event.BirthdayProperties.Type != "" && event.BirthdayProperties.Type != "birthday" {
+			return fmt.Errorf("only birthday type can be created")
+		}
 		if event.Start == nil || event.End == nil || event.Start.Date == "" || event.End.Date == "" {
 			return fmt.Errorf("birthday events must be all-day")
 		}
@@ -290,10 +306,24 @@ func validateGoogleEventType(event *gcal.Event, creating bool) error {
 		if event.Start == nil || event.End == nil || event.Start.DateTime == "" || event.End.DateTime == "" {
 			return fmt.Errorf("%s events must be timed", typeName)
 		}
+		if typeName == "focusTime" && event.FocusTimeProperties == nil {
+			return fmt.Errorf("focusTime events require focus time properties")
+		}
+		if typeName == "outOfOffice" && event.OutOfOfficeProperties == nil {
+			return fmt.Errorf("outOfOffice events require out of office properties")
+		}
 		if event.Transparency != "" && event.Transparency != "opaque" {
 			return fmt.Errorf("%s events must be opaque", typeName)
 		}
 	case "workingLocation":
+		if event.WorkingLocationProperties == nil || event.WorkingLocationProperties.Type == "" {
+			return fmt.Errorf("workingLocation events require properties.type")
+		}
+		switch event.WorkingLocationProperties.Type {
+		case "homeOffice", "officeLocation", "customLocation":
+		default:
+			return fmt.Errorf("invalid workingLocation properties.type %q", event.WorkingLocationProperties.Type)
+		}
 		if event.Start == nil || event.End == nil {
 			return fmt.Errorf("workingLocation events require start and end")
 		}
@@ -312,6 +342,25 @@ func validateGoogleEventType(event *gcal.Event, creating bool) error {
 		}
 	default:
 		return fmt.Errorf("unsupported google event_type %q", event.EventType)
+	}
+	return nil
+}
+
+func validateGooglePatchForEventType(event *gcal.Event, patch calendar.EventPatchV2) error {
+	typeName := normalizedGoogleEventType(event.EventType)
+	if typeName == "fromGmail" {
+		if patch.Title.Present || patch.Description.Present || patch.Location.Present || patch.Start.Present || patch.End.Present || patch.Recurrence.Present || patch.Attendees.Present || patch.Attachments.Present || patch.Conference.Present || patch.GuestPermissions.Present {
+			return fmt.Errorf("fromGmail updates are limited to color, reminders, visibility, transparency, and extended properties")
+		}
+	}
+	if patch.Google.Present && !patch.Google.Null {
+		value := patch.Google.Value
+		if typeName == "birthday" && value.Birthday != nil {
+			return fmt.Errorf("birthday properties are immutable after creation")
+		}
+		if typeName == "fromGmail" && (value.EventType != "" || value.Birthday != nil || value.FocusTime != nil || value.OutOfOffice != nil || value.WorkingLocation != nil) {
+			return fmt.Errorf("fromGmail special event properties are immutable")
+		}
 	}
 	return nil
 }

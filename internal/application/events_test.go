@@ -96,12 +96,39 @@ func TestListEventsFanOutMarksProviderFailureIncomplete(t *testing.T) {
 	}
 }
 
+func TestListEventsFanOutDrainsProviderPagination(t *testing.T) {
+	p := &stubV2Provider{name: "google", calendars: []calendar.Calendar{{ID: "primary"}}}
+	p.pageFunc = func(request calendar.ListEventsRequestV2) calendar.Page[calendar.EventV2] {
+		p.pageTokens = append(p.pageTokens, request.PageToken)
+		if request.PageToken == "" {
+			return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "second", Start: calendar.EventTime{Date: "2026-08-11"}}}, NextPageToken: "next", Complete: true}
+		}
+		return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "first", Start: calendar.EventTime{Date: "2026-08-10"}}}, Complete: true}
+	}
+	service := New(calendar.NewRegistry([]calendar.Provider{p}))
+
+	page, err := service.ListEvents(context.Background(), calendar.ListEventsRequestV2{
+		Start: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC), PageToken: "must-not-be-forwarded",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "google:first" || page.Items[1].ID != "google:second" {
+		t.Fatalf("items = %#v", page.Items)
+	}
+	if len(p.pageTokens) != 2 || p.pageTokens[0] != "" || p.pageTokens[1] != "next" {
+		t.Fatalf("page tokens = %#v", p.pageTokens)
+	}
+}
+
 type stubV2Provider struct {
 	name          string
 	calendars     []calendar.Calendar
 	calendarsErr  error
 	capabilities  calendar.CalendarCapabilities
 	page          calendar.Page[calendar.EventV2]
+	pageFunc      func(calendar.ListEventsRequestV2) calendar.Page[calendar.EventV2]
+	pageTokens    []string
 	created       *calendar.EventV2
 	createCalled  bool
 	createRequest calendar.CreateEventRequestV2
@@ -124,7 +151,11 @@ func (p *stubV2Provider) DeleteEvent(context.Context, string, string) error { re
 func (p *stubV2Provider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
 	return p.capabilities, nil
 }
-func (p *stubV2Provider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+
+func (p *stubV2Provider) ListEventsV2(_ context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	if p.pageFunc != nil {
+		return p.pageFunc(request), nil
+	}
 	return p.page, nil
 }
 func (p *stubV2Provider) GetEventV2(context.Context, calendar.EventRef) (*calendar.EventV2, error) {

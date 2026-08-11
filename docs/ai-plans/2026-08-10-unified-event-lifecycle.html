@@ -448,14 +448,28 @@ GET  REST /api/calendars no key    # 401</code></pre>
       <li>Microsoft V2 exposes expanded reads and safe portable non-recurring writes. Portable recurrence writes, RSVP, move, and import remain disabled rather than translated lossily.</li>
       <li>Apple V2 exposes series-level recurrence and safe attendee-free writes. Local expansion/instance mutation and ETag preconditions remain disabled.</li>
       <li>Provider-visible manual QA, DST matrices against provider UIs, deliberate partial-failure injection against a real test calendar, and deployment are not performed in this implementation pass.</li>
-      <li>No commit, push, PR, deployment, or real calendar mutation was performed.</li>
+      <li>The implementation was committed and opened as PR #2 after explicit approval. No deployment or real calendar mutation was performed.</li>
     </ul>
     <h3>Rollback</h3>
     <p>Keep <code>ENABLE_V2=false</code> to expose only compatibility APIs. The foundational auth and notification safety changes are independent of V2 registration. No database or data migration exists.</p>
   </section>
 
+  <section class="success">
+    <h2>13. Review Hardening Record — 2026-08-11</h2>
+    <p><strong>Status:</strong> actionable PR feedback was applied as one cumulative review pass. Provider-visible writes remain intentionally unrun.</p>
+    <ul>
+      <li>Hardened Microsoft notification safety by inspecting existing attendees before updates, derived write capabilities from calendar access, validated Graph pagination origins, and rejected mixed all-day/timed patches.</li>
+      <li>Made fan-out list/search drain provider pagination with context, repetition, and page-count guards; results and source statuses are deterministically sorted.</li>
+      <li>Corrected following-scope COUNT handling to include cancelled recurrence slots and added bounded, cycle-safe instance pagination.</li>
+      <li>Restricted Apple object hrefs to the selected calendar, retained typed not-found failures, preserved recurrence parameters, and extended the Family Sharing fallback to V2 series reads.</li>
+      <li>Added strict RDATE/EXDATE validation, implicit Google update ETag preconditions, special-event mutation restrictions, secure token-mode repair, complete provider configuration checks, and regression tests.</li>
+      <li>Disabled the MCP listener write timeout for long-lived Streamable HTTP responses while retaining a bounded REST write timeout.</li>
+    </ul>
+    <p><strong>Rollback:</strong> revert the single review-fix commit. No schema, migration, deployment, or provider data change is involved.</p>
+  </section>
+
   <section class="approval">
-    <h2>13. Approval Gate</h2>
+    <h2>14. Approval Gate</h2>
     <p><strong>Implementation must not start until the user explicitly approves this HTML plan.</strong></p>
     <p>Approval authorizes production-code changes described here, but does not authorize commits, pushes, PR creation, deployment, or writes to real calendars. Those actions require separate explicit permission.</p>
     <p>After implementation, update this same file with actual changes, commands and results, known limitations, remaining risks, and follow-up recommendations.</p>

@@ -24,6 +24,15 @@ func (s *FileStore) Load() (*oauth2.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode().Perm() != 0o600 {
+		if err := os.Chmod(s.path, 0o600); err != nil {
+			return nil, fmt.Errorf("secure token permissions: %w", err)
+		}
+	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return nil, err

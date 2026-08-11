@@ -168,7 +168,8 @@ func (s *Service) searchEventsFanOut(ctx context.Context, request calendar.Searc
 				}
 				providerRequest := request
 				providerRequest.CalendarID = cal.ID
-				page, err := search.SearchEventsV2(ctx, providerRequest)
+				providerRequest.PageToken = ""
+				page, err := drainSearchPages(ctx, providerRequest, search.SearchEventsV2)
 				if err != nil {
 					results <- failedSource(provider.Name(), prefixedID, err)
 					continue
@@ -190,5 +191,31 @@ func (s *Service) searchEventsFanOut(ctx context.Context, request calendar.Searc
 			page.Complete = false
 		}
 	}
+	sortFanOutPage(&page)
 	return page
+}
+
+func drainSearchPages(ctx context.Context, request calendar.SearchEventsRequestV2, fetch func(context.Context, calendar.SearchEventsRequestV2) (calendar.Page[calendar.EventV2], error)) (calendar.Page[calendar.EventV2], error) {
+	result := calendar.Page[calendar.EventV2]{Complete: true}
+	seen := make(map[string]struct{})
+	for pageNumber := 0; pageNumber < maxFanOutPages; pageNumber++ {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		page, err := fetch(ctx, request)
+		if err != nil {
+			return result, err
+		}
+		result.Items = append(result.Items, page.Items...)
+		result.Complete = result.Complete && page.Complete
+		if page.NextPageToken == "" {
+			return result, nil
+		}
+		if _, duplicate := seen[page.NextPageToken]; duplicate {
+			return result, fmt.Errorf("provider pagination repeated page token")
+		}
+		seen[page.NextPageToken] = struct{}{}
+		request.PageToken = page.NextPageToken
+	}
+	return result, fmt.Errorf("provider pagination exceeded %d pages", maxFanOutPages)
 }

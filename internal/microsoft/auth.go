@@ -1,6 +1,7 @@
 package microsoft
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -32,7 +33,7 @@ func newHTTPClient(store *token.FileStore, cfg *oauth2.Config, refreshToken stri
 		initial = saved
 	}
 	ts := store.TokenSource(cfg, initial)
-	client := oauth2.NewClient(nil, ts)
+	client := oauth2.NewClient(context.Background(), ts)
 	client.Timeout = 30 * time.Second
 	return client
 }

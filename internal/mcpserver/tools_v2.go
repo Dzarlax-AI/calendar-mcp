@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -345,13 +346,19 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 }
 
 func v2Result(value any) *mcp.CallToolResult {
-	data, _ := json.Marshal(value)
+	data, err := json.Marshal(value)
+	if err != nil {
+		result := mcp.NewToolResultError("encode structured result: " + err.Error())
+		result.IsError = true
+		return result
+	}
 	return mcp.NewToolResultStructured(value, string(data))
 }
 
 func v2Error(err error) *mcp.CallToolResult {
 	var structured any = calendar.NewAPIError(calendar.ErrorProviderUnavailable, err.Error())
-	if apiErr, ok := err.(*calendar.APIError); ok {
+	var apiErr *calendar.APIError
+	if errors.As(err, &apiErr) {
 		structured = apiErr
 	}
 	result := mcp.NewToolResultStructured(structured, err.Error())

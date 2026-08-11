@@ -25,3 +25,10 @@ func TestValidateAllowsAPIKey(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
+
+func TestValidateRejectsPartialProviderConfiguration(t *testing.T) {
+	cfg := &Config{APIKey: "secret", GoogleClientID: "client"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted a provider with missing client secret")
+	}
+}

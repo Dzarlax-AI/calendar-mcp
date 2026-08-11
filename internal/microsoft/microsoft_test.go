@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +91,12 @@ func TestGetEventsFollowsNextLink(t *testing.T) {
 }
 
 func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
-	capabilities, err := (&Provider{}).Capabilities(context.Background(), "calendar")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"canEdit":true}`)
+	}))
+	defer server.Close()
+	capabilities, err := (&Provider{client: server.Client(), baseURL: server.URL}).Capabilities(context.Background(), "calendar")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +108,25 @@ func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
 	}
 }
 
+func TestMicrosoftUpdateRejectsNoneWhenExistingEventHasAttendees(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected mutation request: %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"event","attendees":[{"emailAddress":{"address":"person@example.com"}}],"start":{"dateTime":"2026-08-10T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-10T10:00:00","timeZone":"UTC"}}`)
+	}))
+	defer server.Close()
+	p := &Provider{client: server.Client(), baseURL: server.URL}
+	_, err := p.UpdateEventV2(context.Background(), calendar.UpdateEventRequestV2{
+		Ref: calendar.EventRef{CalendarID: "calendar", EventID: "event"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone,
+		Patch: calendar.EventPatchV2{Title: calendar.PatchField[string]{Present: true, Value: "Changed"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot suppress update messages") {
+		t.Fatalf("UpdateEventV2() error = %v", err)
+	}
+}
+
 func TestMicrosoftV2RejectsAttendeesWithoutExplicitNotifications(t *testing.T) {
 	p := &Provider{}
 	_, err := p.CreateEventV2(context.Background(), calendar.CreateEventRequestV2{Event: calendar.EventCreateV2{
@@ -110,6 +135,16 @@ func TestMicrosoftV2RejectsAttendeesWithoutExplicitNotifications(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("CreateEventV2() allowed attendee write with notification_policy=none")
+	}
+}
+
+func TestValidateGraphPageURLRejectsDifferentOrigin(t *testing.T) {
+	p := &Provider{baseURL: "https://graph.microsoft.com/v1.0"}
+	if err := p.validateGraphPageURL("https://graph.microsoft.com/v1.0/me/events?$skiptoken=safe"); err != nil {
+		t.Fatalf("valid Graph URL rejected: %v", err)
+	}
+	if err := p.validateGraphPageURL("https://example.test/collect-token"); err == nil {
+		t.Fatal("external Graph page URL was accepted")
 	}
 }
 

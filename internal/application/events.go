@@ -142,7 +142,7 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	}
 	result, err := v2.UpdateEventV2(ctx, request)
 	if err != nil {
-		return nil, providerFailure(provider.Name(), rawRef.CalendarID, err)
+		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	return result, nil
@@ -170,7 +170,7 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	}
 	result, err := v2.DeleteEventV2(ctx, request)
 	if err != nil {
-		return nil, providerFailure(provider.Name(), rawRef.CalendarID, err)
+		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	return result, nil
@@ -221,7 +221,13 @@ func (s *Service) validateScopeAndNotifications(ctx context.Context, provider ca
 	if !capabilities.SupportsScope(scope) {
 		return unsupported(provider.Name(), prefixedCalendarID, fmt.Sprintf("mutation scope %q is not supported", scope))
 	}
-	return s.validateNotifications(ctx, provider, rawCalendarID, prefixedCalendarID, policy)
+	if *policy == "" {
+		*policy = calendar.NotificationsNone
+	}
+	if !capabilities.SupportsNotifications(*policy) {
+		return unsupported(provider.Name(), prefixedCalendarID, fmt.Sprintf("notification policy %q is not supported", *policy))
+	}
+	return nil
 }
 
 func validateRange(start, end time.Time) error {
@@ -303,7 +309,8 @@ func unsupported(provider, calendarID, message string) *calendar.APIError {
 }
 
 func providerFailure(provider, calendarID string, err error) *calendar.APIError {
-	if apiErr, ok := err.(*calendar.APIError); ok {
+	var apiErr *calendar.APIError
+	if errors.As(err, &apiErr) {
 		return apiErr
 	}
 	var googleErr *googleapi.Error

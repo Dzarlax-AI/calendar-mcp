@@ -3,6 +3,8 @@ package apple
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,13 +36,27 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Start, End: request.End}}}}
 	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
 	if err != nil {
-		return calendar.Page[calendar.EventV2]{}, err
+		if !strings.Contains(err.Error(), "XML syntax error") && !strings.Contains(err.Error(), "unexpected EOF") {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
+		log.Printf("apple: calendar %s V2 REPORT failed, trying PROPFIND+GET fallback: %v", request.CalendarID, err)
+		objects, err = p.getCalendarObjectsFallback(ctx, request.CalendarID)
+		if err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
 	}
 	items := make([]calendar.EventV2, 0, len(objects))
 	for _, object := range objects {
 		for _, event := range object.Data.Events() {
 			if event.Props.Get(ical.PropRecurrenceID) != nil {
 				continue
+			}
+			if event.Props.Get(ical.PropRecurrenceRule) == nil {
+				start, startErr := event.DateTimeStart(nil)
+				end, endErr := event.DateTimeEnd(nil)
+				if startErr != nil || endErr != nil || !end.After(request.Start) || !start.Before(request.End) {
+					continue
+				}
 			}
 			items = append(items, appleEventV2(event, request.CalendarID, object.Path, object.ETag))
 		}
@@ -49,10 +65,16 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 }
 
 func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
-	path := appleObjectPath(ref.CalendarID, ref.EventID)
+	path, err := appleObjectPath(ref.CalendarID, ref.EventID)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
 	objects, err := p.client.MultiGetCalendar(ctx, ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
-	if err != nil || len(objects) == 0 {
-		return nil, fmt.Errorf("event not found: %s", ref.EventID)
+	if err != nil {
+		return nil, err
+	}
+	if len(objects) == 0 {
+		return nil, notFoundApple(ref)
 	}
 	for _, event := range objects[0].Data.Events() {
 		if event.Props.Get(ical.PropRecurrenceID) == nil {
@@ -60,7 +82,7 @@ func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*cale
 			return &result, nil
 		}
 	}
-	return nil, fmt.Errorf("event has no master VEVENT: %s", ref.EventID)
+	return nil, notFoundApple(ref)
 }
 
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
@@ -79,7 +101,10 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 	container.Props.SetText(ical.PropVersion, "2.0")
 	container.Props.SetText(ical.PropProductID, "-//calendar-mcp//EN")
 	container.Children = append(container.Children, event.Component)
-	path := appleObjectPath(request.CalendarID, uid)
+	path, err := appleObjectPath(request.CalendarID, uid)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
 	object, err := p.client.PutCalendarObject(ctx, path, container)
 	if err != nil {
 		return nil, err
@@ -98,10 +123,16 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Attendees.Present || request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.Conference.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
 		return nil, unsupportedApple("the patch contains fields not supported safely by Apple V2")
 	}
-	path := appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)
+	path, err := appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
 	objects, err := p.client.MultiGetCalendar(ctx, request.Ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
-	if err != nil || len(objects) == 0 {
-		return nil, fmt.Errorf("event not found: %s", request.Ref.EventID)
+	if err != nil {
+		return nil, err
+	}
+	if len(objects) == 0 {
+		return nil, notFoundApple(request.Ref)
 	}
 	var master *ical.Event
 	for _, value := range objects[0].Data.Events() {
@@ -112,7 +143,20 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		}
 	}
 	if master == nil {
-		return nil, fmt.Errorf("event has no master VEVENT")
+		return nil, notFoundApple(request.Ref)
+	}
+	start := appleEventTimeV2(master.Props.Get(ical.PropDateTimeStart))
+	end := appleEventTimeV2(master.Props.Get(ical.PropDateTimeEnd))
+	if request.Patch.Start.Present && !request.Patch.Start.Null {
+		start = request.Patch.Start.Value
+	}
+	if request.Patch.End.Present && !request.Patch.End.Null {
+		end = request.Patch.End.Value
+	}
+	if request.Patch.Start.Present || request.Patch.End.Present {
+		if err := calendar.ValidateEventTimeRangeV2(start, end); err != nil {
+			return nil, invalidApple(err)
+		}
 	}
 	applyAppleTextPatch(master, ical.PropSummary, request.Patch.Title)
 	applyAppleTextPatch(master, ical.PropDescription, request.Patch.Description)
@@ -155,10 +199,18 @@ func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEve
 	if request.ExpectedETag != "" {
 		return nil, unsupportedApple("Apple V2 optimistic locking is unavailable")
 	}
-	if err := p.client.RemoveAll(ctx, appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)); err != nil {
+	path, err := appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
+	if err := p.client.RemoveAll(ctx, path); err != nil {
 		return nil, err
 	}
 	return &calendar.OperationResult{Status: "completed"}, nil
+}
+
+func notFoundApple(ref calendar.EventRef) error {
+	return &calendar.APIError{Code: calendar.ErrorNotFound, Message: "event not found", Provider: "apple", CalendarID: ref.CalendarID, EventID: ref.EventID}
 }
 
 func validateAppleWrite(event calendar.EventCreateV2) error {
@@ -227,9 +279,19 @@ func setAppleRecurrence(event *ical.Event, lines []string) error {
 	}
 	for _, line := range lines {
 		name, value, _ := strings.Cut(line, ":")
-		property := strings.SplitN(strings.ToUpper(name), ";", 2)[0]
+		parts := strings.Split(name, ";")
+		property := strings.ToUpper(parts[0])
 		prop := ical.NewProp(property)
 		prop.Value = value
+		for _, parameter := range parts[1:] {
+			key, values, ok := strings.Cut(parameter, "=")
+			if !ok {
+				return fmt.Errorf("malformed recurrence parameter %q", parameter)
+			}
+			for _, item := range strings.Split(values, ",") {
+				prop.Params.Add(key, item)
+			}
+		}
 		event.Props.Add(prop)
 	}
 	return nil
@@ -246,13 +308,26 @@ func appleEventV2(event ical.Event, calendarID, path, etag string) calendar.Even
 	result := calendar.EventV2{ID: path, CalendarID: calendarID, ICalUID: uid, ETag: etag, Title: title, Description: description, Location: location, Visibility: visibility, Transparency: transparency, Status: status, Start: appleEventTimeV2(event.Props.Get(ical.PropDateTimeStart)), End: appleEventTimeV2(event.Props.Get(ical.PropDateTimeEnd))}
 	for _, name := range []string{ical.PropRecurrenceRule, ical.PropRecurrenceDates, ical.PropExceptionDates} {
 		for _, prop := range event.Props.Values(name) {
-			result.Recurrence = append(result.Recurrence, name+":"+prop.Value)
+			result.Recurrence = append(result.Recurrence, recurrenceLine(&prop))
 		}
 	}
 	for _, attendee := range parseAttendees(event) {
 		result.Attendees = append(result.Attendees, calendar.AttendeeV2{PersonV2: calendar.PersonV2{Email: attendee.Email, Name: attendee.Name}, Status: attendee.Status, Optional: attendee.Optional})
 	}
 	return result
+}
+
+func recurrenceLine(prop *ical.Prop) string {
+	name := prop.Name
+	keys := make([]string, 0, len(prop.Params))
+	for key := range prop.Params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		name += ";" + key + "=" + strings.Join(prop.Params.Values(key), ",")
+	}
+	return name + ":" + prop.Value
 }
 
 func appleEventTimeV2(prop *ical.Prop) calendar.EventTime {

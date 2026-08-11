@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"calendar-mcp/internal/application"
@@ -98,11 +99,17 @@ func registerV2Routes(mux *http.ServeMux, app *application.Service) {
 			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid end: "+err.Error()))
 			return
 		}
+		maxResults, err := parseMaxResults(r)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
 		page, err := app.ListEvents(r.Context(), calendar.ListEventsRequestV2{
 			CalendarID: calendarID, Start: start, End: end,
 			View:        calendar.RecurrenceView(r.URL.Query().Get("view")),
 			ShowDeleted: r.URL.Query().Get("show_deleted") == "true",
 			PageToken:   r.URL.Query().Get("page_token"),
+			MaxResults:  maxResults,
 		})
 		if err != nil {
 			writeAPIError(w, err)
@@ -179,9 +186,14 @@ func registerV2Routes(mux *http.ServeMux, app *application.Service) {
 			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid end: "+err.Error()))
 			return
 		}
+		maxResults, err := parseMaxResults(r)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
 		page, err := app.GetEventInstances(r.Context(), calendar.InstancesRequestV2{
 			Ref:   calendar.EventRef{CalendarID: r.URL.Query().Get("calendar_id"), EventID: r.URL.Query().Get("event_id")},
-			Start: start, End: end, ShowDeleted: r.URL.Query().Get("show_deleted") == "true", PageToken: r.URL.Query().Get("page_token"),
+			Start: start, End: end, ShowDeleted: r.URL.Query().Get("show_deleted") == "true", PageToken: r.URL.Query().Get("page_token"), MaxResults: maxResults,
 		})
 		if err != nil {
 			writeAPIError(w, err)
@@ -207,9 +219,14 @@ func registerV2Routes(mux *http.ServeMux, app *application.Service) {
 				return
 			}
 		}
+		maxResults, err := parseMaxResults(r)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
 		page, err := app.SearchEvents(r.Context(), calendar.SearchEventsRequestV2{
 			CalendarID: r.URL.Query().Get("calendar_id"), Query: r.URL.Query().Get("query"), Start: start, End: end,
-			EventTypes: r.URL.Query()["event_type"], ShowDeleted: r.URL.Query().Get("show_deleted") == "true", PageToken: r.URL.Query().Get("page_token"),
+			EventTypes: r.URL.Query()["event_type"], ShowDeleted: r.URL.Query().Get("show_deleted") == "true", PageToken: r.URL.Query().Get("page_token"), MaxResults: maxResults,
 		})
 		if err != nil {
 			writeAPIError(w, err)
@@ -273,10 +290,22 @@ func decodeJSON(r *http.Request, target any) error {
 	return decoder.Decode(target)
 }
 
+func parseMaxResults(r *http.Request) (int64, error) {
+	value := r.URL.Query().Get("max_results")
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, calendar.NewAPIError(calendar.ErrorInvalidArgument, "max_results must be a positive integer")
+	}
+	return parsed, nil
+}
+
 func writeAPIError(w http.ResponseWriter, err error) {
-	apiErr := &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: err.Error(), Retryable: true, Cause: err}
-	if errors.As(err, &apiErr) {
-		// errors.As populated apiErr.
+	apiErr := &calendar.APIError{}
+	if !errors.As(err, &apiErr) {
+		apiErr = &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: err.Error(), Retryable: true, Cause: err}
 	}
 	status := http.StatusBadGateway
 	switch apiErr.Code {

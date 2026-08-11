@@ -8,14 +8,23 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"calendar-mcp/internal/calendar"
 )
 
-func (p *Provider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
+func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
+	var metadata struct {
+		CanEdit bool `json:"canEdit"`
+	}
+	path := fmt.Sprintf("/me/calendars/%s?$select=canEdit", url.PathEscape(calendarID))
+	if err := p.getWithParamsAndHeaders(ctx, path, nil, nil, &metadata); err != nil {
+		return calendar.CalendarCapabilities{}, err
+	}
 	return calendar.CalendarCapabilities{
-		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: true, Update: true, Delete: true},
+		ReadOnly:             !metadata.CanEdit,
+		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: metadata.CanEdit, Update: metadata.CanEdit, Delete: metadata.CanEdit},
 		Fields:               calendar.FieldCapabilities{Conferencing: true, OptimisticLocking: true},
 		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone, calendar.NotificationsAll},
@@ -35,6 +44,9 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	params := url.Values{"startDateTime": {request.Start.UTC().Format(time.RFC3339)}, "endDateTime": {request.End.UTC().Format(time.RFC3339)}, "$top": {strconv.FormatInt(msPageSize(request.MaxResults), 10)}}
 	next := p.baseURL + path + "?" + params.Encode()
 	if request.PageToken != "" {
+		if err := p.validateGraphPageURL(request.PageToken); err != nil {
+			return calendar.Page[calendar.EventV2]{}, invalidMicrosoft(err)
+		}
 		next = request.PageToken
 	}
 	var response struct {
@@ -44,11 +56,35 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
+	if response.NextLink != "" {
+		if err := p.validateGraphPageURL(response.NextLink); err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
+	}
 	items := make([]calendar.EventV2, 0, len(response.Value))
 	for i := range response.Value {
 		items = append(items, response.Value[i].toEventV2(request.CalendarID))
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true}, nil
+}
+
+func (p *Provider) validateGraphPageURL(value string) error {
+	pageURL, err := url.Parse(value)
+	if err != nil || !pageURL.IsAbs() {
+		return fmt.Errorf("invalid Graph page URL")
+	}
+	baseURL, err := url.Parse(p.baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid Graph base URL")
+	}
+	if pageURL.Scheme != baseURL.Scheme || pageURL.Host != baseURL.Host {
+		return fmt.Errorf("Graph page URL points outside the configured API origin")
+	}
+	basePath := strings.TrimSuffix(baseURL.Path, "/")
+	if basePath != "" && pageURL.Path != basePath && !strings.HasPrefix(pageURL.Path, basePath+"/") {
+		return fmt.Errorf("Graph page URL points outside the configured API path")
+	}
+	return nil
 }
 
 func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
@@ -88,6 +124,31 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Attendees.Present && request.Notifications != calendar.NotificationsAll {
 		return nil, unsupportedMicrosoft("Microsoft attendee changes require notification_policy=all")
 	}
+	existing, err := p.GetEventV2(ctx, request.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if request.Notifications == calendar.NotificationsNone && len(existing.Attendees) > 0 {
+		return nil, unsupportedMicrosoft("Microsoft cannot suppress update messages for events with attendees; use notification_policy=all")
+	}
+	start, end := existing.Start, existing.End
+	if request.Patch.Start.Present {
+		if request.Patch.Start.Null {
+			return nil, invalidMicrosoft(fmt.Errorf("start cannot be null"))
+		}
+		start = request.Patch.Start.Value
+	}
+	if request.Patch.End.Present {
+		if request.Patch.End.Null {
+			return nil, invalidMicrosoft(fmt.Errorf("end cannot be null"))
+		}
+		end = request.Patch.End.Value
+	}
+	if request.Patch.Start.Present || request.Patch.End.Present {
+		if err := calendar.ValidateEventTimeRangeV2(start, end); err != nil {
+			return nil, invalidMicrosoft(err)
+		}
+	}
 	patch := map[string]any{}
 	if request.Patch.Title.Present {
 		patch["subject"] = request.Patch.Title.Value
@@ -99,20 +160,21 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		patch["location"] = graphLocation{DisplayName: request.Patch.Location.Value}
 	}
 	if request.Patch.Start.Present {
-		value, allDay, err := graphTimeFromEventTime(request.Patch.Start.Value)
+		value, _, err := graphTimeFromEventTime(request.Patch.Start.Value)
 		if err != nil {
 			return nil, invalidMicrosoft(err)
 		}
 		patch["start"] = value
-		patch["isAllDay"] = allDay
 	}
 	if request.Patch.End.Present {
-		value, allDay, err := graphTimeFromEventTime(request.Patch.End.Value)
+		value, _, err := graphTimeFromEventTime(request.Patch.End.Value)
 		if err != nil {
 			return nil, invalidMicrosoft(err)
 		}
 		patch["end"] = value
-		patch["isAllDay"] = allDay
+	}
+	if request.Patch.Start.Present || request.Patch.End.Present {
+		patch["isAllDay"] = start.IsAllDay()
 	}
 	if request.Patch.Attendees.Present {
 		patch["attendees"] = toGraphAttendeesV2(request.Patch.Attendees.Value)

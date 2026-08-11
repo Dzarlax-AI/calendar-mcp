@@ -27,6 +27,25 @@ func TestFileStoreSaveCreatesDirectoryAndUsesPrivatePermissions(t *testing.T) {
 	}
 }
 
+func TestFileStoreLoadRepairsExistingPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "google_token.json")
+	if err := os.WriteFile(path, []byte(`{"access_token":"access"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewFileStore(dir, "google")
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("permissions = %o, want 600", got)
+	}
+}
+
 func TestPersistingTokenSourceReturnsSaveFailure(t *testing.T) {
 	root := t.TempDir()
 	blockingFile := filepath.Join(root, "not-a-directory")

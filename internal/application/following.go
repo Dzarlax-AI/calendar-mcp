@@ -14,6 +14,8 @@ import (
 
 const followingOperationProperty = "calendarMcpOperation"
 
+const maxFollowingPages = 1000
+
 func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provider, request calendar.UpdateEventRequestV2, prefixedCalendarID string) (*calendar.OperationResult, error) {
 	v2 := provider.(calendar.EventProviderV2)
 	instances, ok := provider.(calendar.InstanceProviderV2)
@@ -183,21 +185,36 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 func followingOccurrence(ctx context.Context, provider calendar.InstanceProviderV2, ref calendar.EventRef, effective calendar.EventTime, parentStart calendar.EventTime) (calendar.EventV2, int, error) {
 	effectiveInstant, _ := effective.Instant()
 	windowEnd := effectiveInstant.Add(48 * time.Hour)
-	page, err := provider.GetEventInstancesV2(ctx, calendar.InstancesRequestV2{Ref: ref, Start: effectiveInstant.Add(-time.Second), End: windowEnd, MaxResults: 50})
-	if err != nil {
-		return calendar.EventV2{}, 0, err
-	}
 	var occurrence *calendar.EventV2
-	for i := range page.Items {
-		candidate := page.Items[i]
-		original := candidate.Start
-		if candidate.OriginalStart != nil {
-			original = *candidate.OriginalStart
+	token := ""
+	seen := make(map[string]struct{})
+	for pageNumber := 0; pageNumber < maxFollowingPages; pageNumber++ {
+		if err := ctx.Err(); err != nil {
+			return calendar.EventV2{}, 0, err
 		}
-		if eventTimesEqual(original, effective) {
-			occurrence = &candidate
+		page, err := provider.GetEventInstancesV2(ctx, calendar.InstancesRequestV2{Ref: ref, Start: effectiveInstant.Add(-time.Second), End: windowEnd, ShowDeleted: true, PageToken: token, MaxResults: 2500})
+		if err != nil {
+			return calendar.EventV2{}, 0, err
+		}
+		for i := range page.Items {
+			candidate := page.Items[i]
+			original := candidate.Start
+			if candidate.OriginalStart != nil {
+				original = *candidate.OriginalStart
+			}
+			if eventTimesEqual(original, effective) {
+				occurrence = &candidate
+				break
+			}
+		}
+		if occurrence != nil || page.NextPageToken == "" {
 			break
 		}
+		if _, duplicate := seen[page.NextPageToken]; duplicate {
+			return calendar.EventV2{}, 0, fmt.Errorf("instance pagination repeated page token")
+		}
+		seen[page.NextPageToken] = struct{}{}
+		token = page.NextPageToken
 	}
 	if occurrence == nil {
 		return calendar.EventV2{}, 0, invalidArgument("effective_from does not identify an occurrence in the series")
@@ -214,22 +231,26 @@ func countPriorInstances(ctx context.Context, provider calendar.InstanceProvider
 	effectiveInstant, _ := effective.Instant()
 	elapsed := 0
 	token := ""
-	for {
-		prior, err := provider.GetEventInstancesV2(ctx, calendar.InstancesRequestV2{Ref: ref, Start: parentInstant.Add(-time.Second), End: effectiveInstant, PageToken: token, MaxResults: 2500})
+	seen := make(map[string]struct{})
+	for pageNumber := 0; pageNumber < maxFollowingPages; pageNumber++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		prior, err := provider.GetEventInstancesV2(ctx, calendar.InstancesRequestV2{Ref: ref, Start: parentInstant.Add(-time.Second), End: effectiveInstant, ShowDeleted: true, PageToken: token, MaxResults: 2500})
 		if err != nil {
 			return 0, err
 		}
-		for _, item := range prior.Items {
-			if item.Status != "cancelled" {
-				elapsed++
-			}
-		}
+		elapsed += len(prior.Items)
 		token = prior.NextPageToken
 		if token == "" {
-			break
+			return elapsed, nil
 		}
+		if _, duplicate := seen[token]; duplicate {
+			return 0, fmt.Errorf("instance pagination repeated page token")
+		}
+		seen[token] = struct{}{}
 	}
-	return elapsed, nil
+	return 0, fmt.Errorf("instance pagination exceeded %d pages", maxFollowingPages)
 }
 
 func splitRecurrence(lines []string, effective calendar.EventTime, elapsed int) ([]string, []string, error) {

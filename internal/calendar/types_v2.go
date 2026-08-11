@@ -31,6 +31,9 @@ func (t EventTime) Validate() error {
 	if t.TimeZone == "" {
 		return fmt.Errorf("time_zone is required for date_time")
 	}
+	if t.TimeZone == "Local" {
+		return fmt.Errorf("time_zone must be an explicit IANA name, not Local")
+	}
 	if _, err := time.LoadLocation(t.TimeZone); err != nil {
 		return fmt.Errorf("invalid IANA time_zone %q: %w", t.TimeZone, err)
 	}

@@ -102,11 +102,17 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		if err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
 		}
-		items = append(items, page.Items...)
+		// The series view already contains every standalone event. Keep only
+		// recurrence instances from the expanded view, which makes the two
+		// independently paginated streams disjoint across page boundaries.
+		for _, item := range page.Items {
+			if item.RecurringEventID != "" {
+				items = append(items, item)
+			}
+		}
 		state.ExpandedToken = page.NextPageToken
 		state.ExpandedDone = page.NextPageToken == ""
 	}
-	items = deduplicateEvents(items)
 	nextToken := ""
 	if !state.SeriesDone || !state.ExpandedDone {
 		nextToken, err = encodeBothPageToken(state)
@@ -186,19 +192,6 @@ func decodeBothPageToken(value string) (bothPageState, error) {
 		return bothPageState{}, fmt.Errorf("invalid both-view page token: %w", err)
 	}
 	return state, nil
-}
-
-func deduplicateEvents(values []calendar.EventV2) []calendar.EventV2 {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]calendar.EventV2, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value.ID]; ok {
-			continue
-		}
-		seen[value.ID] = struct{}{}
-		result = append(result, value)
-	}
-	return result
 }
 
 var _ calendar.EventProviderV2 = (*Provider)(nil)

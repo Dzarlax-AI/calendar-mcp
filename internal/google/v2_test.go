@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	gcal "google.golang.org/api/calendar/v3"
 
 	"calendar-mcp/internal/calendar"
 )
@@ -102,6 +103,36 @@ func TestUpdateEventV2UsesETagAndExplicitlyClearsFields(t *testing.T) {
 	}
 }
 
+func TestUpdateEventV2UsesFetchedETagWhenExpectedETagIsOmitted(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"id":"event","etag":"fetched-etag","start":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"end":{"dateTime":"2026-08-10T10:00:00+02:00","timeZone":"Europe/Belgrade"}}`)
+			return
+		}
+		if got := r.Header.Get("If-Match"); got != "fetched-etag" {
+			t.Errorf("If-Match = %q, want fetched-etag", got)
+		}
+		_, _ = io.WriteString(w, `{"id":"event","etag":"updated","start":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"end":{"dateTime":"2026-08-10T10:00:00+02:00","timeZone":"Europe/Belgrade"}}`)
+	})
+	defer closeServer()
+	_, err := provider.UpdateEventV2(context.Background(), calendar.UpdateEventRequestV2{
+		Ref: calendar.EventRef{CalendarID: "primary", EventID: "event"}, Scope: calendar.ScopeSeries,
+		Patch: calendar.EventPatchV2{Title: calendar.PatchField[string]{Present: true, Value: "Changed"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFromGmailPatchRejectsImmutableFields(t *testing.T) {
+	event := &gcal.Event{EventType: "fromGmail"}
+	err := validateGooglePatchForEventType(event, calendar.EventPatchV2{Title: calendar.PatchField[string]{Present: true, Value: "Changed"}})
+	if err == nil {
+		t.Fatal("fromGmail title update was accepted")
+	}
+}
+
 func TestDeleteEventV2UsesNotificationPolicyAndETag(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -144,13 +175,13 @@ func TestCreateEventV2RejectsInvalidSpecialEventsBeforeNetwork(t *testing.T) {
 		{
 			name: "birthday without yearly recurrence",
 			event: calendar.EventCreateV2{Start: calendar.EventTime{Date: "2026-08-10"}, End: calendar.EventTime{Date: "2026-08-11"},
-				Google: &calendar.GoogleEventExtension{EventType: "birthday"}},
+				Google: &calendar.GoogleEventExtension{EventType: "birthday", Birthday: map[string]any{"type": "birthday"}}},
 			want: "annual RRULE",
 		},
 		{
 			name: "working location across multiple days",
 			event: calendar.EventCreateV2{Start: calendar.EventTime{Date: "2026-08-10"}, End: calendar.EventTime{Date: "2026-08-12"},
-				Google: &calendar.GoogleEventExtension{EventType: "workingLocation"}},
+				Google: &calendar.GoogleEventExtension{EventType: "workingLocation", WorkingLocation: map[string]any{"type": "homeOffice"}}},
 			want: "exactly one day",
 		},
 	}
@@ -193,13 +224,4 @@ func TestFromGoogleEventV2PreservesRecurrenceAndTimezone(t *testing.T) {
 
 func timedEventTime(value string) calendar.EventTime {
 	return calendar.EventTime{DateTime: value, TimeZone: "Europe/Belgrade"}
-}
-
-func mustParseTime(t *testing.T, value string) time.Time {
-	t.Helper()
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return parsed
 }

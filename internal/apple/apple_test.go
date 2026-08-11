@@ -68,7 +68,11 @@ func TestCreateEventResponsePreservesAllDay(t *testing.T) {
 func TestAppleObjectPathPreservesCalDAVHref(t *testing.T) {
 	const href = "/123/calendars/family/resource-name.ics"
 
-	if got := appleObjectPath("/123/calendars/family/", href); got != href {
+	got, err := appleObjectPath("/123/calendars/family/", href)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != href {
 		t.Fatalf("appleObjectPath() = %q, want %q", got, href)
 	}
 }
@@ -76,8 +80,18 @@ func TestAppleObjectPathPreservesCalDAVHref(t *testing.T) {
 func TestAppleObjectPathSupportsLegacyUID(t *testing.T) {
 	const calendarPath = "/123/calendars/family/"
 
-	if got := appleObjectPath(calendarPath, "legacy-uid"); got != calendarPath+"legacy-uid.ics" {
+	got, err := appleObjectPath(calendarPath, "legacy-uid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != calendarPath+"legacy-uid.ics" {
 		t.Fatalf("appleObjectPath() = %q, want %q", got, calendarPath+"legacy-uid.ics")
+	}
+}
+
+func TestAppleObjectPathRejectsCrossCalendarHref(t *testing.T) {
+	if _, err := appleObjectPath("/123/calendars/family/", "/123/calendars/private/event.ics"); err == nil {
+		t.Fatal("appleObjectPath() accepted an href outside the requested calendar")
 	}
 }
 
@@ -106,6 +120,26 @@ func TestAppleV2MapsRecurrenceAndHref(t *testing.T) {
 	result := appleEventV2(*event, "/calendar/", "/calendar/object.ics", `"etag"`)
 	if result.ID != "/calendar/object.ics" || result.ICalUID != "uid" || len(result.Recurrence) != 1 || result.Recurrence[0] != "RRULE:FREQ=WEEKLY;BYDAY=MO" {
 		t.Fatalf("appleEventV2() = %#v", result)
+	}
+}
+
+func TestAppleV2PreservesRecurrenceParameters(t *testing.T) {
+	event := ical.NewEvent()
+	date := ical.NewProp(ical.PropExceptionDates)
+	date.Params.Set("TZID", "Europe/Belgrade")
+	date.Value = "20260817T090000"
+	event.Props.Add(date)
+
+	result := appleEventV2(*event, "/calendar/", "/calendar/object.ics", "etag")
+	if len(result.Recurrence) != 1 || result.Recurrence[0] != "EXDATE;TZID=Europe/Belgrade:20260817T090000" {
+		t.Fatalf("recurrence = %#v", result.Recurrence)
+	}
+	restored := ical.NewEvent()
+	if err := setAppleRecurrence(restored, result.Recurrence); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.Props.Get(ical.PropExceptionDates).Params.Get("TZID"); got != "Europe/Belgrade" {
+		t.Fatalf("TZID = %q", got)
 	}
 }
 

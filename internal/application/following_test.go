@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -24,6 +25,33 @@ func TestSplitRecurrenceUsesUTCUntilForTimedSeries(t *testing.T) {
 	if !reflect.DeepEqual(futureRules, wantFuture) {
 		t.Fatalf("future rules = %#v, want %#v", futureRules, wantFuture)
 	}
+}
+
+func TestCountPriorInstancesIncludesCancelledSlotsAndDrainsPages(t *testing.T) {
+	provider := &instancePageStub{}
+	count, err := countPriorInstances(context.Background(), provider, calendar.EventRef{}, calendar.EventTime{Date: "2026-08-01"}, calendar.EventTime{Date: "2026-08-04"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("count = %d, want 3", count)
+	}
+	if len(provider.requests) != 2 || !provider.requests[0].ShowDeleted || provider.requests[1].PageToken != "next" {
+		t.Fatalf("requests = %#v", provider.requests)
+	}
+}
+
+type instancePageStub struct {
+	stubV2Provider
+	requests []calendar.InstancesRequestV2
+}
+
+func (p *instancePageStub) GetEventInstancesV2(_ context.Context, request calendar.InstancesRequestV2) (calendar.Page[calendar.EventV2], error) {
+	p.requests = append(p.requests, request)
+	if request.PageToken == "" {
+		return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{Status: "confirmed"}, {Status: "cancelled"}}, NextPageToken: "next", Complete: true}, nil
+	}
+	return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{Status: "confirmed"}}, Complete: true}, nil
 }
 
 func TestSplitRecurrenceRecomputesCount(t *testing.T) {

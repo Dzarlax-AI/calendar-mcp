@@ -179,6 +179,9 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 func validateEventProvider(providerName, eventID string) (string, error) {
 	eventProvider, rawEventID := splitPrefix(eventID)
 	if eventProvider == "" {
+		if rawEventID == "" {
+			return "", fmt.Errorf("event ID is empty")
+		}
 		return rawEventID, nil
 	}
 	if eventProvider != providerName {

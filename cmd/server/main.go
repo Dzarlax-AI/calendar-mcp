@@ -77,12 +77,12 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 	mcpserver.Register(mux, reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
-	servers := []*http.Server{newHTTPServer(cfg.ListenAddr, mux)}
+	servers := []*http.Server{newHTTPServer(cfg.ListenAddr, mux, 0)}
 
 	// Internal REST API on separate port (only exposed to Docker infra network)
 	if cfg.RESTListenAddr != "" {
 		rest := restapi.New(reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
-		servers = append(servers, newHTTPServer(cfg.RESTListenAddr, rest.Handler()))
+		servers = append(servers, newHTTPServer(cfg.RESTListenAddr, rest.Handler(), 2*time.Minute))
 		log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
 	}
 
@@ -92,13 +92,13 @@ func main() {
 	}
 }
 
-func newHTTPServer(addr string, handler http.Handler) *http.Server {
+func newHTTPServer(addr string, handler http.Handler, writeTimeout time.Duration) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      2 * time.Minute,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       time.Minute,
 	}
 }
@@ -117,9 +117,10 @@ func runServers(servers []*http.Server) error {
 		}()
 	}
 
-	var serveErr error
+	var serveErrs []error
 	select {
-	case serveErr = <-errCh:
+	case err := <-errCh:
+		serveErrs = append(serveErrs, err)
 	case <-ctx.Done():
 	}
 
@@ -131,11 +132,22 @@ func runServers(servers []*http.Server) error {
 			shutdownErrs = append(shutdownErrs, err)
 		}
 	}
+	for {
+		select {
+		case err := <-errCh:
+			serveErrs = append(serveErrs, err)
+		default:
+			goto errorsCollected
+		}
+	}
+
+errorsCollected:
+	var resultErrs []error
+	if len(serveErrs) > 0 {
+		resultErrs = append(resultErrs, fmt.Errorf("serve HTTP: %w", errors.Join(serveErrs...)))
+	}
 	if len(shutdownErrs) > 0 {
-		return fmt.Errorf("server shutdown: %w", errors.Join(shutdownErrs...))
+		resultErrs = append(resultErrs, fmt.Errorf("server shutdown: %w", errors.Join(shutdownErrs...)))
 	}
-	if serveErr != nil {
-		return fmt.Errorf("serve HTTP: %w", serveErr)
-	}
-	return nil
+	return errors.Join(resultErrs...)
 }
