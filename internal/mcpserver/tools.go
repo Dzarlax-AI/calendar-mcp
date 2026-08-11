@@ -105,18 +105,28 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		calID := req.GetString("calendar_id", "")
 		eventID := req.GetString("event_id", "")
+		args := req.GetArguments()
 
 		upd := calendar.EventUpdate{}
-		if v := req.GetString("title", ""); v != "" {
+		if _, ok := args["title"]; ok {
+			v := req.GetString("title", "")
 			upd.Title = &v
 		}
-		if v := req.GetString("description", ""); v != "" {
+		if _, ok := args["description"]; ok {
+			v := req.GetString("description", "")
 			upd.Description = &v
 		}
-		if v := req.GetString("location", ""); v != "" {
+		if _, ok := args["location"]; ok {
+			v := req.GetString("location", "")
 			upd.Location = &v
 		}
-		if v := req.GetString("start", ""); v != "" {
+		startValue, hasStart := args["start"]
+		endValue, hasEnd := args["end"]
+		if hasStart != hasEnd {
+			return mcp.NewToolResultError("start and end must be provided together"), nil
+		}
+		if hasStart {
+			v, _ := startValue.(string)
 			parsed, err := calendar.ParseEventTime(v)
 			if err != nil {
 				return mcp.NewToolResultError("invalid start: " + err.Error()), nil
@@ -127,7 +137,8 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 		}
-		if v := req.GetString("end", ""); v != "" {
+		if hasEnd {
+			v, _ := endValue.(string)
 			parsed, err := calendar.ParseEventTime(v)
 			if err != nil {
 				return mcp.NewToolResultError("invalid end: " + err.Error()), nil
@@ -144,12 +155,15 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			}
 		}
 
-		if raw := req.GetString("attendees", ""); raw != "" {
+		if _, ok := args["attendees"]; ok {
+			raw := req.GetString("attendees", "")
 			var attendees []calendar.Attendee
-			if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
-				return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+			if raw != "" {
+				if err := json.Unmarshal([]byte(raw), &attendees); err != nil {
+					return mcp.NewToolResultError("invalid attendees JSON: " + err.Error()), nil
+				}
 			}
-			upd.Attendees = attendees
+			upd.Attendees = &attendees
 		}
 
 		ev, err := reg.UpdateEvent(ctx, calID, eventID, upd)

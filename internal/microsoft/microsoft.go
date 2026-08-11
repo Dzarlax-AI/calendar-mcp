@@ -17,20 +17,21 @@ import (
 const graphBase = "https://graph.microsoft.com/v1.0"
 
 type Provider struct {
-	client *http.Client
+	client  *http.Client
+	baseURL string
 }
 
 func New(clientID, clientSecret, tenantID, refreshToken, tokenDir string) (*Provider, error) {
 	store := token.NewFileStore(tokenDir, "microsoft")
 	cfg := newOAuthConfig(clientID, clientSecret, tenantID)
 	client := newHTTPClient(store, cfg, refreshToken)
-	return &Provider{client: client}, nil
+	return &Provider{client: client, baseURL: graphBase}, nil
 }
 
 func (p *Provider) Name() string { return "microsoft" }
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
-	var resp struct {
+	type calendarPage struct {
 		Value []struct {
 			ID    string `json:"id"`
 			Name  string `json:"name"`
@@ -41,25 +42,36 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 			CanEdit           bool `json:"canEdit"`
 			IsDefaultCalendar bool `json:"isDefaultCalendar"`
 		} `json:"value"`
-	}
-	if err := p.get(ctx, "/me/calendars", &resp); err != nil {
-		return nil, err
+		NextLink string `json:"@odata.nextLink"`
 	}
 	var cals []calendar.Calendar
-	for _, c := range resp.Value {
-		cals = append(cals, calendar.Calendar{
-			ID:       c.ID,
-			Name:     c.Name,
-			Color:    c.Color,
-			Primary:  c.IsDefaultCalendar,
-			ReadOnly: !c.CanEdit,
-		})
+	next := p.baseURL + "/me/calendars"
+	seen := make(map[string]struct{})
+	for next != "" {
+		if _, ok := seen[next]; ok {
+			return nil, fmt.Errorf("Graph pagination repeated next link")
+		}
+		seen[next] = struct{}{}
+		var resp calendarPage
+		if err := p.getURLWithHeaders(ctx, next, nil, &resp); err != nil {
+			return nil, err
+		}
+		for _, c := range resp.Value {
+			cals = append(cals, calendar.Calendar{
+				ID:       c.ID,
+				Name:     c.Name,
+				Color:    c.Color,
+				Primary:  c.IsDefaultCalendar,
+				ReadOnly: !c.CanEdit,
+			})
+		}
+		next = resp.NextLink
 	}
 	return cals, nil
 }
 
 func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
-	path := fmt.Sprintf("/me/calendars/%s/calendarView", calendarID)
+	path := fmt.Sprintf("/me/calendars/%s/calendarView", url.PathEscape(calendarID))
 	params := url.Values{
 		"startDateTime": {start.UTC().Format("2006-01-02T15:04:05Z")},
 		"endDateTime":   {end.UTC().Format("2006-01-02T15:04:05Z")},
@@ -68,24 +80,40 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 		"$select":       {"id,subject,body,start,end,location,isAllDay,showAs,attendees,onlineMeeting"},
 	}
 
-	var resp struct {
-		Value []graphEvent `json:"value"`
+	type eventPage struct {
+		Value    []graphEvent `json:"value"`
+		NextLink string       `json:"@odata.nextLink"`
 	}
 	headers := http.Header{
 		"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`},
 	}
-	if err := p.getWithParamsAndHeaders(ctx, path, params, headers, &resp); err != nil {
-		return nil, err
-	}
 	var events []calendar.Event
-	for _, e := range resp.Value {
-		events = append(events, e.toEvent(calendarID))
+	next := p.baseURL + path + "?" + params.Encode()
+	seen := make(map[string]struct{})
+	for next != "" {
+		if _, ok := seen[next]; ok {
+			return nil, fmt.Errorf("Graph pagination repeated next link")
+		}
+		seen[next] = struct{}{}
+		var resp eventPage
+		if err := p.getURLWithHeaders(ctx, next, headers, &resp); err != nil {
+			return nil, err
+		}
+		for _, e := range resp.Value {
+			events = append(events, e.toEvent(calendarID))
+		}
+		next = resp.NextLink
 	}
 	return events, nil
 }
 
 func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event calendar.EventCreate) (*calendar.Event, error) {
-	path := fmt.Sprintf("/me/calendars/%s/events", calendarID)
+	if len(event.Attendees) > 0 {
+		return nil, fmt.Errorf("microsoft attendee writes require an explicit notification policy")
+	}
+	path := fmt.Sprintf("/me/calendars/%s/events", url.PathEscape(calendarID))
+	start := toGraphDateTime(event.Start)
+	end := toGraphDateTime(event.End)
 	body := graphEventCreate{
 		Subject:  event.Title,
 		IsAllDay: event.AllDay,
@@ -93,14 +121,8 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 			ContentType: "text",
 			Content:     event.Description,
 		},
-		Start: graphDateTime{
-			DateTime: event.Start.Format("2006-01-02T15:04:05"),
-			TimeZone: "UTC",
-		},
-		End: graphDateTime{
-			DateTime: event.End.Format("2006-01-02T15:04:05"),
-			TimeZone: "UTC",
-		},
+		Start: start,
+		End:   end,
 	}
 	if event.Location != "" {
 		body.Location = &graphLocation{DisplayName: event.Location}
@@ -120,7 +142,10 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 }
 
 func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, event calendar.EventUpdate) (*calendar.Event, error) {
-	path := fmt.Sprintf("/me/calendars/%s/events/%s", calendarID, eventID)
+	if event.Attendees != nil {
+		return nil, fmt.Errorf("microsoft attendee writes require an explicit notification policy")
+	}
+	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
 	patch := make(map[string]any)
 	if event.Title != nil {
 		patch["subject"] = *event.Title
@@ -132,18 +157,14 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 		patch["location"] = graphLocation{DisplayName: *event.Location}
 	}
 	if event.Start != nil {
-		patch["start"] = graphDateTime{DateTime: event.Start.Format("2006-01-02T15:04:05"), TimeZone: "UTC"}
+		patch["start"] = toGraphDateTime(*event.Start)
 	}
 	if event.End != nil {
-		patch["end"] = graphDateTime{DateTime: event.End.Format("2006-01-02T15:04:05"), TimeZone: "UTC"}
+		patch["end"] = toGraphDateTime(*event.End)
 	}
 	if event.AllDay != nil {
 		patch["isAllDay"] = *event.AllDay
 	}
-	if len(event.Attendees) > 0 {
-		patch["attendees"] = toGraphAttendees(event.Attendees)
-	}
-
 	var updated graphEvent
 	if err := p.patch(ctx, path, patch, &updated); err != nil {
 		return nil, err
@@ -153,7 +174,7 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 }
 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	path := fmt.Sprintf("/me/calendars/%s/events/%s", calendarID, eventID)
+	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
 	return p.delete(ctx, path)
 }
 
@@ -168,11 +189,22 @@ func (p *Provider) getWithParams(ctx context.Context, path string, params url.Va
 }
 
 func (p *Provider) getWithParamsAndHeaders(ctx context.Context, path string, params url.Values, headers http.Header, out any) error {
-	u := graphBase + path
+	u := p.baseURL + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	return p.getURLWithHeaders(ctx, u, headers, out)
+}
+
+func (p *Provider) getURLWithHeaders(ctx context.Context, rawURL string, headers http.Header, out any) error {
+	u, err := p.validatedURL(rawURL)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
 	for k, vs := range headers {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -190,7 +222,10 @@ func (p *Provider) patch(ctx context.Context, path string, body, out any) error 
 }
 
 func (p *Provider) delete(ctx context.Context, path string) error {
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", graphBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, p.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return err
@@ -198,16 +233,40 @@ func (p *Provider) delete(ctx context.Context, path string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("graph API %d: %s", resp.StatusCode, body)
+		return graphAPIError(resp.StatusCode, body)
 	}
 	return nil
 }
 
 func (p *Provider) doJSON(ctx context.Context, method, path string, body, out any) error {
-	data, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, method, graphBase+path, bytes.NewReader(data))
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, p.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	return p.do(req, out)
+}
+
+func (p *Provider) validatedURL(rawURL string) (string, error) {
+	base, err := url.Parse(p.baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid Graph base URL: %w", err)
+	}
+	next, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid Graph URL: %w", err)
+	}
+	if !next.IsAbs() {
+		next = base.ResolveReference(next)
+	}
+	if next.Scheme != base.Scheme || next.Host != base.Host {
+		return "", fmt.Errorf("Graph next link points to unexpected origin: %s", next.Host)
+	}
+	return next.String(), nil
 }
 
 func (p *Provider) do(req *http.Request, out any) error {
@@ -218,7 +277,7 @@ func (p *Provider) do(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("graph API %d: %s", resp.StatusCode, body)
+		return graphAPIError(resp.StatusCode, body)
 	}
 	if out != nil {
 		return json.Unmarshal(body, out)
@@ -226,21 +285,43 @@ func (p *Provider) do(req *http.Request, out any) error {
 	return nil
 }
 
+func graphAPIError(status int, body []byte) error {
+	code := calendar.ErrorProviderUnavailable
+	retryable := status >= 500
+	switch status {
+	case http.StatusBadRequest:
+		code = calendar.ErrorInvalidArgument
+	case http.StatusUnauthorized, http.StatusForbidden:
+		code = calendar.ErrorPermissionDenied
+	case http.StatusNotFound, http.StatusGone:
+		code = calendar.ErrorNotFound
+	case http.StatusConflict, http.StatusPreconditionFailed:
+		code = calendar.ErrorConflict
+	case http.StatusTooManyRequests:
+		code, retryable = calendar.ErrorRateLimited, true
+	}
+	return &calendar.APIError{Code: code, Message: fmt.Sprintf("Graph API %d: %s", status, body), Provider: "microsoft", Retryable: retryable}
+}
+
 // Graph API types
 
 type graphEvent struct {
 	ID      string `json:"id"`
+	ETag    string `json:"@odata.etag"`
+	ICalUID string `json:"iCalUId"`
 	Subject string `json:"subject"`
 	Body    struct {
 		Content string `json:"content"`
 	} `json:"body"`
-	Start         graphDateTime   `json:"start"`
-	End           graphDateTime   `json:"end"`
-	Location      graphLocation   `json:"location"`
-	IsAllDay      bool            `json:"isAllDay"`
-	ShowAs        string          `json:"showAs"`
-	Attendees     []graphAttendee `json:"attendees,omitempty"`
-	OnlineMeeting *struct {
+	Start          graphDateTime   `json:"start"`
+	End            graphDateTime   `json:"end"`
+	Location       graphLocation   `json:"location"`
+	IsAllDay       bool            `json:"isAllDay"`
+	ShowAs         string          `json:"showAs"`
+	Sensitivity    string          `json:"sensitivity"`
+	SeriesMasterID string          `json:"seriesMasterId"`
+	Attendees      []graphAttendee `json:"attendees,omitempty"`
+	OnlineMeeting  *struct {
 		JoinUrl string `json:"joinUrl"`
 	} `json:"onlineMeeting,omitempty"`
 }
@@ -261,6 +342,13 @@ type graphAttendee struct {
 type graphDateTime struct {
 	DateTime string `json:"dateTime"`
 	TimeZone string `json:"timeZone"`
+}
+
+func toGraphDateTime(t time.Time) graphDateTime {
+	return graphDateTime{
+		DateTime: t.UTC().Format("2006-01-02T15:04:05"),
+		TimeZone: "UTC",
+	}
 }
 
 type graphBody struct {
@@ -286,7 +374,7 @@ type graphEventCreate struct {
 
 func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {
 	if len(attendees) == 0 {
-		return nil
+		return []graphAttendee{}
 	}
 	var out []graphAttendee
 	for _, a := range attendees {

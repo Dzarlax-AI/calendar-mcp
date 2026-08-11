@@ -19,7 +19,7 @@ Go version: 1.25 (from go.mod)
 - `internal/google/` — Google Calendar API v3 via OAuth2
 - `internal/microsoft/` — Microsoft Graph REST API via OAuth2
 - `internal/apple/` — Apple CalDAV via go-webdav (basic auth)
-- `internal/mcpserver/` — MCP server (Streamable HTTP), 5 tools, API key middleware
+- `internal/mcpserver/` — MCP server (Streamable HTTP), 5 compatibility tools plus gated V2 lifecycle tools, API key middleware
 - `internal/token/` — File-based OAuth2 token persistence
 - `internal/config/` — Env-based config
 
@@ -32,6 +32,8 @@ Go version: 1.25 (from go.mod)
 - This matches how DAVx5 and other clients handle Apple Family Sharing
 
 ## MCP Tools
+
+The five compatibility tools are always registered. Typed lifecycle tools are additionally registered when `ENABLE_V2=true`; see `README.md` for the complete V2 surface.
 
 - `list_calendars` — all calendars from all providers
 - `get_events` — events by calendar_id + date range (or all)

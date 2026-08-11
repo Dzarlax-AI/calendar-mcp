@@ -1,6 +1,9 @@
 package apple
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -21,6 +24,19 @@ func TestSetAppleEventTime_AllDayUsesDate(t *testing.T) {
 	}
 	if got := prop.ValueType(); got != ical.ValueDate {
 		t.Fatalf("ValueType = %q, want %q", got, ical.ValueDate)
+	}
+}
+
+func TestGetEventsFallbackReturnsPropfindFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	p := &Provider{httpClient: server.Client(), caldavURL: server.URL}
+
+	_, err := p.getEventsFallback(context.Background(), "/calendar/", time.Now(), time.Now().Add(time.Hour))
+	if err == nil {
+		t.Fatal("getEventsFallback() returned nil error for PROPFIND failure")
 	}
 }
 
@@ -46,5 +62,90 @@ func TestCreateEventResponsePreservesAllDay(t *testing.T) {
 	})
 	if !got.AllDay {
 		t.Fatalf("AllDay = false, want true")
+	}
+}
+
+func TestAppleObjectPathPreservesCalDAVHref(t *testing.T) {
+	const href = "/123/calendars/family/resource-name.ics"
+
+	got, err := appleObjectPath("/123/calendars/family/", href)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != href {
+		t.Fatalf("appleObjectPath() = %q, want %q", got, href)
+	}
+}
+
+func TestAppleObjectPathSupportsLegacyUID(t *testing.T) {
+	const calendarPath = "/123/calendars/family/"
+
+	got, err := appleObjectPath(calendarPath, "legacy-uid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != calendarPath+"legacy-uid.ics" {
+		t.Fatalf("appleObjectPath() = %q, want %q", got, calendarPath+"legacy-uid.ics")
+	}
+}
+
+func TestAppleObjectPathRejectsCrossCalendarHref(t *testing.T) {
+	if _, err := appleObjectPath("/123/calendars/family/", "/123/calendars/private/event.ics"); err == nil {
+		t.Fatal("appleObjectPath() accepted an href outside the requested calendar")
+	}
+}
+
+func TestConvertEventUsesResourceHrefAsID(t *testing.T) {
+	ev := ical.NewEvent()
+	ev.Props.SetText(ical.PropUID, "ical-uid")
+	ev.Props.SetDateTime(ical.PropDateTimeStart, time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC))
+	ev.Props.SetDateTime(ical.PropDateTimeEnd, time.Date(2026, 8, 10, 11, 0, 0, 0, time.UTC))
+	const href = "/123/calendars/family/resource-name.ics"
+
+	got := convertEvent(*ev, "/123/calendars/family/", href)
+
+	if got.ID != href {
+		t.Fatalf("ID = %q, want href %q", got.ID, href)
+	}
+}
+
+func TestAppleV2MapsRecurrenceAndHref(t *testing.T) {
+	event := ical.NewEvent()
+	event.Props.SetText(ical.PropUID, "uid")
+	event.Props.SetDateTime(ical.PropDateTimeStart, time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC))
+	event.Props.SetDateTime(ical.PropDateTimeEnd, time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC))
+	rule := ical.NewProp(ical.PropRecurrenceRule)
+	rule.Value = "FREQ=WEEKLY;BYDAY=MO"
+	event.Props.Add(rule)
+	result := appleEventV2(*event, "/calendar/", "/calendar/object.ics", `"etag"`)
+	if result.ID != "/calendar/object.ics" || result.ICalUID != "uid" || len(result.Recurrence) != 1 || result.Recurrence[0] != "RRULE:FREQ=WEEKLY;BYDAY=MO" {
+		t.Fatalf("appleEventV2() = %#v", result)
+	}
+}
+
+func TestAppleV2PreservesRecurrenceParameters(t *testing.T) {
+	event := ical.NewEvent()
+	date := ical.NewProp(ical.PropExceptionDates)
+	date.Params.Set("TZID", "Europe/Belgrade")
+	date.Value = "20260817T090000"
+	event.Props.Add(date)
+
+	result := appleEventV2(*event, "/calendar/", "/calendar/object.ics", "etag")
+	if len(result.Recurrence) != 1 || result.Recurrence[0] != "EXDATE;TZID=Europe/Belgrade:20260817T090000" {
+		t.Fatalf("recurrence = %#v", result.Recurrence)
+	}
+	restored := ical.NewEvent()
+	if err := setAppleRecurrence(restored, result.Recurrence); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.Props.Get(ical.PropExceptionDates).Params.Get("TZID"); got != "Europe/Belgrade" {
+		t.Fatalf("TZID = %q", got)
+	}
+}
+
+func TestAppleV2RejectsAttendeeWrites(t *testing.T) {
+	err := validateAppleWrite(calendar.EventCreateV2{Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Email: "person@example.com"}}}})
+	if err == nil {
+		t.Fatal("validateAppleWrite() allowed an attendee write")
 	}
 }

@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"calendar-mcp/internal/apple"
+	"calendar-mcp/internal/application"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/config"
 	"calendar-mcp/internal/google"
@@ -15,6 +22,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("configuration: %v", err)
+	}
 
 	var providers []calendar.Provider
 
@@ -53,6 +63,7 @@ func main() {
 		ExcludeIDs:               cfg.ExcludeCalendarIDs,
 		IncludeImportedCalendars: cfg.IncludeImportedCalendars,
 	})
+	appService := application.New(reg)
 	if len(cfg.ExcludeCalendarIDs) > 0 {
 		log.Printf("fan-out excludes %d calendar(s): %v", len(cfg.ExcludeCalendarIDs), cfg.ExcludeCalendarIDs)
 	}
@@ -65,19 +76,78 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	mcpserver.Register(mux, reg, cfg.APIKey)
+	mcpserver.Register(mux, reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
+	servers := []*http.Server{newHTTPServer(cfg.ListenAddr, mux, 0)}
 
 	// Internal REST API on separate port (only exposed to Docker infra network)
 	if cfg.RESTListenAddr != "" {
-		rest := restapi.New(reg, cfg.APIKey)
+		rest := restapi.New(reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
+		servers = append(servers, newHTTPServer(cfg.RESTListenAddr, rest.Handler(), 2*time.Minute))
+		log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
+	}
+
+	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(providers))
+	if err := runServers(servers); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func newHTTPServer(addr string, handler http.Handler, writeTimeout time.Duration) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       time.Minute,
+	}
+}
+
+func runServers(servers []*http.Server) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, len(servers))
+	for _, server := range servers {
+		server := server
 		go func() {
-			log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
-			if err := http.ListenAndServe(cfg.RESTListenAddr, rest.Handler()); err != nil {
-				log.Fatalf("REST API: %v", err)
+			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
 			}
 		}()
 	}
 
-	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(providers))
-	log.Fatal(http.ListenAndServe(cfg.ListenAddr, mux))
+	var serveErrs []error
+	select {
+	case err := <-errCh:
+		serveErrs = append(serveErrs, err)
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var shutdownErrs []error
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			shutdownErrs = append(shutdownErrs, err)
+		}
+	}
+	for {
+		select {
+		case err := <-errCh:
+			serveErrs = append(serveErrs, err)
+		default:
+			goto errorsCollected
+		}
+	}
+
+errorsCollected:
+	var resultErrs []error
+	if len(serveErrs) > 0 {
+		resultErrs = append(resultErrs, fmt.Errorf("serve HTTP: %w", errors.Join(serveErrs...)))
+	}
+	if len(shutdownErrs) > 0 {
+		resultErrs = append(resultErrs, fmt.Errorf("server shutdown: %w", errors.Join(shutdownErrs...)))
+	}
+	return errors.Join(resultErrs...)
 }

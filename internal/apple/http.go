@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 type basicAuthTransport struct {
@@ -58,6 +59,7 @@ func readIfMultiStatus(resp *http.Response) ([]byte, bool) {
 
 func newBasicAuthClient(username, password string) *http.Client {
 	return &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &basicAuthTransport{
 			username: username,
 			password: password,

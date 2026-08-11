@@ -1,0 +1,13 @@
+.git
+.github
+.worktrees
+.claude
+.env
+.env.*
+!.env.example
+data
+server
+*.exe
+docs
+AGENTS.md
+CLAUDE.md

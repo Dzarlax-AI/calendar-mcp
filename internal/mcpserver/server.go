@@ -3,46 +3,33 @@ package mcpserver
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"calendar-mcp/internal/application"
+	"calendar-mcp/internal/auth"
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/httpx"
 )
 
-func Register(mux *http.ServeMux, reg *calendar.Registry, apiKey string) {
-	s := buildServer(reg)
+func Register(mux *http.ServeMux, reg *calendar.Registry, app *application.Service, apiKey string, allowUnauthenticated, enableV2 bool) {
+	s := buildServer(reg, app, enableV2)
 	h := server.NewStreamableHTTPServer(s)
-	protected := withAPIKey(h, apiKey)
+	limited := httpx.LimitRequestBody(h, httpx.DefaultMaxRequestBodyBytes)
+	protected := auth.Middleware(auth.Options{APIKey: apiKey, AllowUnauthenticated: allowUnauthenticated})(limited)
 	mux.Handle("/mcp", protected)
 	mux.Handle("/mcp/", protected)
 }
 
-func withAPIKey(next http.Handler, apiKey string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if apiKey == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		key := strings.TrimPrefix(auth, "Bearer ")
-		if key == "" {
-			key = r.Header.Get("X-API-Key")
-		}
-		if key != apiKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func buildServer(reg *calendar.Registry) *server.MCPServer {
+func buildServer(reg *calendar.Registry, app *application.Service, enableV2 bool) *server.MCPServer {
 	s := server.NewMCPServer("calendar-mcp", "1.0.0",
 		server.WithToolCapabilities(true),
 	)
 	registerTools(s, reg)
+	if enableV2 {
+		registerToolsV2(s, app)
+	}
 	return s
 }
 
