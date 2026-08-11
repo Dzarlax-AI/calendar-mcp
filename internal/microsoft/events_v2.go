@@ -78,11 +78,11 @@ func (p *Provider) validateGraphPageURL(value string) error {
 		return fmt.Errorf("invalid Graph base URL")
 	}
 	if pageURL.Scheme != baseURL.Scheme || pageURL.Host != baseURL.Host {
-		return fmt.Errorf("Graph page URL points outside the configured API origin")
+		return fmt.Errorf("graph page URL points outside the configured API origin")
 	}
 	basePath := strings.TrimSuffix(baseURL.Path, "/")
 	if basePath != "" && pageURL.Path != basePath && !strings.HasPrefix(pageURL.Path, basePath+"/") {
-		return fmt.Errorf("Graph page URL points outside the configured API path")
+		return fmt.Errorf("graph page URL points outside the configured API path")
 	}
 	return nil
 }

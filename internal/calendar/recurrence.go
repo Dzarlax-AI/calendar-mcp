@@ -59,6 +59,7 @@ func validateRecurrenceDates(name, value string, allowPeriod bool) error {
 			return fmt.Errorf("invalid TZID %q", zone)
 		}
 	}
+	hasTZID := params["TZID"] != ""
 	for _, item := range strings.Split(value, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
@@ -68,6 +69,9 @@ func validateRecurrenceDates(name, value string, allowPeriod bool) error {
 			start, end, ok := strings.Cut(item, "/")
 			if !ok || strings.HasPrefix(strings.ToUpper(end), "P") {
 				return fmt.Errorf("period must use explicit start/end date-times")
+			}
+			if hasTZID && (strings.HasSuffix(start, "Z") || strings.HasSuffix(end, "Z")) {
+				return fmt.Errorf("TZID cannot be combined with a UTC date-time")
 			}
 			if err := validateICalDateTime(start); err != nil {
 				return err
@@ -82,6 +86,9 @@ func validateRecurrenceDates(name, value string, allowPeriod bool) error {
 				return fmt.Errorf("invalid date %q", item)
 			}
 			continue
+		}
+		if hasTZID && strings.HasSuffix(item, "Z") {
+			return fmt.Errorf("TZID cannot be combined with a UTC date-time")
 		}
 		if err := validateICalDateTime(item); err != nil {
 			return err

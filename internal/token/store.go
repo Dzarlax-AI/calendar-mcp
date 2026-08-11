@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,16 +25,31 @@ func (s *FileStore) Load() (*oauth2.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	info, err := os.Stat(s.path)
+	pathInfo, err := os.Lstat(s.path)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm() != 0o600 {
-		if err := os.Chmod(s.path, 0o600); err != nil {
+	if !pathInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("token path is not a regular file")
+	}
+	file, err := os.Open(s.path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened token file: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return nil, fmt.Errorf("token path changed while opening")
+	}
+	if openedInfo.Mode().Perm() != 0o600 {
+		if err := file.Chmod(0o600); err != nil {
 			return nil, fmt.Errorf("secure token permissions: %w", err)
 		}
 	}
-	data, err := os.ReadFile(s.path)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}

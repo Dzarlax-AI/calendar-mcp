@@ -463,9 +463,10 @@ GET  REST /api/calendars no key    # 401</code></pre>
       <li>Corrected following-scope COUNT handling to include cancelled recurrence slots and added bounded, cycle-safe instance pagination.</li>
       <li>Restricted Apple object hrefs to the selected calendar, retained typed not-found failures, preserved recurrence parameters, and extended the Family Sharing fallback to V2 series reads.</li>
       <li>Added strict RDATE/EXDATE validation, implicit Google update ETag preconditions, special-event mutation restrictions, secure token-mode repair, complete provider configuration checks, and regression tests.</li>
+      <li>Follow-up review hardening rejects TZID-qualified UTC recurrence values and symbolic-link or replacement-raced token paths before permission repair or JSON decoding.</li>
       <li>Disabled the MCP listener write timeout for long-lived Streamable HTTP responses while retaining a bounded REST write timeout.</li>
     </ul>
-    <p><strong>Rollback:</strong> revert the single review-fix commit. No schema, migration, deployment, or provider data change is involved.</p>
+    <p><strong>Rollback:</strong> revert the review-fix commits. No schema, migration, deployment, or provider data change is involved.</p>
   </section>
 
   <section class="approval">

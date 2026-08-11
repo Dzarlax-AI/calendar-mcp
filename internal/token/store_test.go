@@ -46,6 +46,29 @@ func TestFileStoreLoadRepairsExistingPermissions(t *testing.T) {
 	}
 }
 
+func TestFileStoreLoadRejectsSymbolicLink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"access_token":"target"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "google_token.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symbolic links are unavailable: %v", err)
+	}
+	store := NewFileStore(dir, "google")
+	if _, err := store.Load(); err == nil {
+		t.Fatal("Load() accepted a symbolic-link token path")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("target permissions = %o, want unchanged 644", got)
+	}
+}
+
 func TestPersistingTokenSourceReturnsSaveFailure(t *testing.T) {
 	root := t.TempDir()
 	blockingFile := filepath.Join(root, "not-a-directory")
