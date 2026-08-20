@@ -3,6 +3,7 @@ package calendar
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,59 @@ func TestGetEventsFanOutReturnsErrorWhenProviderFails(t *testing.T) {
 		t.Fatalf("events = %#v, want nil when completeness is unknown", events)
 	}
 }
+
+func TestReplaceProvidersUpdatesResolution(t *testing.T) {
+	r := NewRegistry([]Provider{&fakeProvider{name: "google"}})
+	r.ReplaceProviders([]Provider{&fakeProvider{name: "microsoft"}})
+	if _, _, err := r.Resolve("google:primary"); err == nil {
+		t.Fatal("removed provider still resolves")
+	}
+	if _, rawID, err := r.Resolve("microsoft:primary"); err != nil || rawID != "primary" {
+		t.Fatalf("replacement resolve = %q, %v", rawID, err)
+	}
+}
+
+func TestRegistryRoutesMultipleAccountsAndRejectsAmbiguousLegacyID(t *testing.T) {
+	first := &routedFakeProvider{fakeProvider: fakeProvider{name: "google"}, route: "google@first", owned: map[string]bool{"primary": true}}
+	second := &routedFakeProvider{fakeProvider: fakeProvider{name: "google"}, route: "google@second", owned: map[string]bool{"primary": true}}
+	r := NewRegistry([]Provider{first, second})
+	provider, raw, err := r.Resolve("google:second:primary")
+	if err != nil || provider != second || raw != "primary" {
+		t.Fatalf("canonical resolve = %#v, %q, %v", provider, raw, err)
+	}
+	if _, _, err := r.Resolve("google:primary"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("legacy resolve error = %v", err)
+	}
+}
+
+func TestRegistryAccountScopedCalendarIDPreservesProviderNativeColon(t *testing.T) {
+	provider := &routedFakeProvider{fakeProvider: fakeProvider{name: "microsoft", calendars: []Calendar{{ID: "group:calendar"}}}, route: "microsoft@work", owned: map[string]bool{"group:calendar": true}}
+	r := NewRegistry([]Provider{provider})
+
+	got, raw, err := r.Resolve("microsoft:work:group:calendar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != provider || raw != "group:calendar" {
+		t.Fatalf("Resolve() = (%T, %q), want provider and group:calendar", got, raw)
+	}
+	calendars, err := r.ListCalendars(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calendars) != 1 || calendars[0].ID != "microsoft:work:group:calendar" {
+		t.Fatalf("calendars = %#v", calendars)
+	}
+}
+
+type routedFakeProvider struct {
+	fakeProvider
+	route string
+	owned map[string]bool
+}
+
+func (p *routedFakeProvider) RouteName() string           { return p.route }
+func (p *routedFakeProvider) OwnsCalendar(id string) bool { return p.owned[id] }
 
 type fakeProvider struct {
 	name         string

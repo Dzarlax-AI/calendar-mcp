@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/token"
 )
@@ -17,18 +19,44 @@ import (
 const graphBase = "https://graph.microsoft.com/v1.0"
 
 type Provider struct {
-	client  *http.Client
-	baseURL string
+	client    *http.Client
+	baseURL   string
+	routeName string
+	calendars map[string]struct{}
 }
 
 func New(clientID, clientSecret, tenantID, refreshToken, tokenDir string) (*Provider, error) {
 	store := token.NewFileStore(tokenDir, "microsoft")
+	return NewWithTokenStore(clientID, clientSecret, tenantID, store, &oauth2.Token{RefreshToken: refreshToken})
+}
+
+func NewWithTokenStore(clientID, clientSecret, tenantID string, store token.Store, initial *oauth2.Token) (*Provider, error) {
 	cfg := newOAuthConfig(clientID, clientSecret, tenantID)
-	client := newHTTPClient(store, cfg, refreshToken)
+	client := newHTTPClient(store, cfg, initial)
 	return &Provider{client: client, baseURL: graphBase}, nil
 }
 
 func (p *Provider) Name() string { return "microsoft" }
+func (p *Provider) RouteName() string {
+	if p.routeName != "" {
+		return p.routeName
+	}
+	return p.Name()
+}
+func (p *Provider) OwnsCalendar(id string) bool {
+	if len(p.calendars) == 0 {
+		return true
+	}
+	_, ok := p.calendars[id]
+	return ok
+}
+func (p *Provider) SetRoute(route string, calendarIDs []string) {
+	p.routeName = route
+	p.calendars = make(map[string]struct{}, len(calendarIDs))
+	for _, id := range calendarIDs {
+		p.calendars[id] = struct{}{}
+	}
+}
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
 	type calendarPage struct {
@@ -313,17 +341,50 @@ type graphEvent struct {
 	Body    struct {
 		Content string `json:"content"`
 	} `json:"body"`
-	Start          graphDateTime   `json:"start"`
-	End            graphDateTime   `json:"end"`
-	Location       graphLocation   `json:"location"`
-	IsAllDay       bool            `json:"isAllDay"`
-	ShowAs         string          `json:"showAs"`
-	Sensitivity    string          `json:"sensitivity"`
-	SeriesMasterID string          `json:"seriesMasterId"`
-	Attendees      []graphAttendee `json:"attendees,omitempty"`
-	OnlineMeeting  *struct {
+	Start                graphDateTime    `json:"start"`
+	End                  graphDateTime    `json:"end"`
+	Location             graphLocation    `json:"location"`
+	IsAllDay             bool             `json:"isAllDay"`
+	IsCancelled          bool             `json:"isCancelled"`
+	ShowAs               string           `json:"showAs"`
+	Sensitivity          string           `json:"sensitivity"`
+	SeriesMasterID       string           `json:"seriesMasterId"`
+	Type                 string           `json:"type"`
+	OriginalStart        string           `json:"originalStart"`
+	OccurrenceID         string           `json:"occurrenceId"`
+	Recurrence           *graphRecurrence `json:"recurrence"`
+	CancelledOccurrences []string         `json:"cancelledOccurrences"`
+	Attendees            []graphAttendee  `json:"attendees,omitempty"`
+	OnlineMeeting        *struct {
 		JoinUrl string `json:"joinUrl"`
 	} `json:"onlineMeeting,omitempty"`
+	SingleValueExtendedProperties []graphSingleValueProperty `json:"singleValueExtendedProperties,omitempty"`
+}
+
+type graphSingleValueProperty struct {
+	ID    string `json:"id"`
+	Value string `json:"value"`
+}
+
+type graphRecurrence struct {
+	Pattern graphRecurrencePattern `json:"pattern"`
+	Range   graphRecurrenceRange   `json:"range"`
+}
+type graphRecurrencePattern struct {
+	Type           string   `json:"type"`
+	Interval       int      `json:"interval"`
+	Month          int      `json:"month,omitempty"`
+	DayOfMonth     int      `json:"dayOfMonth,omitempty"`
+	DaysOfWeek     []string `json:"daysOfWeek,omitempty"`
+	FirstDayOfWeek string   `json:"firstDayOfWeek,omitempty"`
+	Index          string   `json:"index,omitempty"`
+}
+type graphRecurrenceRange struct {
+	Type                string `json:"type"`
+	StartDate           string `json:"startDate"`
+	EndDate             string `json:"endDate,omitempty"`
+	NumberOfOccurrences int    `json:"numberOfOccurrences,omitempty"`
+	RecurrenceTimeZone  string `json:"recurrenceTimeZone,omitempty"`
 }
 
 type graphAttendeeStatus struct {
@@ -361,15 +422,17 @@ type graphLocation struct {
 }
 
 type graphEventCreate struct {
-	Subject               string          `json:"subject"`
-	Body                  *graphBody      `json:"body,omitempty"`
-	Start                 graphDateTime   `json:"start"`
-	End                   graphDateTime   `json:"end"`
-	Location              *graphLocation  `json:"location,omitempty"`
-	Attendees             []graphAttendee `json:"attendees,omitempty"`
-	IsAllDay              bool            `json:"isAllDay,omitempty"`
-	IsOnlineMeeting       bool            `json:"isOnlineMeeting,omitempty"`
-	OnlineMeetingProvider string          `json:"onlineMeetingProvider,omitempty"`
+	Subject                       string                     `json:"subject"`
+	Body                          *graphBody                 `json:"body,omitempty"`
+	Start                         graphDateTime              `json:"start"`
+	End                           graphDateTime              `json:"end"`
+	Location                      *graphLocation             `json:"location,omitempty"`
+	Attendees                     []graphAttendee            `json:"attendees,omitempty"`
+	IsAllDay                      bool                       `json:"isAllDay,omitempty"`
+	IsOnlineMeeting               bool                       `json:"isOnlineMeeting,omitempty"`
+	OnlineMeetingProvider         string                     `json:"onlineMeetingProvider,omitempty"`
+	Recurrence                    *graphRecurrence           `json:"recurrence,omitempty"`
+	SingleValueExtendedProperties []graphSingleValueProperty `json:"singleValueExtendedProperties,omitempty"`
 }
 
 func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {

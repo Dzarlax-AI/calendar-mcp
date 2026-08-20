@@ -1,10 +1,40 @@
 services:
-  calendar-mcp:
-    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
-    container_name: calendar-mcp
+  calendar-serve:
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
+    command: ["serve"]
     restart: unless-stopped
+    env_file: ${CALENDAR_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: sqlite:///app/data/calendar.db
+      UI_TRUST_FORWARD_AUTH: "false"
+      UI_ALLOW_UNAUTHENTICATED: "true"
     ports:
-      - "8080:8080"
-    env_file: .env
+      - "127.0.0.1:8080:8080"
     volumes:
-      - ./data:/app/data
+      - calendar-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  calendar-worker:
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
+    command: ["worker"]
+    restart: unless-stopped
+    env_file: ${CALENDAR_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: sqlite:///app/data/calendar.db
+    volumes:
+      - calendar-data:/app/data
+    depends_on:
+      calendar-serve:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  calendar-data:

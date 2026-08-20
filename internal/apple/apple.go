@@ -26,6 +26,8 @@ type Provider struct {
 	username   string
 	httpClient *http.Client
 	caldavURL  string
+	routeName  string
+	calendars  map[string]struct{}
 }
 
 func New(username, appPassword, caldavURL string) (*Provider, error) {
@@ -43,6 +45,26 @@ func New(username, appPassword, caldavURL string) (*Provider, error) {
 }
 
 func (p *Provider) Name() string { return "apple" }
+func (p *Provider) RouteName() string {
+	if p.routeName != "" {
+		return p.routeName
+	}
+	return p.Name()
+}
+func (p *Provider) OwnsCalendar(id string) bool {
+	if len(p.calendars) == 0 {
+		return true
+	}
+	_, ok := p.calendars[id]
+	return ok
+}
+func (p *Provider) SetRoute(route string, calendarIDs []string) {
+	p.routeName = route
+	p.calendars = make(map[string]struct{}, len(calendarIDs))
+	for _, id := range calendarIDs {
+		p.calendars[id] = struct{}{}
+	}
+}
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
 	principal, err := p.client.FindCurrentUserPrincipal(ctx)

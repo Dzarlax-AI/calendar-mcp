@@ -2,6 +2,18 @@ package config
 
 import "testing"
 
+func TestLoadRequiresExplicitForwardAuthOptIn(t *testing.T) {
+	t.Setenv("UI_TRUST_FORWARD_AUTH", "")
+	if cfg := Load(); cfg.TrustForwardAuth {
+		t.Fatal("TrustForwardAuth = true without explicit opt-in")
+	}
+
+	t.Setenv("UI_TRUST_FORWARD_AUTH", "true")
+	if cfg := Load(); !cfg.TrustForwardAuth {
+		t.Fatal("TrustForwardAuth = false with explicit opt-in")
+	}
+}
+
 func TestValidateRejectsMissingAPIKeyByDefault(t *testing.T) {
 	cfg := &Config{}
 
@@ -26,9 +38,20 @@ func TestValidateAllowsAPIKey(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsPartialProviderConfiguration(t *testing.T) {
+func TestValidateAllowsPartialProviderConfigurationToBeSkipped(t *testing.T) {
 	cfg := &Config{APIKey: "secret", GoogleClientID: "client"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected skippable partial provider: %v", err)
+	}
+}
+
+func TestValidateRequiresExplicitUIAuthenticationMode(t *testing.T) {
+	cfg := &Config{APIKey: "secret", DatabaseURL: "sqlite:///tmp/calendar.db", PublicURL: "http://localhost:8080"}
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() accepted a provider with missing client secret")
+		t.Fatal("Validate() accepted platform UI without ForwardAuth or explicit local bypass")
+	}
+	cfg.UIAllowUnauthenticated = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected explicit unauthenticated UI mode: %v", err)
 	}
 }

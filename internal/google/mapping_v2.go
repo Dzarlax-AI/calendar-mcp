@@ -59,6 +59,14 @@ func fromGoogleEventV2(event *gcal.Event, calendarID, fallbackTimeZone string) c
 		value := fromGoogleEventTime(event.OriginalStartTime, fallbackTimeZone)
 		result.OriginalStart = &value
 	}
+	if event.RecurringEventId != "" {
+		result.InstanceKind = "occurrence"
+		if event.Status == "cancelled" {
+			result.InstanceKind = "cancelled"
+		}
+	} else if len(event.Recurrence) > 0 {
+		result.InstanceKind = "seriesMaster"
+	}
 	if event.Organizer != nil {
 		result.Organizer = &calendar.PersonV2{ID: event.Organizer.Id, Email: event.Organizer.Email, Name: event.Organizer.DisplayName, Self: event.Organizer.Self}
 	}
@@ -149,6 +157,16 @@ func toGoogleEventV2(input calendar.EventCreateV2) (*gcal.Event, error) {
 		if err := decodeStructMap(input.Google.WorkingLocation, &event.WorkingLocationProperties); err != nil {
 			return nil, fmt.Errorf("working location properties: %w", err)
 		}
+	}
+	if input.SyncMarker != nil {
+		if event.ExtendedProperties == nil {
+			event.ExtendedProperties = &gcal.EventExtendedProperties{}
+		}
+		if event.ExtendedProperties.Private == nil {
+			event.ExtendedProperties.Private = map[string]string{}
+		}
+		event.ExtendedProperties.Private["calendar_sync_rule"] = input.SyncMarker.RuleID
+		event.ExtendedProperties.Private["calendar_source_event"] = input.SyncMarker.SourceEventID
 	}
 	return event, nil
 }

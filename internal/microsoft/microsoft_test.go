@@ -90,7 +90,7 @@ func TestGetEventsFollowsNextLink(t *testing.T) {
 	}
 }
 
-func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
+func TestV2CapabilitiesAdvertiseReadableRecurrenceWithoutFollowingWrites(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"canEdit":true}`)
@@ -100,11 +100,125 @@ func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Fields.Recurrence || capabilities.SupportsScope(calendar.ScopeFollowing) {
+	if !capabilities.Fields.Recurrence || capabilities.SupportsScope(calendar.ScopeFollowing) {
 		t.Fatalf("capabilities overstate recurrence support: %#v", capabilities)
 	}
 	if !capabilities.Fields.Conferencing || !capabilities.Fields.OptimisticLocking {
 		t.Fatalf("capabilities omit supported fields: %#v", capabilities)
+	}
+}
+
+func TestGraphCreateCarriesSyncMarker(t *testing.T) {
+	body, err := toGraphCreateV2(calendar.EventCreateV2{Start: calendar.EventTime{DateTime: "2026-08-20T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-20T10:00:00Z", TimeZone: "UTC"}, SyncMarker: &calendar.SyncMarker{RuleID: "rule", SourceEventID: "source"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.SingleValueExtendedProperties) != 1 || body.SingleValueExtendedProperties[0].Value != calendar.SyncMarkerValue("rule", "source") {
+		t.Fatalf("extended properties = %#v", body.SingleValueExtendedProperties)
+	}
+}
+
+func TestGraphEventNormalizesInstanceKinds(t *testing.T) {
+	for _, test := range []struct {
+		name, eventType, want string
+		cancelled             bool
+	}{
+		{name: "standalone", eventType: "singleInstance", want: ""},
+		{name: "cancelled occurrence", eventType: "occurrence", cancelled: true, want: "cancelled"},
+		{name: "cancelled exception", eventType: "exception", cancelled: true, want: "cancelled"},
+		{name: "cancelled master", eventType: "seriesMaster", cancelled: true, want: "seriesMaster"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := (&graphEvent{Type: test.eventType, IsCancelled: test.cancelled}).toEventV2("calendar")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.InstanceKind != test.want {
+				t.Fatalf("instance kind = %q, want %q", event.InstanceKind, test.want)
+			}
+		})
+	}
+}
+
+func TestFindEventBySyncMarkerV2UsesFilteredExtendedProperty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Query().Get("$filter"), calendar.SyncMarkerValue("rule", "source")) {
+			t.Errorf("filter = %q", r.URL.Query().Get("$filter"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"value":[{"id":"recovered","start":{"dateTime":"2026-08-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-20T10:00:00","timeZone":"UTC"}}]}`)
+	}))
+	defer server.Close()
+	event, err := (&Provider{client: server.Client(), baseURL: server.URL}).FindEventBySyncMarkerV2(context.Background(), "calendar", "rule", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "recovered" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestListEventsV2BothReturnsMasterExceptionAndBoundedCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/me/calendars/calendar/calendarView":
+			_, _ = io.WriteString(w, `{"value":[{"id":"exception","subject":"Moved","type":"exception","seriesMasterId":"master","originalStart":"2026-08-21T09:00:00Z","start":{"dateTime":"2026-08-21T11:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-21T12:00:00","timeZone":"UTC"}}]}`)
+		case "/me/calendars/calendar/events/master":
+			_, _ = io.WriteString(w, `{"id":"master","subject":"Daily","type":"seriesMaster","start":{"dateTime":"2026-08-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-20T10:00:00","timeZone":"UTC"},"recurrence":{"pattern":{"type":"daily","interval":1},"range":{"type":"noEnd","startDate":"2026-08-20","recurrenceTimeZone":"UTC"}},"cancelledOccurrences":["OID.master.2026-08-22","OID.master.2026-09-30"]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).ListEventsV2(context.Background(), calendar.ListEventsRequestV2{
+		CalendarID: "calendar",
+		Start:      time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
+		End:        time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC),
+		View:       calendar.RecurrenceBoth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("items = %#v", page.Items)
+	}
+	if page.Items[0].InstanceKind != "seriesMaster" || len(page.Items[0].Recurrence) != 1 {
+		t.Fatalf("master = %#v", page.Items[0])
+	}
+	if page.Items[1].InstanceKind != "cancelled" || page.Items[1].OriginalStart == nil || page.Items[1].OriginalStart.DateTime != "2026-08-22T09:00:00Z" {
+		t.Fatalf("cancellation = %#v", page.Items[1])
+	}
+	if page.Items[2].InstanceKind != "exception" || page.Items[2].OriginalStart == nil {
+		t.Fatalf("exception = %#v", page.Items[2])
+	}
+}
+
+func TestListEventsV2BothConsumesPaginationBeforeAddingMasters(t *testing.T) {
+	masterCalls := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/me/calendars/calendar/calendarView":
+			_, _ = fmt.Fprintf(w, `{"value":[{"id":"one","type":"occurrence","seriesMasterId":"master","start":{"dateTime":"2026-08-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-20T10:00:00","timeZone":"UTC"}}],"@odata.nextLink":%q}`, server.URL+"/next-view")
+		case "/next-view":
+			_, _ = io.WriteString(w, `{"value":[{"id":"two","type":"occurrence","seriesMasterId":"master","start":{"dateTime":"2026-08-21T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-21T10:00:00","timeZone":"UTC"}}]}`)
+		case "/me/calendars/calendar/events/master":
+			masterCalls++
+			_, _ = io.WriteString(w, `{"id":"master","type":"seriesMaster","start":{"dateTime":"2026-08-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-20T10:00:00","timeZone":"UTC"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).ListEventsV2(context.Background(), calendar.ListEventsRequestV2{CalendarID: "calendar", Start: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 3 || page.NextPageToken != "" || masterCalls != 1 {
+		t.Fatalf("page=%#v master calls=%d", page, masterCalls)
 	}
 }
 

@@ -59,6 +59,48 @@ func TestCreateEventV2MapsRecurringEventAndSafetyOptions(t *testing.T) {
 	}
 }
 
+func TestFindEventBySyncMarkerV2UsesBothPrivateProperties(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		properties := r.URL.Query()["privateExtendedProperty"]
+		joined := strings.Join(properties, "|")
+		for _, want := range []string{"calendar_sync_rule=rule", "calendar_source_event=source"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("privateExtendedProperty = %v, missing %q", properties, want)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"items":[{"id":"recovered","summary":"Recovered","start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
+	})
+	defer closeServer()
+
+	event, err := provider.FindEventBySyncMarkerV2(context.Background(), "primary", "rule", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "recovered" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestFindEventBySyncMarkerV2FollowsEmptyPage(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("pageToken") == "next" {
+			_, _ = io.WriteString(w, `{"items":[{"id":"recovered","start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[],"nextPageToken":"next"}`)
+	})
+	defer closeServer()
+	event, err := provider.FindEventBySyncMarkerV2(context.Background(), "primary", "rule", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "recovered" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
 func TestUpdateEventV2UsesETagAndExplicitlyClearsFields(t *testing.T) {
 	requestCount := 0
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
@@ -224,4 +266,26 @@ func TestFromGoogleEventV2PreservesRecurrenceAndTimezone(t *testing.T) {
 
 func timedEventTime(value string) calendar.EventTime {
 	return calendar.EventTime{DateTime: value, TimeZone: "Europe/Belgrade"}
+}
+
+func TestGoogleInstanceDiffersClassifiesOnlyOverrides(t *testing.T) {
+	start := calendar.EventTime{DateTime: "2026-08-21T09:00:00Z", TimeZone: "UTC"}
+	end := calendar.EventTime{DateTime: "2026-08-21T10:00:00Z", TimeZone: "UTC"}
+	master := calendar.EventV2{Title: "Daily", Description: "Status", Start: start, End: end}
+	original := start
+	ordinary := calendar.EventV2{Title: "Daily", Description: "Status", Start: start, End: end, OriginalStart: &original}
+	if googleInstanceDiffers(master, ordinary) {
+		t.Fatal("ordinary instance classified as exception")
+	}
+	moved := ordinary
+	moved.Start = calendar.EventTime{DateTime: "2026-08-21T11:00:00Z", TimeZone: "UTC"}
+	moved.End = calendar.EventTime{DateTime: "2026-08-21T12:00:00Z", TimeZone: "UTC"}
+	if !googleInstanceDiffers(master, moved) {
+		t.Fatal("moved instance was not classified as exception")
+	}
+	renamed := ordinary
+	renamed.Title = "One-off title"
+	if !googleInstanceDiffers(master, renamed) {
+		t.Fatal("renamed instance was not classified as exception")
+	}
 }

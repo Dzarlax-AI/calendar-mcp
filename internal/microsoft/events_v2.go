@@ -14,6 +14,8 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+const microsoftSyncMarkerProperty = "String {8ECCC264-6887-4EBE-992F-8888D0AB112E} Name CalendarMcpSyncMarker"
+
 func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
 	var metadata struct {
 		CanEdit bool `json:"canEdit"`
@@ -25,20 +27,60 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 	return calendar.CalendarCapabilities{
 		ReadOnly:             !metadata.CanEdit,
 		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: metadata.CanEdit, Update: metadata.CanEdit, Delete: metadata.CanEdit},
-		Fields:               calendar.FieldCapabilities{Conferencing: true, OptimisticLocking: true},
+		Fields:               calendar.FieldCapabilities{Recurrence: true, Conferencing: true, OptimisticLocking: true},
 		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone, calendar.NotificationsAll},
 		EventTypes:           []string{"default"},
 		Reasons: map[string]string{
-			"recurrence":    "Graph recurrence is readable through expanded calendarView, but portable V2 recurrence writes are not enabled yet",
+			"recurrence":    "Graph recurrence is read and written losslessly for representable daily, weekly, monthly, and yearly RRULE patterns; unsupported selectors are rejected before mutation",
 			"notifications": "none is accepted only when the event has no attendees; Graph does not expose sendUpdates suppression",
 		},
 	}, nil
 }
 
+func (p *Provider) ValidateRecurrenceWrite(lines []string, start calendar.EventTime) error {
+	_, err := portableToGraphRecurrence(lines, start)
+	return err
+}
+
+func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	want := calendar.SyncMarkerValue(ruleID, sourceEventID)
+	path := fmt.Sprintf("/me/calendars/%s/events", url.PathEscape(calendarID))
+	filter := fmt.Sprintf("singleValueExtendedProperties/Any(ep: ep/id eq '%s' and ep/value eq '%s')", microsoftSyncMarkerProperty, want)
+	params := url.Values{"$filter": {filter}, "$top": {"2"}}
+	next := p.baseURL + path + "?" + params.Encode()
+	var found *calendar.EventV2
+	for next != "" {
+		var response struct {
+			Value    []graphEvent `json:"value"`
+			NextLink string       `json:"@odata.nextLink"`
+		}
+		if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+			return nil, err
+		}
+		for i := range response.Value {
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			converted, err := response.Value[i].toEventV2(calendarID)
+			if err != nil {
+				return nil, err
+			}
+			found = &converted
+		}
+		if response.NextLink != "" {
+			if err := p.validateGraphPageURL(response.NextLink); err != nil {
+				return nil, err
+			}
+		}
+		next = response.NextLink
+	}
+	return found, nil
+}
+
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
-	if request.View != "" && request.View != calendar.RecurrenceExpanded {
-		return calendar.Page[calendar.EventV2]{}, unsupportedMicrosoft("Microsoft V2 currently exposes expanded calendarView only")
+	if request.View != "" && request.View != calendar.RecurrenceExpanded && request.View != calendar.RecurrenceBoth {
+		return calendar.Page[calendar.EventV2]{}, unsupportedMicrosoft("Microsoft V2 supports expanded and both recurrence views")
 	}
 	path := fmt.Sprintf("/me/calendars/%s/calendarView", url.PathEscape(request.CalendarID))
 	params := url.Values{"startDateTime": {request.Start.UTC().Format(time.RFC3339)}, "endDateTime": {request.End.UTC().Format(time.RFC3339)}, "$top": {strconv.FormatInt(msPageSize(request.MaxResults), 10)}}
@@ -61,9 +103,60 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 			return calendar.Page[calendar.EventV2]{}, err
 		}
 	}
+	if request.View == calendar.RecurrenceBoth {
+		for response.NextLink != "" {
+			nextPage := response.NextLink
+			var following struct {
+				Value    []graphEvent `json:"value"`
+				NextLink string       `json:"@odata.nextLink"`
+			}
+			if err := p.getURLWithHeaders(ctx, nextPage, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &following); err != nil {
+				return calendar.Page[calendar.EventV2]{}, err
+			}
+			if following.NextLink != "" {
+				if err := p.validateGraphPageURL(following.NextLink); err != nil {
+					return calendar.Page[calendar.EventV2]{}, err
+				}
+			}
+			response.Value = append(response.Value, following.Value...)
+			response.NextLink = following.NextLink
+		}
+	}
 	items := make([]calendar.EventV2, 0, len(response.Value))
+	masters := map[string]struct{}{}
 	for i := range response.Value {
-		items = append(items, response.Value[i].toEventV2(request.CalendarID))
+		item, err := response.Value[i].toEventV2(request.CalendarID)
+		if err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
+		items = append(items, item)
+		if response.Value[i].SeriesMasterID != "" {
+			masters[response.Value[i].SeriesMasterID] = struct{}{}
+		}
+	}
+	if request.View == calendar.RecurrenceBoth {
+		seriesItems := make([]calendar.EventV2, 0, len(masters))
+		for masterID := range masters {
+			master, err := p.getSeriesMaster(ctx, request.CalendarID, masterID)
+			if err != nil {
+				return calendar.Page[calendar.EventV2]{}, err
+			}
+			converted, err := master.toEventV2(request.CalendarID)
+			if err != nil {
+				return calendar.Page[calendar.EventV2]{}, err
+			}
+			seriesItems = append(seriesItems, converted)
+			for _, occurrenceID := range master.CancelledOccurrences {
+				cancelled, err := cancelledOccurrence(*master, request.CalendarID, occurrenceID)
+				if err != nil {
+					return calendar.Page[calendar.EventV2]{}, err
+				}
+				if eventTimeInWindow(cancelled.OriginalStart, request.Start, request.End) {
+					seriesItems = append(seriesItems, cancelled)
+				}
+			}
+		}
+		items = append(seriesItems, items...)
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true}, nil
 }
@@ -93,8 +186,47 @@ func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*cale
 	if err := p.getWithParamsAndHeaders(ctx, path, nil, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &event); err != nil {
 		return nil, err
 	}
-	result := event.toEventV2(ref.CalendarID)
+	result, err := event.toEventV2(ref.CalendarID)
+	if err != nil {
+		return nil, err
+	}
 	return &result, nil
+}
+
+func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.InstancesRequestV2) (calendar.Page[calendar.EventV2], error) {
+	if request.Start.IsZero() || request.End.IsZero() || !request.End.After(request.Start) {
+		return calendar.Page[calendar.EventV2]{}, invalidMicrosoft(fmt.Errorf("instances require a valid bounded start and end"))
+	}
+	path := fmt.Sprintf("/me/calendars/%s/events/%s/instances", url.PathEscape(request.Ref.CalendarID), url.PathEscape(request.Ref.EventID))
+	params := url.Values{"startDateTime": {request.Start.UTC().Format(time.RFC3339)}, "endDateTime": {request.End.UTC().Format(time.RFC3339)}, "$top": {strconv.FormatInt(msPageSize(request.MaxResults), 10)}}
+	next := p.baseURL + path + "?" + params.Encode()
+	if request.PageToken != "" {
+		if err := p.validateGraphPageURL(request.PageToken); err != nil {
+			return calendar.Page[calendar.EventV2]{}, invalidMicrosoft(err)
+		}
+		next = request.PageToken
+	}
+	var response struct {
+		Value    []graphEvent `json:"value"`
+		NextLink string       `json:"@odata.nextLink"`
+	}
+	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
+	}
+	if response.NextLink != "" {
+		if err := p.validateGraphPageURL(response.NextLink); err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
+	}
+	items := make([]calendar.EventV2, 0, len(response.Value))
+	for i := range response.Value {
+		item, err := response.Value[i].toEventV2(request.Ref.CalendarID)
+		if err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
+		}
+		items = append(items, item)
+	}
+	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true}, nil
 }
 
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
@@ -110,7 +242,10 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 	if err := p.post(ctx, path, body, &created); err != nil {
 		return nil, err
 	}
-	result := created.toEventV2(request.CalendarID)
+	result, err := created.toEventV2(request.CalendarID)
+	if err != nil {
+		return nil, err
+	}
 	return &result, nil
 }
 
@@ -118,7 +253,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Scope == calendar.ScopeFollowing {
 		return nil, unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter")
 	}
-	if request.Patch.Recurrence.Present || request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
+	if request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
 		return nil, unsupportedMicrosoft("the patch contains fields not supported by the Microsoft V2 adapter")
 	}
 	if request.Patch.Attendees.Present && request.Notifications != calendar.NotificationsAll {
@@ -179,6 +314,17 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Attendees.Present {
 		patch["attendees"] = toGraphAttendeesV2(request.Patch.Attendees.Value)
 	}
+	if request.Patch.Recurrence.Present {
+		if request.Patch.Recurrence.Null || len(request.Patch.Recurrence.Value) == 0 {
+			patch["recurrence"] = nil
+		} else {
+			recurrence, err := portableToGraphRecurrence(request.Patch.Recurrence.Value, start)
+			if err != nil {
+				return nil, unsupportedMicrosoft(err.Error())
+			}
+			patch["recurrence"] = recurrence
+		}
+	}
 	if request.Patch.Transparency.Present {
 		showAs, err := graphShowAs(request.Patch.Transparency.Value)
 		if err != nil {
@@ -197,7 +343,10 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if err := p.doJSONWithETag(ctx, http.MethodPatch, path, patch, request.ExpectedETag, &updated); err != nil {
 		return nil, err
 	}
-	result := updated.toEventV2(request.Ref.CalendarID)
+	result, err := updated.toEventV2(request.Ref.CalendarID)
+	if err != nil {
+		return nil, err
+	}
 	return &calendar.OperationResult{Status: "completed", Event: &result}, nil
 }
 
@@ -222,7 +371,7 @@ func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEve
 }
 
 func validateMicrosoftCreate(event calendar.EventCreateV2, notifications calendar.NotificationPolicy) error {
-	if len(event.Recurrence) > 0 || event.Reminders != nil || len(event.Attachments) > 0 || event.ColorID != "" || event.GuestPermissions != nil || event.Google != nil {
+	if event.Reminders != nil || len(event.Attachments) > 0 || event.ColorID != "" || event.GuestPermissions != nil || event.Google != nil {
 		return unsupportedMicrosoft("the event contains fields not supported by the Microsoft V2 adapter")
 	}
 	if len(event.Attendees) > 0 && notifications != calendar.NotificationsAll {
@@ -244,6 +393,13 @@ func toGraphCreateV2(event calendar.EventCreateV2) (graphEventCreate, error) {
 		return graphEventCreate{}, fmt.Errorf("start and end must use the same representation")
 	}
 	body := graphEventCreate{Subject: event.Title, Body: &graphBody{ContentType: "text", Content: event.Description}, Start: start, End: end, IsAllDay: startAllDay, Attendees: toGraphAttendeesV2(event.Attendees)}
+	if event.SyncMarker != nil {
+		body.SingleValueExtendedProperties = []graphSingleValueProperty{{ID: microsoftSyncMarkerProperty, Value: calendar.SyncMarkerValue(event.SyncMarker.RuleID, event.SyncMarker.SourceEventID)}}
+	}
+	body.Recurrence, err = portableToGraphRecurrence(event.Recurrence, event.Start)
+	if err != nil {
+		return graphEventCreate{}, err
+	}
 	if event.Location != "" {
 		body.Location = &graphLocation{DisplayName: event.Location}
 	}
@@ -273,14 +429,39 @@ func toGraphAttendeesV2(values []calendar.AttendeeV2) []graphAttendee {
 	return toGraphAttendees(legacy)
 }
 
-func (e *graphEvent) toEventV2(calendarID string) calendar.EventV2 {
-	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, Title: e.Subject, Description: e.Body.Content, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
+func (e *graphEvent) toEventV2(calendarID string) (calendar.EventV2, error) {
+	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, Title: e.Subject, Description: e.Body.Content, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, InstanceKind: e.Type, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
+	if e.IsCancelled {
+		result.Status = "cancelled"
+	}
+	if result.InstanceKind == "singleInstance" {
+		result.InstanceKind = ""
+	} else if e.IsCancelled && (result.InstanceKind == "occurrence" || result.InstanceKind == "exception") {
+		result.InstanceKind = "cancelled"
+	}
 	if e.IsAllDay {
 		result.Start = calendar.EventTime{Date: graphDate(e.Start)}
 		result.End = calendar.EventTime{Date: graphDate(e.End)}
 	} else {
 		result.Start = graphEventTime(e.Start)
 		result.End = graphEventTime(e.End)
+	}
+	if e.OriginalStart != "" {
+		if parsed, err := time.Parse(time.RFC3339, e.OriginalStart); err == nil {
+			value := calendar.EventTime{DateTime: parsed.UTC().Format(time.RFC3339), TimeZone: "UTC"}
+			result.OriginalStart = &value
+		}
+	}
+	if e.Recurrence != nil {
+		lines, zone, err := graphRecurrenceLines(e.Recurrence, e.IsAllDay)
+		if err != nil {
+			return result, err
+		}
+		result.Recurrence = lines
+		if !e.IsAllDay && zone != "" {
+			result.Start = eventTimeInZone(result.Start, zone)
+			result.End = eventTimeInZone(result.End, zone)
+		}
 	}
 	for _, attendee := range e.Attendees {
 		status := ""
@@ -292,7 +473,73 @@ func (e *graphEvent) toEventV2(calendarID string) calendar.EventV2 {
 	if e.OnlineMeeting != nil {
 		result.Conference = &calendar.ConferenceData{Solution: "teamsForBusiness", EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: e.OnlineMeeting.JoinUrl}}}
 	}
-	return result
+	return result, nil
+}
+
+func (p *Provider) getSeriesMaster(ctx context.Context, calendarID, eventID string) (*graphEvent, error) {
+	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
+	params := url.Values{"$select": {"id,iCalUId,subject,body,start,end,location,isAllDay,isCancelled,showAs,sensitivity,type,recurrence,cancelledOccurrences"}}
+	var event graphEvent
+	if err := p.getWithParamsAndHeaders(ctx, path, params, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func cancelledOccurrence(master graphEvent, calendarID, occurrenceID string) (calendar.EventV2, error) {
+	result := calendar.EventV2{ID: occurrenceID, CalendarID: calendarID, RecurringEventID: master.ID, InstanceKind: "cancelled", Status: "cancelled"}
+	dateText := ""
+	if index := strings.LastIndex(occurrenceID, "."); index >= 0 {
+		dateText = occurrenceID[index+1:]
+	}
+	date, err := time.Parse(calendar.DateLayout, dateText)
+	if err != nil {
+		return result, fmt.Errorf("invalid Microsoft cancelled occurrence id %q: %w", occurrenceID, err)
+	}
+	if master.IsAllDay {
+		value := calendar.EventTime{Date: dateText}
+		result.OriginalStart = &value
+		return result, nil
+	}
+	if master.Recurrence == nil {
+		return result, fmt.Errorf("Microsoft series %q has cancelled occurrences without recurrence metadata", master.ID)
+	}
+	_, zone, err := graphRecurrenceLines(master.Recurrence, false)
+	if err != nil {
+		return result, err
+	}
+	location, err := time.LoadLocation(zone)
+	if err != nil {
+		return result, err
+	}
+	base := parseGraphTime(master.Start).In(location)
+	original := time.Date(date.Year(), date.Month(), date.Day(), base.Hour(), base.Minute(), base.Second(), 0, location)
+	value := calendar.EventTime{DateTime: original.Format(time.RFC3339), TimeZone: zone}
+	result.OriginalStart = &value
+	return result, nil
+}
+
+func eventTimeInWindow(value *calendar.EventTime, start, end time.Time) bool {
+	if value == nil {
+		return false
+	}
+	instant, err := value.Instant()
+	return err == nil && !instant.Before(start) && instant.Before(end)
+}
+
+func eventTimeInZone(value calendar.EventTime, zone string) calendar.EventTime {
+	if value.DateTime == "" {
+		return value
+	}
+	instant, err := time.Parse(time.RFC3339, value.DateTime)
+	if err != nil {
+		return value
+	}
+	location, err := time.LoadLocation(zone)
+	if err != nil {
+		return value
+	}
+	return calendar.EventTime{DateTime: instant.In(location).Format(time.RFC3339), TimeZone: zone}
 }
 
 func graphEventTime(value graphDateTime) calendar.EventTime {
@@ -364,3 +611,4 @@ func unsupportedMicrosoft(message string) *calendar.APIError {
 }
 
 var _ calendar.EventProviderV2 = (*Provider)(nil)
+var _ calendar.InstanceProviderV2 = (*Provider)(nil)

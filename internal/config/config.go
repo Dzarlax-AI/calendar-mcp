@@ -8,12 +8,18 @@ import (
 )
 
 type Config struct {
-	ListenAddr           string
-	RESTListenAddr       string
-	APIKey               string
-	AllowUnauthenticated bool
-	EnableV2             bool
-	TokenDir             string
+	ListenAddr             string
+	RESTListenAddr         string
+	WorkerHealthAddr       string
+	APIKey                 string
+	AllowUnauthenticated   bool
+	EnableV2               bool
+	TokenDir               string
+	DatabaseURL            string
+	EncryptionKey          string
+	PublicURL              string
+	TrustForwardAuth       bool
+	UIAllowUnauthenticated bool
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -37,12 +43,18 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:           envStr("LISTEN_ADDR", ":8080"),
-		RESTListenAddr:       envStr("REST_LISTEN_ADDR", ""),
-		APIKey:               envStr("API_KEY", ""),
-		AllowUnauthenticated: envBool("ALLOW_UNAUTHENTICATED", false),
-		EnableV2:             envBool("ENABLE_V2", false),
-		TokenDir:             envStr("TOKEN_DIR", "/app/data"),
+		ListenAddr:             envStr("LISTEN_ADDR", ":8080"),
+		RESTListenAddr:         envStr("REST_LISTEN_ADDR", ""),
+		WorkerHealthAddr:       envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
+		APIKey:                 envStr("API_KEY", ""),
+		AllowUnauthenticated:   envBool("ALLOW_UNAUTHENTICATED", false),
+		EnableV2:               envBool("ENABLE_V2", false),
+		TokenDir:               envStr("TOKEN_DIR", "/app/data"),
+		DatabaseURL:            envStr("DATABASE_URL", ""),
+		EncryptionKey:          envStr("CALENDAR_ENCRYPTION_KEY", ""),
+		PublicURL:              envStr("CALENDAR_PUBLIC_URL", ""),
+		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", false),
+		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
@@ -66,30 +78,11 @@ func (c *Config) Validate() error {
 	if c.APIKey == "" && !c.AllowUnauthenticated {
 		return fmt.Errorf("API_KEY is required unless ALLOW_UNAUTHENTICATED=true")
 	}
-	if err := requireCompleteProvider("Google", map[string]string{"GOOGLE_CLIENT_ID": c.GoogleClientID, "GOOGLE_CLIENT_SECRET": c.GoogleClientSecret}); err != nil {
-		return err
+	if c.DatabaseURL != "" && c.PublicURL == "" {
+		return fmt.Errorf("CALENDAR_PUBLIC_URL is required when DATABASE_URL is configured")
 	}
-	if err := requireCompleteProvider("Microsoft", map[string]string{"MS365_CLIENT_ID": c.MS365ClientID, "MS365_CLIENT_SECRET": c.MS365ClientSecret, "MS365_TENANT_ID": c.MS365TenantID}); err != nil {
-		return err
-	}
-	if err := requireCompleteProvider("Apple", map[string]string{"APPLE_USERNAME": c.AppleUsername, "APPLE_APP_PASSWORD": c.AppleAppPassword}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func requireCompleteProvider(name string, values map[string]string) error {
-	configured := false
-	for _, value := range values {
-		configured = configured || value != ""
-	}
-	if !configured {
-		return nil
-	}
-	for key, value := range values {
-		if value == "" {
-			return fmt.Errorf("%s provider is partially configured: %s is required", name, key)
-		}
+	if c.DatabaseURL != "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
+		return fmt.Errorf("platform UI requires UI_TRUST_FORWARD_AUTH=true unless UI_ALLOW_UNAUTHENTICATED=true is explicitly set")
 	}
 	return nil
 }

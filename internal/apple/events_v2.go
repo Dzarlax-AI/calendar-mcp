@@ -14,24 +14,56 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+const appleSyncMarkerProperty = "X-CALENDAR-MCP-SYNC-MARKER"
+
 func (p *Provider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
 	return calendar.CalendarCapabilities{
 		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: true, Update: true, Delete: true},
 		Fields:               calendar.FieldCapabilities{Recurrence: true},
-		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries},
+		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
 		EventTypes:           []string{"default"},
 		Reasons: map[string]string{
-			"instances":          "the Apple adapter does not expand recurrence locally yet",
+			"instances":          "recurrence is expanded locally from the iCalendar object within the requested bounded window",
 			"attendees":          "CalDAV scheduling side effects cannot be suppressed reliably, so V2 attendee writes are rejected",
 			"optimistic_locking": "go-webdav PutCalendarObject does not expose an If-Match precondition",
 		},
 	}, nil
 }
 
+func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime) error {
+	return calendar.ValidateRecurrence(lines)
+}
+
+func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	objects, err := p.getCalendarObjectsFallback(ctx, calendarID)
+	if err != nil {
+		return nil, err
+	}
+	want := calendar.SyncMarkerValue(ruleID, sourceEventID)
+	var found *calendar.EventV2
+	for _, object := range objects {
+		for _, event := range object.Data.Events() {
+			if event.Props.Get(ical.PropRecurrenceID) != nil {
+				continue
+			}
+			value, _ := event.Props.Text(appleSyncMarkerProperty)
+			if value != want {
+				continue
+			}
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			converted := appleEventV2(event, calendarID, object.Path, object.ETag)
+			found = &converted
+		}
+	}
+	return found, nil
+}
+
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
-	if request.View != calendar.RecurrenceSeries {
-		return calendar.Page[calendar.EventV2]{}, unsupportedApple("Apple V2 currently supports recurrence view=series only")
+	if request.View != calendar.RecurrenceSeries && request.View != calendar.RecurrenceExpanded && request.View != calendar.RecurrenceBoth {
+		return calendar.Page[calendar.EventV2]{}, unsupportedApple("unsupported Apple recurrence view")
 	}
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Start, End: request.End}}}}
 	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
@@ -47,19 +79,34 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	}
 	items := make([]calendar.EventV2, 0, len(objects))
 	for _, object := range objects {
-		for _, event := range object.Data.Events() {
-			if event.Props.Get(ical.PropRecurrenceID) != nil {
-				continue
-			}
-			if event.Props.Get(ical.PropRecurrenceRule) == nil {
-				start, startErr := event.DateTimeStart(nil)
-				end, endErr := event.DateTimeEnd(nil)
-				if startErr != nil || endErr != nil || !end.After(request.Start) || !start.Before(request.End) {
-					continue
-				}
-			}
-			items = append(items, appleEventV2(event, request.CalendarID, object.Path, object.ETag))
+		expanded, expandErr := appleEventsFromObject(object, request)
+		if expandErr != nil {
+			return calendar.Page[calendar.EventV2]{}, expandErr
 		}
+		items = append(items, expanded...)
+	}
+	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
+}
+
+func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.InstancesRequestV2) (calendar.Page[calendar.EventV2], error) {
+	path, _, err := splitAppleInstanceID(request.Ref.EventID)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, invalidApple(err)
+	}
+	path, err = appleObjectPath(request.Ref.CalendarID, path)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, invalidApple(err)
+	}
+	objects, err := p.client.MultiGetCalendar(ctx, request.Ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
+	}
+	if len(objects) == 0 {
+		return calendar.Page[calendar.EventV2]{}, notFoundApple(request.Ref)
+	}
+	items, err := appleEventsFromObject(objects[0], calendar.ListEventsRequestV2{CalendarID: request.Ref.CalendarID, Start: request.Start, End: request.End, View: calendar.RecurrenceExpanded, ShowDeleted: request.ShowDeleted})
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
 }
@@ -114,8 +161,8 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 }
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
-	if request.Scope != calendar.ScopeSeries {
-		return nil, unsupportedApple("Apple V2 supports series mutations only")
+	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
+		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
 	}
 	if request.ExpectedETag != "" {
 		return nil, unsupportedApple("Apple V2 optimistic locking is unavailable")
@@ -123,7 +170,14 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Attendees.Present || request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.Conference.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
 		return nil, unsupportedApple("the patch contains fields not supported safely by Apple V2")
 	}
-	path, err := appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)
+	eventID, original, err := splitAppleInstanceID(request.Ref.EventID)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
+	if request.Scope == calendar.ScopeSingle && original == nil {
+		return nil, invalidApple(fmt.Errorf("single-instance mutation requires an instance event id"))
+	}
+	path, err := appleObjectPath(request.Ref.CalendarID, eventID)
 	if err != nil {
 		return nil, invalidApple(err)
 	}
@@ -134,19 +188,53 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if len(objects) == 0 {
 		return nil, notFoundApple(request.Ref)
 	}
-	var master *ical.Event
+	var master, selected *ical.Event
 	for _, value := range objects[0].Data.Events() {
 		if value.Props.Get(ical.PropRecurrenceID) == nil {
 			copy := value
 			master = &copy
-			break
+		} else if original != nil && sameAppleEventTime(appleEventTimeV2(value.Props.Get(ical.PropRecurrenceID)), *original) {
+			copy := value
+			selected = &copy
 		}
 	}
 	if master == nil {
 		return nil, notFoundApple(request.Ref)
 	}
-	start := appleEventTimeV2(master.Props.Get(ical.PropDateTimeStart))
-	end := appleEventTimeV2(master.Props.Get(ical.PropDateTimeEnd))
+	if request.Scope == calendar.ScopeSeries {
+		selected = master
+	} else if selected == nil {
+		selected = cloneAppleEvent(master)
+		for _, name := range []string{ical.PropRecurrenceRule, ical.PropRecurrenceDates, ical.PropExceptionDates} {
+			selected.Props.Del(name)
+		}
+		if err := setAppleEventTimeV2(selected, ical.PropRecurrenceID, *original); err != nil {
+			return nil, invalidApple(err)
+		}
+		masterStart := appleEventTimeV2(master.Props.Get(ical.PropDateTimeStart))
+		masterEnd := appleEventTimeV2(master.Props.Get(ical.PropDateTimeEnd))
+		startInstant, err := masterStart.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse master start: %w", err))
+		}
+		endInstant, err := masterEnd.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse master end: %w", err))
+		}
+		originalInstant, err := original.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse instance original start: %w", err))
+		}
+		if err := setAppleEventTimeV2(selected, ical.PropDateTimeStart, *original); err != nil {
+			return nil, invalidApple(err)
+		}
+		if err := setAppleEventTimeV2(selected, ical.PropDateTimeEnd, appleTimeLikeMaster(originalInstant.Add(endInstant.Sub(startInstant)), masterEnd)); err != nil {
+			return nil, invalidApple(err)
+		}
+		objects[0].Data.Children = append(objects[0].Data.Children, selected.Component)
+	}
+	start := appleEventTimeV2(selected.Props.Get(ical.PropDateTimeStart))
+	end := appleEventTimeV2(selected.Props.Get(ical.PropDateTimeEnd))
 	if request.Patch.Start.Present && !request.Patch.Start.Null {
 		start = request.Patch.Start.Value
 	}
@@ -158,16 +246,16 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 			return nil, invalidApple(err)
 		}
 	}
-	applyAppleTextPatch(master, ical.PropSummary, request.Patch.Title)
-	applyAppleTextPatch(master, ical.PropDescription, request.Patch.Description)
-	applyAppleTextPatch(master, ical.PropLocation, request.Patch.Location)
-	applyAppleTextPatch(master, ical.PropClass, request.Patch.Visibility)
-	applyAppleTextPatch(master, ical.PropTransparency, request.Patch.Transparency)
+	applyAppleTextPatch(selected, ical.PropSummary, request.Patch.Title)
+	applyAppleTextPatch(selected, ical.PropDescription, request.Patch.Description)
+	applyAppleTextPatch(selected, ical.PropLocation, request.Patch.Location)
+	applyAppleTextPatch(selected, ical.PropClass, request.Patch.Visibility)
+	applyAppleTextPatch(selected, ical.PropTransparency, request.Patch.Transparency)
 	if request.Patch.Start.Present {
 		if request.Patch.Start.Null {
 			return nil, invalidApple(fmt.Errorf("start cannot be null"))
 		}
-		if err := setAppleEventTimeV2(master, ical.PropDateTimeStart, request.Patch.Start.Value); err != nil {
+		if err := setAppleEventTimeV2(selected, ical.PropDateTimeStart, request.Patch.Start.Value); err != nil {
 			return nil, invalidApple(err)
 		}
 	}
@@ -175,12 +263,15 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		if request.Patch.End.Null {
 			return nil, invalidApple(fmt.Errorf("end cannot be null"))
 		}
-		if err := setAppleEventTimeV2(master, ical.PropDateTimeEnd, request.Patch.End.Value); err != nil {
+		if err := setAppleEventTimeV2(selected, ical.PropDateTimeEnd, request.Patch.End.Value); err != nil {
 			return nil, invalidApple(err)
 		}
 	}
 	if request.Patch.Recurrence.Present {
-		if err := setAppleRecurrence(master, request.Patch.Recurrence.Value); err != nil {
+		if request.Scope != calendar.ScopeSeries {
+			return nil, unsupportedApple("single Apple instances cannot carry recurrence rules")
+		}
+		if err := setAppleRecurrence(selected, request.Patch.Recurrence.Value); err != nil {
 			return nil, invalidApple(err)
 		}
 	}
@@ -188,22 +279,94 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if err != nil {
 		return nil, err
 	}
-	result := appleEventV2(*master, request.Ref.CalendarID, object.Path, object.ETag)
+	resultID := object.Path
+	if request.Scope == calendar.ScopeSingle {
+		resultID = appleInstanceID(object.Path, *original)
+	}
+	result := appleEventV2(*selected, request.Ref.CalendarID, resultID, object.ETag)
+	if request.Scope == calendar.ScopeSingle {
+		result.RecurringEventID, result.OriginalStart, result.InstanceKind = object.Path, original, "exception"
+	}
 	return &calendar.OperationResult{Status: "completed", Event: &result}, nil
 }
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
-	if request.Scope != calendar.ScopeSeries {
-		return nil, unsupportedApple("Apple V2 supports series mutations only")
+	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
+		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
 	}
 	if request.ExpectedETag != "" {
 		return nil, unsupportedApple("Apple V2 optimistic locking is unavailable")
 	}
-	path, err := appleObjectPath(request.Ref.CalendarID, request.Ref.EventID)
+	eventID, original, err := splitAppleInstanceID(request.Ref.EventID)
 	if err != nil {
 		return nil, invalidApple(err)
 	}
-	if err := p.client.RemoveAll(ctx, path); err != nil {
+	if request.Scope == calendar.ScopeSingle && original == nil {
+		return nil, invalidApple(fmt.Errorf("single-instance deletion requires an instance event id"))
+	}
+	path, err := appleObjectPath(request.Ref.CalendarID, eventID)
+	if err != nil {
+		return nil, invalidApple(err)
+	}
+	if request.Scope == calendar.ScopeSeries {
+		if err := p.client.RemoveAll(ctx, path); err != nil {
+			return nil, err
+		}
+		return &calendar.OperationResult{Status: "completed"}, nil
+	}
+	objects, err := p.client.MultiGetCalendar(ctx, request.Ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
+	if err != nil {
+		return nil, err
+	}
+	if len(objects) == 0 {
+		return nil, notFoundApple(request.Ref)
+	}
+	var master *ical.Event
+	children := objects[0].Data.Children[:0]
+	for _, child := range objects[0].Data.Children {
+		if child.Name != ical.CompEvent {
+			children = append(children, child)
+			continue
+		}
+		event := ical.Event{Component: child}
+		recurrenceID := event.Props.Get(ical.PropRecurrenceID)
+		if recurrenceID == nil {
+			master = &event
+			children = append(children, child)
+			continue
+		}
+		if !sameAppleEventTime(appleEventTimeV2(recurrenceID), *original) {
+			children = append(children, child)
+		}
+	}
+	if master == nil {
+		return nil, notFoundApple(request.Ref)
+	}
+	exdate := ical.NewProp(ical.PropExceptionDates)
+	if original.IsAllDay() {
+		parsed, err := time.Parse(calendar.DateLayout, original.Date)
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse all-day exception date: %w", err))
+		}
+		exdate.SetDate(parsed)
+	} else {
+		parsed, err := original.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse exception date: %w", err))
+		}
+		if original.TimeZone != "UTC" {
+			location, err := time.LoadLocation(original.TimeZone)
+			if err != nil {
+				return nil, invalidApple(fmt.Errorf("load exception time zone: %w", err))
+			}
+			parsed = parsed.In(location)
+			exdate.Params.Set("TZID", original.TimeZone)
+		}
+		exdate.SetDateTime(parsed)
+	}
+	master.Props.Add(exdate)
+	objects[0].Data.Children = children
+	if _, err := p.client.PutCalendarObject(ctx, path, objects[0].Data); err != nil {
 		return nil, err
 	}
 	return &calendar.OperationResult{Status: "completed"}, nil
@@ -244,6 +407,9 @@ func appleEventFromCreate(uid string, input calendar.EventCreateV2) (*ical.Event
 	}
 	if input.Transparency != "" {
 		event.Props.SetText(ical.PropTransparency, input.Transparency)
+	}
+	if input.SyncMarker != nil {
+		event.Props.SetText(appleSyncMarkerProperty, calendar.SyncMarkerValue(input.SyncMarker.RuleID, input.SyncMarker.SourceEventID))
 	}
 	if err := setAppleRecurrence(event, input.Recurrence); err != nil {
 		return nil, err
@@ -360,6 +526,10 @@ func applyAppleTextPatch(event *ical.Event, name string, patch calendar.PatchFie
 		event.Props.SetText(name, patch.Value)
 	}
 }
+
+var _ calendar.EventProviderV2 = (*Provider)(nil)
+var _ calendar.InstanceProviderV2 = (*Provider)(nil)
+
 func invalidApple(err error) *calendar.APIError {
 	return &calendar.APIError{Code: calendar.ErrorInvalidArgument, Message: err.Error(), Provider: "apple", Cause: err}
 }

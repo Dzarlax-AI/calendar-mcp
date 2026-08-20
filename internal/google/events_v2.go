@@ -39,6 +39,40 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 	}, nil
 }
 
+func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime) error {
+	return calendar.ValidateRecurrence(lines)
+}
+
+func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	pageToken := ""
+	var found *calendar.EventV2
+	for {
+		call := p.svc.Events.List(calendarID).
+			SingleEvents(false).
+			ShowDeleted(false).
+			PrivateExtendedProperty("calendar_sync_rule="+ruleID, "calendar_source_event="+sourceEventID).
+			MaxResults(2)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		response, err := call.Context(ctx).Do()
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range response.Items {
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			event := fromGoogleEventV2(item, calendarID, response.TimeZone)
+			found = &event
+		}
+		if response.NextPageToken == "" {
+			return found, nil
+		}
+		pageToken = response.NextPageToken
+	}
+}
+
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
 	if request.View == calendar.RecurrenceBoth {
 		return p.listBothViews(ctx, request)
@@ -113,6 +147,30 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		state.ExpandedToken = page.NextPageToken
 		state.ExpandedDone = page.NextPageToken == ""
 	}
+	masters := map[string]calendar.EventV2{}
+	for _, item := range items {
+		if item.InstanceKind == "seriesMaster" {
+			masters[item.ID] = item
+		}
+	}
+	for i := range items {
+		item := &items[i]
+		if item.InstanceKind != "occurrence" || item.RecurringEventID == "" {
+			continue
+		}
+		master, ok := masters[item.RecurringEventID]
+		if !ok {
+			loaded, loadErr := p.GetEventV2(ctx, calendar.EventRef{CalendarID: request.CalendarID, EventID: item.RecurringEventID})
+			if loadErr != nil {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("load Google series master %q: %w", item.RecurringEventID, loadErr)
+			}
+			master = *loaded
+			masters[item.RecurringEventID] = master
+		}
+		if googleInstanceDiffers(master, *item) {
+			item.InstanceKind = "exception"
+		}
+	}
 	nextToken := ""
 	if !state.SeriesDone || !state.ExpandedDone {
 		nextToken, err = encodeBothPageToken(state)
@@ -121,6 +179,32 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		}
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: nextToken, Complete: true}, nil
+}
+
+func googleInstanceDiffers(master, instance calendar.EventV2) bool {
+	if instance.OriginalStart == nil {
+		return true
+	}
+	if !sameGoogleEventTime(instance.Start, *instance.OriginalStart) {
+		return true
+	}
+	masterStart, masterStartErr := master.Start.Instant()
+	masterEnd, masterEndErr := master.End.Instant()
+	instanceStart, instanceStartErr := instance.Start.Instant()
+	instanceEnd, instanceEndErr := instance.End.Instant()
+	if masterStartErr != nil || masterEndErr != nil || instanceStartErr != nil || instanceEndErr != nil || masterEnd.Sub(masterStart) != instanceEnd.Sub(instanceStart) {
+		return true
+	}
+	return master.Title != instance.Title || master.Description != instance.Description || master.Location != instance.Location || master.Visibility != instance.Visibility || master.Transparency != instance.Transparency
+}
+
+func sameGoogleEventTime(left, right calendar.EventTime) bool {
+	if left.IsAllDay() || right.IsAllDay() {
+		return left.Date != "" && left.Date == right.Date
+	}
+	leftInstant, leftErr := left.Instant()
+	rightInstant, rightErr := right.Instant()
+	return leftErr == nil && rightErr == nil && leftInstant.Equal(rightInstant)
 }
 
 func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {

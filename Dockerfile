@@ -1,19 +1,22 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
+RUN apk add --no-cache curl
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /app/server ./cmd/server
+RUN ./scripts/fetch-htmx.sh
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /app/calendar ./cmd/calendar
 
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
-COPY --from=builder /app/server .
+COPY --from=builder /app/calendar .
 
 RUN mkdir -p /app/data
 
 EXPOSE 8080
 
-CMD ["/app/server"]
+ENTRYPOINT ["/app/calendar"]
+CMD ["serve"]
