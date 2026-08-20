@@ -187,6 +187,12 @@ type EventCreateV2 struct {
 	Conference       *ConferenceData       `json:"conference,omitempty"`
 	GuestPermissions *GuestPermissions     `json:"guest_permissions,omitempty"`
 	Google           *GoogleEventExtension `json:"google,omitempty"`
+	SyncMarker       *SyncMarker           `json:"sync_marker,omitempty"`
+}
+
+type SyncMarker struct {
+	RuleID        string `json:"rule_id"`
+	SourceEventID string `json:"source_event_id"`
 }
 
 type RecurrenceView string

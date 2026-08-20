@@ -189,12 +189,13 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 				}
 				continue
 			}
-			var created *calendar.EventV2
-			if lookup, ok := targetProvider.(calendar.SyncMarkerLookupProvider); ok {
-				created, err = lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
-				if err != nil {
-					return result, fmt.Errorf("recover target event by sync marker: %w", err)
-				}
+			lookup, ok := targetProvider.(calendar.SyncMarkerLookupProvider)
+			if !ok {
+				return result, fmt.Errorf("target provider %q does not support idempotent sync-marker recovery", targetProvider.Name())
+			}
+			created, err := lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
+			if err != nil {
+				return result, fmt.Errorf("recover target event by sync marker: %w", err)
 			}
 			if created == nil {
 				created, err = target.CreateEventV2(ctx, calendar.CreateEventRequestV2{CalendarID: targetCalendarID, Event: mirrorCreate(rule.ID, event, targetProvider.Name()), Notifications: calendar.NotificationsNone})
@@ -379,7 +380,7 @@ func listAll(ctx context.Context, provider calendar.EventProviderV2, request cal
 }
 
 func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) calendar.EventCreateV2 {
-	created := calendar.EventCreateV2{ICalUID: event.ICalUID, Title: event.Title, Description: event.Description, Location: event.Location, Start: event.Start, End: event.End, Recurrence: append([]string(nil), event.Recurrence...), Transparency: event.Transparency, Visibility: event.Visibility}
+	created := calendar.EventCreateV2{ICalUID: event.ICalUID, Title: event.Title, Description: event.Description, Location: event.Location, Start: event.Start, End: event.End, Recurrence: append([]string(nil), event.Recurrence...), Transparency: event.Transparency, Visibility: event.Visibility, SyncMarker: &calendar.SyncMarker{RuleID: ruleID, SourceEventID: event.ID}}
 	if targetProvider == "google" {
 		created.Google = &calendar.GoogleEventExtension{PrivateProperties: map[string]string{"calendar_sync_rule": ruleID, "calendar_source_event": event.ID}}
 	}
@@ -438,9 +439,10 @@ func newMappingID(ruleID, eventID, original string) string {
 func hashEvent(event calendar.EventV2) string {
 	value := struct {
 		Title, Description, Location, Status string
+		Visibility, Transparency             string
 		Start, End                           calendar.EventTime
 		Recurrence                           []string
-	}{event.Title, event.Description, event.Location, event.Status, event.Start, event.End, event.Recurrence}
+	}{event.Title, event.Description, event.Location, event.Status, event.Visibility, event.Transparency, event.Start, event.End, event.Recurrence}
 	data, _ := json.Marshal(value)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

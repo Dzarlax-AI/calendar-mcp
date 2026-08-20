@@ -1,6 +1,7 @@
 package microsoft
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -29,6 +30,19 @@ func TestGraphRecurrenceLinesMapsWindowsZoneAndWeeklyPattern(t *testing.T) {
 	}
 	if got, want := strings.Join(lines, "\n"), "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;WKST=MO;INTERVAL=2;COUNT=8"; got != want {
 		t.Fatalf("recurrence = %q, want %q", got, want)
+	}
+}
+
+func TestGraphRecurrenceJSONOmitsUnsetOptionalFields(t *testing.T) {
+	data, err := json.Marshal(graphRecurrence{Pattern: graphRecurrencePattern{Type: "daily", Interval: 1}, Range: graphRecurrenceRange{Type: "noEnd", StartDate: "2026-08-20"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, forbidden := range []string{"firstDayOfWeek", "index", "endDate", "numberOfOccurrences"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("recurrence JSON %s contains unset %s", text, forbidden)
+		}
 	}
 }
 

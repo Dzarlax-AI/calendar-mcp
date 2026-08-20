@@ -14,6 +14,8 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+const appleSyncMarkerProperty = "X-CALENDAR-MCP-SYNC-MARKER"
+
 func (p *Provider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
 	return calendar.CalendarCapabilities{
 		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: true, Update: true, Delete: true},
@@ -31,6 +33,32 @@ func (p *Provider) Capabilities(context.Context, string) (calendar.CalendarCapab
 
 func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime) error {
 	return calendar.ValidateRecurrence(lines)
+}
+
+func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	objects, err := p.getCalendarObjectsFallback(ctx, calendarID)
+	if err != nil {
+		return nil, err
+	}
+	want := calendar.SyncMarkerValue(ruleID, sourceEventID)
+	var found *calendar.EventV2
+	for _, object := range objects {
+		for _, event := range object.Data.Events() {
+			if event.Props.Get(ical.PropRecurrenceID) != nil {
+				continue
+			}
+			value, _ := event.Props.Text(appleSyncMarkerProperty)
+			if value != want {
+				continue
+			}
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			converted := appleEventV2(event, calendarID, object.Path, object.ETag)
+			found = &converted
+		}
+	}
+	return found, nil
 }
 
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
@@ -185,9 +213,18 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		}
 		masterStart := appleEventTimeV2(master.Props.Get(ical.PropDateTimeStart))
 		masterEnd := appleEventTimeV2(master.Props.Get(ical.PropDateTimeEnd))
-		startInstant, _ := masterStart.Instant()
-		endInstant, _ := masterEnd.Instant()
-		originalInstant, _ := original.Instant()
+		startInstant, err := masterStart.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse master start: %w", err))
+		}
+		endInstant, err := masterEnd.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse master end: %w", err))
+		}
+		originalInstant, err := original.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse instance original start: %w", err))
+		}
 		if err := setAppleEventTimeV2(selected, ical.PropDateTimeStart, *original); err != nil {
 			return nil, invalidApple(err)
 		}
@@ -243,11 +280,11 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		return nil, err
 	}
 	resultID := object.Path
-	if original != nil {
+	if request.Scope == calendar.ScopeSingle {
 		resultID = appleInstanceID(object.Path, *original)
 	}
 	result := appleEventV2(*selected, request.Ref.CalendarID, resultID, object.ETag)
-	if original != nil {
+	if request.Scope == calendar.ScopeSingle {
 		result.RecurringEventID, result.OriginalStart, result.InstanceKind = object.Path, original, "exception"
 	}
 	return &calendar.OperationResult{Status: "completed", Event: &result}, nil
@@ -307,14 +344,25 @@ func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEve
 	}
 	exdate := ical.NewProp(ical.PropExceptionDates)
 	if original.IsAllDay() {
-		parsed, _ := time.Parse(calendar.DateLayout, original.Date)
+		parsed, err := time.Parse(calendar.DateLayout, original.Date)
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse all-day exception date: %w", err))
+		}
 		exdate.SetDate(parsed)
 	} else {
-		parsed, _ := original.Instant()
-		exdate.SetDateTime(parsed)
+		parsed, err := original.Instant()
+		if err != nil {
+			return nil, invalidApple(fmt.Errorf("parse exception date: %w", err))
+		}
 		if original.TimeZone != "UTC" {
+			location, err := time.LoadLocation(original.TimeZone)
+			if err != nil {
+				return nil, invalidApple(fmt.Errorf("load exception time zone: %w", err))
+			}
+			parsed = parsed.In(location)
 			exdate.Params.Set("TZID", original.TimeZone)
 		}
+		exdate.SetDateTime(parsed)
 	}
 	master.Props.Add(exdate)
 	objects[0].Data.Children = children
@@ -359,6 +407,9 @@ func appleEventFromCreate(uid string, input calendar.EventCreateV2) (*ical.Event
 	}
 	if input.Transparency != "" {
 		event.Props.SetText(ical.PropTransparency, input.Transparency)
+	}
+	if input.SyncMarker != nil {
+		event.Props.SetText(appleSyncMarkerProperty, calendar.SyncMarkerValue(input.SyncMarker.RuleID, input.SyncMarker.SourceEventID))
 	}
 	if err := setAppleRecurrence(event, input.Recurrence); err != nil {
 		return nil, err

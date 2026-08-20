@@ -8,17 +8,18 @@ import (
 )
 
 type Config struct {
-	ListenAddr           string
-	RESTListenAddr       string
-	WorkerHealthAddr     string
-	APIKey               string
-	AllowUnauthenticated bool
-	EnableV2             bool
-	TokenDir             string
-	DatabaseURL          string
-	EncryptionKey        string
-	PublicURL            string
-	TrustForwardAuth     bool
+	ListenAddr             string
+	RESTListenAddr         string
+	WorkerHealthAddr       string
+	APIKey                 string
+	AllowUnauthenticated   bool
+	EnableV2               bool
+	TokenDir               string
+	DatabaseURL            string
+	EncryptionKey          string
+	PublicURL              string
+	TrustForwardAuth       bool
+	UIAllowUnauthenticated bool
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -42,17 +43,18 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:           envStr("LISTEN_ADDR", ":8080"),
-		RESTListenAddr:       envStr("REST_LISTEN_ADDR", ""),
-		WorkerHealthAddr:     envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
-		APIKey:               envStr("API_KEY", ""),
-		AllowUnauthenticated: envBool("ALLOW_UNAUTHENTICATED", false),
-		EnableV2:             envBool("ENABLE_V2", false),
-		TokenDir:             envStr("TOKEN_DIR", "/app/data"),
-		DatabaseURL:          envStr("DATABASE_URL", ""),
-		EncryptionKey:        envStr("CALENDAR_ENCRYPTION_KEY", ""),
-		PublicURL:            envStr("CALENDAR_PUBLIC_URL", ""),
-		TrustForwardAuth:     envBool("UI_TRUST_FORWARD_AUTH", true),
+		ListenAddr:             envStr("LISTEN_ADDR", ":8080"),
+		RESTListenAddr:         envStr("REST_LISTEN_ADDR", ""),
+		WorkerHealthAddr:       envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
+		APIKey:                 envStr("API_KEY", ""),
+		AllowUnauthenticated:   envBool("ALLOW_UNAUTHENTICATED", false),
+		EnableV2:               envBool("ENABLE_V2", false),
+		TokenDir:               envStr("TOKEN_DIR", "/app/data"),
+		DatabaseURL:            envStr("DATABASE_URL", ""),
+		EncryptionKey:          envStr("CALENDAR_ENCRYPTION_KEY", ""),
+		PublicURL:              envStr("CALENDAR_PUBLIC_URL", ""),
+		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", true),
+		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
@@ -78,6 +80,9 @@ func (c *Config) Validate() error {
 	}
 	if c.DatabaseURL != "" && c.PublicURL == "" {
 		return fmt.Errorf("CALENDAR_PUBLIC_URL is required when DATABASE_URL is configured")
+	}
+	if c.DatabaseURL != "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
+		return fmt.Errorf("platform UI requires UI_TRUST_FORWARD_AUTH=true unless UI_ALLOW_UNAUTHENTICATED=true is explicitly set")
 	}
 	if err := requireCompleteProvider("Google", map[string]string{"GOOGLE_CLIENT_ID": c.GoogleClientID, "GOOGLE_CLIENT_SECRET": c.GoogleClientSecret}); err != nil {
 		return err

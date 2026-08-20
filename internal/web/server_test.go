@@ -18,7 +18,7 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-func newTestHandler(t *testing.T, trustForwardAuth bool) http.Handler {
+func newTestHandler(t *testing.T, trustForwardAuth, allowUnauthenticated bool) http.Handler {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -30,7 +30,7 @@ func newTestHandler(t *testing.T, trustForwardAuth bool) http.Handler {
 		t.Fatal(err)
 	}
 	cipher, _ := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32)))
-	server, err := New(store, connections.New(store, cipher), nil, func(context.Context) ([]calendar.Provider, error) { return nil, nil }, Config{PublicURL: "https://calendar.example", TrustForwardAuth: trustForwardAuth, AppleCalDAVURL: "https://caldav.icloud.com"})
+	server, err := New(store, connections.New(store, cipher), nil, func(context.Context) ([]calendar.Provider, error) { return nil, nil }, Config{PublicURL: "https://calendar.example", TrustForwardAuth: trustForwardAuth, AllowUnauthenticated: allowUnauthenticated, AppleCalDAVURL: "https://caldav.icloud.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func newTestHandler(t *testing.T, trustForwardAuth bool) http.Handler {
 }
 
 func TestPagesRenderWithoutFabricatedOperationalData(t *testing.T) {
-	handler := newTestHandler(t, false)
+	handler := newTestHandler(t, false, true)
 	for _, path := range []string{"/", "/connections", "/rules", "/rules/new", "/runs", "/settings"} {
 		req := httptest.NewRequest(http.MethodGet, "https://calendar.example"+path, nil)
 		res := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestPagesRenderWithoutFabricatedOperationalData(t *testing.T) {
 }
 
 func TestForwardAuthAndCSRFProtection(t *testing.T) {
-	handler := newTestHandler(t, true)
+	handler := newTestHandler(t, true, false)
 	unauthenticated := httptest.NewRequest(http.MethodGet, "https://calendar.example/connections", nil)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, unauthenticated)
@@ -71,6 +71,29 @@ func TestForwardAuthAndCSRFProtection(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("invalid CSRF status = %d", res.Code)
+	}
+}
+
+func TestUIFailsClosedWithoutForwardAuthOrExplicitBypass(t *testing.T) {
+	handler := newTestHandler(t, false, false)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "https://calendar.example/connections", nil))
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestCreateRuleRejectsMalformedNumericFields(t *testing.T) {
+	handler := newTestHandler(t, false, true)
+	form := url.Values{"interval_seconds": {"not-a-number"}, "lookback_days": {"0"}, "lookahead_days": {"14"}, "csrf_token": {"token"}}
+	req := httptest.NewRequest(http.MethodPost, "https://calendar.example/rules", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://calendar.example")
+	req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: "token"})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusSeeOther || res.Header().Get("Location") != "/rules/new?status=invalid_rule" {
+		t.Fatalf("status=%d location=%q", res.Code, res.Header().Get("Location"))
 	}
 }
 

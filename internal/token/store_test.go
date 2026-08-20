@@ -89,6 +89,14 @@ func TestPersistingTokenSourceReturnsSaveFailure(t *testing.T) {
 	}
 }
 
+func TestTokenSourceAcceptsMissingInitialToken(t *testing.T) {
+	store := NewFileStore(t.TempDir(), "google")
+	source := TokenSource(store, &oauth2.Config{}, nil)
+	if _, err := source.Token(); err == nil {
+		t.Fatal("Token() succeeded without any OAuth credentials")
+	}
+}
+
 type staticTokenSource struct {
 	token *oauth2.Token
 	err   error

@@ -73,6 +73,9 @@ func (s *Service) begin(ctx context.Context, provider, returnPath, connectionID,
 	if !ok {
 		return Start{}, fmt.Errorf("unsupported OAuth provider %q", provider)
 	}
+	if returnPath == "" {
+		returnPath = "/connections"
+	}
 	if !validReturnPath(returnPath) {
 		return Start{}, errors.New("invalid OAuth return path")
 	}
@@ -138,7 +141,7 @@ func (s *Service) CompleteWithTarget(ctx context.Context, provider, state, code 
 }
 
 func validReturnPath(path string) bool {
-	return strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "//") && !strings.ContainsAny(path, "\r\n")
+	return len(path) > 0 && path[0] == '/' && (len(path) == 1 || (path[1] != '/' && path[1] != '\\')) && !strings.ContainsAny(path, "\r\n")
 }
 
 func stateHash(state string) string {

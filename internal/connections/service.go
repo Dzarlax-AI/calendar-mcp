@@ -81,6 +81,9 @@ func (s *Service) ConnectApple(ctx context.Context, displayName, username, appPa
 }
 
 func (s *Service) ReconnectApple(ctx context.Context, id, username, appPassword string) error {
+	if strings.TrimSpace(username) == "" || appPassword == "" {
+		return errors.New("apple username and app-specific password are required")
+	}
 	record, err := s.store.ConnectionByID(ctx, id)
 	if err != nil {
 		return err
@@ -170,6 +173,7 @@ func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, pr
 		if capable, ok := provider.(calendar.CapabilityProvider); ok {
 			capabilities, capabilityErr := capable.Capabilities(ctx, discovered.ID)
 			if capabilityErr != nil {
+				_ = s.store.UpdateConnectionVerification(ctx, connectionID, "error", "provider_discovery_failed", s.now())
 				return fmt.Errorf("discover calendar capabilities: %w", capabilityErr)
 			}
 			canWrite = capabilities.Operations.Create || capabilities.Operations.Update
@@ -179,6 +183,7 @@ func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, pr
 			ID: provider.Name() + "@" + connectionID + ":" + discovered.ID, ConnectionID: connectionID, ProviderCalendarID: discovered.ID,
 			Name: discovered.Name, CanRead: true, CanWrite: canWrite, SupportsRecurrence: supportsRecurrence, DiscoveredAt: now,
 		}); err != nil {
+			_ = s.store.UpdateConnectionVerification(ctx, connectionID, "error", "provider_discovery_failed", s.now())
 			return err
 		}
 	}

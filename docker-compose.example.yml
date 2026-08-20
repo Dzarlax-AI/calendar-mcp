@@ -7,8 +7,9 @@ services:
     environment:
       DATABASE_URL: sqlite:///app/data/calendar.db
       UI_TRUST_FORWARD_AUTH: "false"
+      UI_ALLOW_UNAUTHENTICATED: "true"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - calendar-data:/app/data
     healthcheck:

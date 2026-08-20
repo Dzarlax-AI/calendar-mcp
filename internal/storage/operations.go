@@ -15,7 +15,7 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	q := `SELECT id, interval_seconds FROM sync_rules WHERE state=? AND (next_run_at IS NULL OR next_run_at<=?) ORDER BY created_at`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
@@ -32,10 +32,14 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 	for rows.Next() {
 		var value dueRule
 		if err := rows.Scan(&value.id, &value.interval); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		due = append(due, value)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate due rules: %w", err)
 	}
 	if err := rows.Close(); err != nil {
 		return 0, err
@@ -71,7 +75,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 	if err != nil {
 		return nil, fmt.Errorf("begin claim: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	q := `SELECT candidate.id, candidate.rule_id, candidate.kind, candidate.state, candidate.available_at,
 		candidate.claimed_at, candidate.claimed_by, candidate.attempt, candidate.created_at, candidate.finished_at
 		FROM sync_jobs AS candidate WHERE candidate.state = ? AND candidate.available_at <= ?
@@ -90,6 +94,18 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 	}
 	if err != nil {
 		return nil, fmt.Errorf("select job: %w", err)
+	}
+	if s.dialect == DialectPostgres {
+		if _, err := tx.ExecContext(ctx, s.query(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), j.RuleID); err != nil {
+			return nil, fmt.Errorf("lock job rule: %w", err)
+		}
+		var running int
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM sync_jobs WHERE rule_id=? AND state=?`), j.RuleID, "running").Scan(&running); err != nil {
+			return nil, fmt.Errorf("recheck running rule job: %w", err)
+		}
+		if running > 0 {
+			return nil, nil
+		}
 	}
 	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state = ?, claimed_at = ?, claimed_by = ?, attempt = attempt + 1
 		WHERE id = ? AND state = ?`), "running", now, workerID, j.ID, "pending")
@@ -114,7 +130,7 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, error_code=?, error_summary=?
 		WHERE outcome=? AND job_id IN (SELECT id FROM sync_jobs WHERE state=? AND claimed_at<?)`),
 		"failed", now, "worker_lease_expired", "Worker stopped before the synchronization run completed", "running", "running", staleBefore); err != nil {
@@ -135,6 +151,19 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 	return int(count), nil
 }
 
+func (s *Store) RenewJobLease(ctx context.Context, job Job, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_jobs SET claimed_at=?
+		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), now, job.ID, "running", job.ClaimedBy, job.Attempt)
+	if err != nil {
+		return false, fmt.Errorf("renew job lease: %w", err)
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return count == 1, nil
+}
+
 func (s *Store) StartRun(ctx context.Context, r Run) error {
 	_, err := s.db.ExecContext(ctx, s.query(`INSERT INTO sync_runs(id, job_id, rule_id, trigger_kind, outcome,
 		started_at, finished_at, created_count, updated_count, deleted_count, skipped_count, warning_count,
@@ -147,22 +176,37 @@ func (s *Store) StartRun(ctx context.Context, r Run) error {
 	return nil
 }
 
-func (s *Store) FinishRun(ctx context.Context, runID, jobID, outcome string, finished time.Time, counters Run) error {
+func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome string, finished time.Time, counters Run) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, created_count=?, updated_count=?,
-		deleted_count=?, skipped_count=?, warning_count=?, error_code=?, error_summary=? WHERE id=?`), outcome, finished,
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, finished_at=?
+		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), outcome, finished, job.ID, "running", job.ClaimedBy, job.Attempt)
+	if err != nil {
+		return fmt.Errorf("finish job: %w", err)
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrJobLeaseLost
+	}
+	res, err = tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, created_count=?, updated_count=?,
+		deleted_count=?, skipped_count=?, warning_count=?, error_code=?, error_summary=? WHERE id=? AND job_id=? AND outcome=?`), outcome, finished,
 		counters.CreatedCount, counters.UpdatedCount, counters.DeletedCount, counters.SkippedCount, counters.WarningCount,
-		nullString(counters.ErrorCode), nullString(counters.ErrorSummary), runID)
+		nullString(counters.ErrorCode), nullString(counters.ErrorSummary), runID, job.ID, "running")
 	if err != nil {
 		return fmt.Errorf("finish run: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, finished_at=? WHERE id=?`), outcome, finished, jobID)
+	changed, err = res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("finish job: %w", err)
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("finish run %q: %w", runID, ErrNotFound)
 	}
 	return tx.Commit()
 }
@@ -268,7 +312,7 @@ func (s *Store) ConsumeOAuthAttempt(ctx context.Context, stateHash string, now t
 	if err != nil {
 		return OAuthAttempt{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var a OAuthAttempt
 	var consumed sql.NullTime
 	var connectionID sql.NullString

@@ -82,6 +82,25 @@ func TestFindEventBySyncMarkerV2UsesBothPrivateProperties(t *testing.T) {
 	}
 }
 
+func TestFindEventBySyncMarkerV2FollowsEmptyPage(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("pageToken") == "next" {
+			_, _ = io.WriteString(w, `{"items":[{"id":"recovered","start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[],"nextPageToken":"next"}`)
+	})
+	defer closeServer()
+	event, err := provider.FindEventBySyncMarkerV2(context.Background(), "primary", "rule", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.ID != "recovered" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
 func TestUpdateEventV2UsesETagAndExplicitlyClearsFields(t *testing.T) {
 	requestCount := 0
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {

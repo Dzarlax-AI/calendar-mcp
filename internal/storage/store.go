@@ -27,6 +27,7 @@ var (
 	ErrOAuthNotConsumable = errors.New("oauth attempt is expired, consumed, or missing")
 	ErrConnectionInUse    = errors.New("connection is referenced by a sync rule")
 	ErrRuleCycle          = errors.New("sync rule would create a cycle")
+	ErrJobLeaseLost       = errors.New("sync job lease is no longer owned by this worker attempt")
 )
 
 //go:embed migrations/postgres/*.sql migrations/sqlite/*.sql
@@ -53,16 +54,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect database: %w", err)
 	}
-	store := &Store{db: db, dialect: dialect}
-	if dialect == DialectSQLite {
-		for _, pragma := range []string{"PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL", "PRAGMA busy_timeout = 5000"} {
-			if _, err := db.ExecContext(ctx, pragma); err != nil {
-				_ = db.Close()
-				return nil, fmt.Errorf("configure sqlite: %w", err)
-			}
-		}
-	}
-	return store, nil
+	return &Store{db: db, dialect: dialect}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -83,6 +75,11 @@ func parseDatabaseURL(raw string) (Dialect, string, string, error) {
 		if dsn == "" {
 			return "", "", "", errors.New("sqlite DATABASE_URL requires a path")
 		}
+		separator := "?"
+		if strings.Contains(dsn, "?") {
+			separator = "&"
+		}
+		dsn += separator + "_pragma=foreign_keys%28ON%29&_pragma=busy_timeout%285000%29&_pragma=journal_mode%28WAL%29"
 		return DialectSQLite, "sqlite", dsn, nil
 	default:
 		return "", "", "", fmt.Errorf("unsupported DATABASE_URL scheme %q", u.Scheme)
@@ -99,7 +96,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if s.dialect == DialectPostgres {
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(192836421)"); err != nil {
 			return fmt.Errorf("lock migrations: %w", err)
@@ -189,7 +186,7 @@ func (s *Store) ConnectionByID(ctx context.Context, id string) (Connection, erro
 }
 
 func (s *Store) UpdateConnectionCredentials(ctx context.Context, id string, encrypted []byte, version int, updatedAt time.Time) error {
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE connections SET encrypted_credentials=?, credential_version=?, updated_at=? WHERE id=?`), encrypted, version, updatedAt, id)
+	res, err := s.db.ExecContext(ctx, s.query(`UPDATE connections SET encrypted_credentials=?, credential_version=?, status=?, last_verified_at=NULL, last_error_code=NULL, updated_at=? WHERE id=?`), encrypted, version, "pending", updatedAt, id)
 	if err != nil {
 		return fmt.Errorf("update connection credentials: %w", err)
 	}
@@ -230,7 +227,7 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var references int
 	err = tx.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM sync_rules r
 		JOIN calendars source ON source.id=r.source_calendar_id
@@ -420,7 +417,7 @@ func (s *Store) CreateRule(ctx context.Context, r Rule) error {
 	if err != nil {
 		return fmt.Errorf("begin create rule: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := s.lockRuleGraph(ctx, tx); err != nil {
 		return err
 	}
@@ -525,7 +522,7 @@ func (s *Store) ImportLegacy(ctx context.Context, r Rule, mappings []Mapping) er
 	if err != nil {
 		return fmt.Errorf("begin legacy import: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := s.lockRuleGraph(ctx, tx); err != nil {
 		return err
 	}

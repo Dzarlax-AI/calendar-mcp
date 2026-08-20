@@ -30,12 +30,13 @@ var content embed.FS
 type ProviderBuilder func(context.Context) ([]calendar.Provider, error)
 
 type Config struct {
-	PublicURL           string
-	TrustForwardAuth    bool
-	GoogleConfigured    bool
-	MicrosoftConfigured bool
-	AppleCalDAVURL      string
-	OnProvidersChanged  func([]calendar.Provider)
+	PublicURL            string
+	TrustForwardAuth     bool
+	AllowUnauthenticated bool
+	GoogleConfigured     bool
+	MicrosoftConfigured  bool
+	AppleCalDAVURL       string
+	OnProvidersChanged   func([]calendar.Provider)
 }
 
 type Server struct {
@@ -305,7 +306,7 @@ func (s *Server) connectApple(w http.ResponseWriter, r *http.Request) {
 		_, err = provider.ListCalendars(r.Context())
 	}
 	if err != nil {
-		log.Printf("verify Apple connection: %v", err)
+		log.Printf("verify Apple connection failed: category=%T", err)
 		http.Redirect(w, r, "/connections?status=verification_failed", http.StatusSeeOther)
 		return
 	}
@@ -373,9 +374,13 @@ func (s *Server) refreshProviders(ctx context.Context) error {
 }
 
 func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
-	interval, _ := strconv.Atoi(r.FormValue("interval_seconds"))
-	lookback, _ := strconv.Atoi(r.FormValue("lookback_days"))
-	lookahead, _ := strconv.Atoi(r.FormValue("lookahead_days"))
+	interval, intervalErr := strconv.Atoi(r.FormValue("interval_seconds"))
+	lookback, lookbackErr := strconv.Atoi(r.FormValue("lookback_days"))
+	lookahead, lookaheadErr := strconv.Atoi(r.FormValue("lookahead_days"))
+	if intervalErr != nil || lookbackErr != nil || lookaheadErr != nil {
+		http.Redirect(w, r, "/rules/new?status=invalid_rule", http.StatusSeeOther)
+		return
+	}
 	now := time.Now().UTC()
 	rule := storage.Rule{ID: newID(), SourceCalendarID: r.FormValue("source_calendar_id"), TargetCalendarID: r.FormValue("target_calendar_id"), State: "paused", IntervalSeconds: interval, LookbackDays: lookback, LookaheadDays: lookahead, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.CreateRule(r.Context(), rule); err != nil {
@@ -394,7 +399,12 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) enableRule(w http.ResponseWriter, r *http.Request) {
 	ok, err := s.store.HasSuccessfulDryRun(r.Context(), r.PathValue("id"))
-	if err != nil || !ok {
+	if err != nil {
+		log.Printf("check successful dry run: %v", err)
+		http.Redirect(w, r, "/rules?status=queue_failed", http.StatusSeeOther)
+		return
+	}
+	if !ok {
 		http.Redirect(w, r, "/rules?status=dry_run_required", http.StatusSeeOther)
 		return
 	}
@@ -424,7 +434,7 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) protected(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "" {
+		if (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

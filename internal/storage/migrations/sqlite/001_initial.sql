@@ -58,6 +58,7 @@ CREATE TABLE sync_jobs (
   finished_at TIMESTAMP
 );
 CREATE INDEX sync_jobs_claim_idx ON sync_jobs(state, available_at, created_at);
+CREATE UNIQUE INDEX sync_jobs_one_running_per_rule_idx ON sync_jobs(rule_id) WHERE state = 'running';
 
 CREATE TABLE sync_runs (
   id TEXT PRIMARY KEY,
@@ -91,6 +92,7 @@ CREATE TABLE event_mappings (
   reconciliation_state TEXT NOT NULL,
   UNIQUE(rule_id, source_event_id, original_start)
 );
+CREATE UNIQUE INDEX event_mappings_target_idx ON event_mappings(rule_id, target_event_id);
 
 CREATE TABLE oauth_attempts (
   state_hash TEXT PRIMARY KEY,

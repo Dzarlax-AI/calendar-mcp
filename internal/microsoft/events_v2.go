@@ -14,6 +14,8 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+const microsoftSyncMarkerProperty = "String {8ECCC264-6887-4EBE-992F-8888D0AB112E} Name CalendarMcpSyncMarker"
+
 func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
 	var metadata struct {
 		CanEdit bool `json:"canEdit"`
@@ -41,6 +43,41 @@ func (p *Provider) ValidateRecurrenceWrite(lines []string, start calendar.EventT
 	return err
 }
 
+func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	want := calendar.SyncMarkerValue(ruleID, sourceEventID)
+	path := fmt.Sprintf("/me/calendars/%s/events", url.PathEscape(calendarID))
+	filter := fmt.Sprintf("singleValueExtendedProperties/Any(ep: ep/id eq '%s' and ep/value eq '%s')", microsoftSyncMarkerProperty, want)
+	params := url.Values{"$filter": {filter}, "$top": {"2"}}
+	next := p.baseURL + path + "?" + params.Encode()
+	var found *calendar.EventV2
+	for next != "" {
+		var response struct {
+			Value    []graphEvent `json:"value"`
+			NextLink string       `json:"@odata.nextLink"`
+		}
+		if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+			return nil, err
+		}
+		for i := range response.Value {
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			converted, err := response.Value[i].toEventV2(calendarID)
+			if err != nil {
+				return nil, err
+			}
+			found = &converted
+		}
+		if response.NextLink != "" {
+			if err := p.validateGraphPageURL(response.NextLink); err != nil {
+				return nil, err
+			}
+		}
+		next = response.NextLink
+	}
+	return found, nil
+}
+
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
 	if request.View != "" && request.View != calendar.RecurrenceExpanded && request.View != calendar.RecurrenceBoth {
 		return calendar.Page[calendar.EventV2]{}, unsupportedMicrosoft("Microsoft V2 supports expanded and both recurrence views")
@@ -64,6 +101,25 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	if response.NextLink != "" {
 		if err := p.validateGraphPageURL(response.NextLink); err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
+		}
+	}
+	if request.View == calendar.RecurrenceBoth {
+		for response.NextLink != "" {
+			nextPage := response.NextLink
+			var following struct {
+				Value    []graphEvent `json:"value"`
+				NextLink string       `json:"@odata.nextLink"`
+			}
+			if err := p.getURLWithHeaders(ctx, nextPage, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &following); err != nil {
+				return calendar.Page[calendar.EventV2]{}, err
+			}
+			if following.NextLink != "" {
+				if err := p.validateGraphPageURL(following.NextLink); err != nil {
+					return calendar.Page[calendar.EventV2]{}, err
+				}
+			}
+			response.Value = append(response.Value, following.Value...)
+			response.NextLink = following.NextLink
 		}
 	}
 	items := make([]calendar.EventV2, 0, len(response.Value))
@@ -337,6 +393,9 @@ func toGraphCreateV2(event calendar.EventCreateV2) (graphEventCreate, error) {
 		return graphEventCreate{}, fmt.Errorf("start and end must use the same representation")
 	}
 	body := graphEventCreate{Subject: event.Title, Body: &graphBody{ContentType: "text", Content: event.Description}, Start: start, End: end, IsAllDay: startAllDay, Attendees: toGraphAttendeesV2(event.Attendees)}
+	if event.SyncMarker != nil {
+		body.SingleValueExtendedProperties = []graphSingleValueProperty{{ID: microsoftSyncMarkerProperty, Value: calendar.SyncMarkerValue(event.SyncMarker.RuleID, event.SyncMarker.SourceEventID)}}
+	}
 	body.Recurrence, err = portableToGraphRecurrence(event.Recurrence, event.Start)
 	if err != nil {
 		return graphEventCreate{}, err
@@ -374,6 +433,11 @@ func (e *graphEvent) toEventV2(calendarID string) (calendar.EventV2, error) {
 	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, Title: e.Subject, Description: e.Body.Content, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, InstanceKind: e.Type, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
 	if e.IsCancelled {
 		result.Status = "cancelled"
+	}
+	if result.InstanceKind == "singleInstance" {
+		result.InstanceKind = ""
+	} else if e.IsCancelled && (result.InstanceKind == "occurrence" || result.InstanceKind == "exception") {
+		result.InstanceKind = "cancelled"
 	}
 	if e.IsAllDay {
 		result.Start = calendar.EventTime{Date: graphDate(e.Start)}

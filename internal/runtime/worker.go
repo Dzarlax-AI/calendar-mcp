@@ -25,6 +25,7 @@ import (
 var errWorkerNotConfigured = errors.New("worker storage is not configured")
 
 const workerLease = 15 * time.Minute
+const workerHeartbeat = workerLease / 3
 
 type providerBuilder interface {
 	Build(context.Context) ([]calendar.Provider, error)
@@ -47,7 +48,8 @@ func Worker(ctx context.Context) error {
 	if err := store.CheckSchema(ctx); err != nil {
 		return err
 	}
-	healthListener, err := net.Listen("tcp", cfg.WorkerHealthAddr)
+	var listenConfig net.ListenConfig
+	healthListener, err := listenConfig.Listen(ctx, "tcp", cfg.WorkerHealthAddr)
 	if err != nil {
 		return fmt.Errorf("listen for worker health: %w", err)
 	}
@@ -100,7 +102,7 @@ func runWorkerCycle(ctx context.Context, store *storage.Store, factory providerB
 	}
 	workerID := "worker-" + uuid.NewString()
 	for {
-		job, err := store.ClaimJob(ctx, workerID, now)
+		job, err := store.ClaimJob(ctx, workerID, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -122,10 +124,25 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	if err := store.StartRun(ctx, run); err != nil {
 		return err
 	}
-	providers, err := factory.Build(ctx)
+	syncCtx, cancelSync := context.WithCancel(ctx)
+	defer cancelSync()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	ticker := time.NewTicker(workerHeartbeat)
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		heartbeatDone <- maintainJobLease(heartbeatCtx, ticker.C, func(at time.Time) (bool, error) {
+			return store.RenewJobLease(heartbeatCtx, job, at.UTC())
+		}, cancelSync)
+	}()
+	providers, err := factory.Build(syncCtx)
 	var result syncengine.Result
 	if err == nil {
-		result, err = syncengine.New(calendar.NewRegistry(providers), store).Run(ctx, rule, run.DryRun)
+		result, err = syncengine.New(calendar.NewRegistry(providers), store).Run(syncCtx, rule, run.DryRun)
+	}
+	stopHeartbeat()
+	ticker.Stop()
+	if heartbeatErr := <-heartbeatDone; heartbeatErr != nil {
+		err = errors.Join(err, heartbeatErr)
 	}
 	finished := time.Now().UTC()
 	if err != nil {
@@ -134,14 +151,36 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		if errors.As(err, &recurrenceErr) {
 			code, summary = "recurrence_unsupported", "Target calendar cannot preserve this recurrence pattern; the rule remains paused."
 		}
-		finishErr := store.FinishRun(ctx, run.ID, job.ID, "failed", finished, storage.Run{ErrorCode: code, ErrorSummary: summary})
+		finishErr := store.FinishRun(ctx, run.ID, job, "failed", finished, storage.Run{ErrorCode: code, ErrorSummary: summary})
 		if finishErr != nil {
 			return errors.Join(err, finishErr)
 		}
 		return err
 	}
-	return store.FinishRun(ctx, run.ID, job.ID, "succeeded", finished, storage.Run{
+	return store.FinishRun(ctx, run.ID, job, "succeeded", finished, storage.Run{
 		CreatedCount: result.Created, UpdatedCount: result.Updated, DeletedCount: result.Deleted,
 		SkippedCount: result.Skipped, WarningCount: result.Warnings,
 	})
+}
+
+func maintainJobLease(ctx context.Context, ticks <-chan time.Time, renew func(time.Time) (bool, error), cancelWork context.CancelFunc) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case at, ok := <-ticks:
+			if !ok {
+				return nil
+			}
+			owned, err := renew(at)
+			if err != nil {
+				cancelWork()
+				return fmt.Errorf("renew worker lease: %w", err)
+			}
+			if !owned {
+				cancelWork()
+				return storage.ErrJobLeaseLost
+			}
+		}
+	}
 }

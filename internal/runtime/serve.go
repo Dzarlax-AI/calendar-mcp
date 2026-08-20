@@ -128,7 +128,7 @@ func Serve(_ context.Context) error {
 		}
 		factory := providerfactory.NewFactory(cfg, platformStore, connectionService)
 		ui, err := web.New(platformStore, connectionService, oauthflow.New(platformStore, credentialCipher, oauthProviders), factory.Build, web.Config{
-			PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth,
+			PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated,
 			GoogleConfigured: cfg.GoogleClientID != "", MicrosoftConfigured: cfg.MS365ClientID != "", AppleCalDAVURL: cfg.AppleCalDAVURL,
 			OnProvidersChanged: reg.ReplaceProviders,
 		})

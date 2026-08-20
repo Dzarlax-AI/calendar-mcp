@@ -39,7 +39,7 @@ type Preview struct {
 	Target       string    `json:"target"`
 	State        string    `json:"state"`
 	MappingCount int       `json:"mapping_count"`
-	LastSync     time.Time `json:"last_sync,omitempty"`
+	LastSync     time.Time `json:"last_sync,omitzero"`
 }
 
 type Store interface {

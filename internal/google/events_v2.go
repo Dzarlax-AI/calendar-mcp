@@ -44,23 +44,33 @@ func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime)
 }
 
 func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
-	call := p.svc.Events.List(calendarID).
-		SingleEvents(false).
-		ShowDeleted(false).
-		PrivateExtendedProperty("calendar_sync_rule="+ruleID, "calendar_source_event="+sourceEventID).
-		MaxResults(2)
-	response, err := call.Context(ctx).Do()
-	if err != nil {
-		return nil, err
+	pageToken := ""
+	var found *calendar.EventV2
+	for {
+		call := p.svc.Events.List(calendarID).
+			SingleEvents(false).
+			ShowDeleted(false).
+			PrivateExtendedProperty("calendar_sync_rule="+ruleID, "calendar_source_event="+sourceEventID).
+			MaxResults(2)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		response, err := call.Context(ctx).Do()
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range response.Items {
+			if found != nil {
+				return nil, fmt.Errorf("multiple target events share the same sync marker")
+			}
+			event := fromGoogleEventV2(item, calendarID, response.TimeZone)
+			found = &event
+		}
+		if response.NextPageToken == "" {
+			return found, nil
+		}
+		pageToken = response.NextPageToken
 	}
-	if len(response.Items) == 0 {
-		return nil, nil
-	}
-	if len(response.Items) > 1 {
-		return nil, fmt.Errorf("multiple target events share the same sync marker")
-	}
-	event := fromGoogleEventV2(response.Items[0], calendarID, response.TimeZone)
-	return &event, nil
 }
 
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {

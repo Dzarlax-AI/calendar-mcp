@@ -26,6 +26,7 @@ CREATE TABLE sync_jobs (
   attempt INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ
 );
 CREATE INDEX sync_jobs_claim_idx ON sync_jobs(state, available_at, created_at);
+CREATE UNIQUE INDEX sync_jobs_one_running_per_rule_idx ON sync_jobs(rule_id) WHERE state = 'running';
 CREATE TABLE sync_runs (
   id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
   rule_id TEXT NOT NULL REFERENCES sync_rules(id) ON DELETE CASCADE, trigger_kind TEXT NOT NULL, outcome TEXT NOT NULL,
@@ -40,6 +41,7 @@ CREATE TABLE event_mappings (
   last_seen_at TIMESTAMPTZ NOT NULL, reconciliation_state TEXT NOT NULL,
   UNIQUE(rule_id, source_event_id, original_start)
 );
+CREATE UNIQUE INDEX event_mappings_target_idx ON event_mappings(rule_id, target_event_id);
 CREATE TABLE oauth_attempts (
   state_hash TEXT PRIMARY KEY, provider TEXT NOT NULL, connection_id TEXT, mode TEXT NOT NULL, encrypted_verifier BYTEA NOT NULL,
   return_path TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ

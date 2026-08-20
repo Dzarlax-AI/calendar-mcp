@@ -2,8 +2,15 @@ package calendar
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 )
+
+func SyncMarkerValue(ruleID, sourceEventID string) string {
+	sum := sha256.Sum256([]byte(ruleID + "\x00" + sourceEventID))
+	return hex.EncodeToString(sum[:])
+}
 
 type Provider interface {
 	Name() string

@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"golang.org/x/oauth2"
@@ -48,13 +47,13 @@ func (f *Factory) Build(ctx context.Context) ([]calendar.Provider, error) {
 		switch record.Provider {
 		case "google":
 			if f.config.GoogleClientID == "" || f.config.GoogleClientSecret == "" {
-				return nil, errors.New("google application credentials are not configured")
+				return nil, fmt.Errorf("build google connection %q: application credentials are not configured", record.ID)
 			}
 			provider, err = google.NewWithTokenStore(f.config.GoogleClientID, f.config.GoogleClientSecret,
 				f.connections.OAuthTokenStore(record.ID, record.Provider), &oauth2.Token{})
 		case "microsoft":
 			if f.config.MS365ClientID == "" || f.config.MS365ClientSecret == "" || f.config.MS365TenantID == "" {
-				return nil, errors.New("microsoft application credentials are not configured")
+				return nil, fmt.Errorf("build microsoft connection %q: application credentials are not configured", record.ID)
 			}
 			provider, err = microsoft.NewWithTokenStore(f.config.MS365ClientID, f.config.MS365ClientSecret, f.config.MS365TenantID,
 				f.connections.OAuthTokenStore(record.ID, record.Provider), &oauth2.Token{})
@@ -68,7 +67,7 @@ func (f *Factory) Build(ctx context.Context) ([]calendar.Provider, error) {
 			return nil, fmt.Errorf("unsupported stored provider %q", record.Provider)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("build %s provider: %w", record.Provider, err)
+			return nil, fmt.Errorf("build %s connection %q: %w", record.Provider, record.ID, err)
 		}
 		if routed, ok := provider.(calendar.RouteConfigurableProvider); ok {
 			routed.SetRoute(record.Provider+"@"+record.ID, calendarIDs[record.ID])

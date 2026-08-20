@@ -21,9 +21,9 @@ services:
     env_file: ${CALENDAR_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgres://calendar:change-me@postgres:5432/calendar?sslmode=disable
-      UI_TRUST_FORWARD_AUTH: "false"
+      UI_TRUST_FORWARD_AUTH: "true"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

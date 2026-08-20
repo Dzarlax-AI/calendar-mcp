@@ -77,7 +77,7 @@ func TestOAuthPKCEStateAndSingleUse(t *testing.T) {
 func TestOAuthRejectsUnsafeReturnPathAndExpiredAttempt(t *testing.T) {
 	service, _ := newOAuthService(t)
 	ctx := context.Background()
-	for _, path := range []string{"https://evil.example", "//evil.example", "/ok\r\nBad: value"} {
+	for _, path := range []string{"https://evil.example", "//evil.example", `/\\evil.example`, "/ok\r\nBad: value"} {
 		if _, err := service.Begin(ctx, "google", path); err == nil {
 			t.Fatalf("return path %q accepted", path)
 		}
@@ -89,6 +89,21 @@ func TestOAuthRejectsUnsafeReturnPathAndExpiredAttempt(t *testing.T) {
 	service.now = func() time.Time { return time.Date(2026, 8, 20, 12, 11, 0, 0, time.UTC) }
 	if _, _, err := service.Complete(ctx, "google", start.State, "code"); !errors.Is(err, storage.ErrOAuthNotConsumable) {
 		t.Fatalf("expired error = %v", err)
+	}
+}
+
+func TestOAuthNormalizesEmptyReturnPath(t *testing.T) {
+	service, _ := newOAuthService(t)
+	start, err := service.Begin(context.Background(), "google", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, returnPath, err := service.Complete(context.Background(), "google", start.State, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if returnPath != "/connections" {
+		t.Fatalf("return path = %q", returnPath)
 	}
 }
 

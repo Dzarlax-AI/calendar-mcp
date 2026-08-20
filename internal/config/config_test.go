@@ -32,3 +32,14 @@ func TestValidateRejectsPartialProviderConfiguration(t *testing.T) {
 		t.Fatal("Validate() accepted a provider with missing client secret")
 	}
 }
+
+func TestValidateRequiresExplicitUIAuthenticationMode(t *testing.T) {
+	cfg := &Config{APIKey: "secret", DatabaseURL: "sqlite:///tmp/calendar.db", PublicURL: "http://localhost:8080"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted platform UI without ForwardAuth or explicit local bypass")
+	}
+	cfg.UIAllowUnauthenticated = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected explicit unauthenticated UI mode: %v", err)
+	}
+}

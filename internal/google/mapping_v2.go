@@ -158,6 +158,16 @@ func toGoogleEventV2(input calendar.EventCreateV2) (*gcal.Event, error) {
 			return nil, fmt.Errorf("working location properties: %w", err)
 		}
 	}
+	if input.SyncMarker != nil {
+		if event.ExtendedProperties == nil {
+			event.ExtendedProperties = &gcal.EventExtendedProperties{}
+		}
+		if event.ExtendedProperties.Private == nil {
+			event.ExtendedProperties.Private = map[string]string{}
+		}
+		event.ExtendedProperties.Private["calendar_sync_rule"] = input.SyncMarker.RuleID
+		event.ExtendedProperties.Private["calendar_source_event"] = input.SyncMarker.SourceEventID
+	}
 	return event, nil
 }
 

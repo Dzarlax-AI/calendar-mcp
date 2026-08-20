@@ -53,9 +53,15 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 	}
 	base := appleEventV2(*master, request.CalendarID, object.Path, object.ETag)
 	if len(base.Recurrence) == 0 {
-		start, startErr := base.Start.Instant()
-		end, endErr := base.End.Instant()
-		if startErr != nil || endErr != nil || !end.After(request.Start) || !start.Before(request.End) {
+		start, err := base.Start.Instant()
+		if err != nil {
+			return nil, fmt.Errorf("parse Apple event start %q: %w", object.Path, err)
+		}
+		end, err := base.End.Instant()
+		if err != nil {
+			return nil, fmt.Errorf("parse Apple event end %q: %w", object.Path, err)
+		}
+		if !end.After(request.Start) || !start.Before(request.End) {
 			return nil, nil
 		}
 		return []calendar.EventV2{base}, nil
@@ -129,7 +135,10 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		exceptions[appleTimeKey(original)] = item
 	}
 	duration := end.Sub(start)
-	for _, occurrence := range set.Between(request.Start, request.End, true) {
+	for _, occurrence := range set.Between(request.Start.Add(-duration), request.End, true) {
+		if !occurrence.Add(duration).After(request.Start) {
+			continue
+		}
 		original := appleTimeLikeMaster(occurrence, base.Start)
 		key := appleTimeKey(original)
 		if exception, ok := exceptions[key]; ok {

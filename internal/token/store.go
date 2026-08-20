@@ -116,6 +116,9 @@ func (s *FileStore) TokenSource(cfg *oauth2.Config, initial *oauth2.Token) oauth
 }
 
 func TokenSource(store Store, cfg *oauth2.Config, initial *oauth2.Token) oauth2.TokenSource {
+	if initial == nil {
+		initial = &oauth2.Token{}
+	}
 	return &persistingTokenSource{
 		store: store,
 		src:   cfg.TokenSource(context.Background(), initial),

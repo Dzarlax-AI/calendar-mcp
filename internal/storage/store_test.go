@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,7 +113,17 @@ func runStorageContract(t *testing.T, store *Store) {
 		t.Fatalf("connections = %d, err = %v", len(connections), err)
 	}
 	if err := store.CreateConnection(ctx, connections[0]); err == nil {
-		t.Fatal("duplicate provider succeeded")
+		t.Fatal("duplicate primary key succeeded")
+	}
+	duplicateAccount := connections[0]
+	duplicateAccount.ID, duplicateAccount.DisplayName = "duplicate-account", "Duplicate account"
+	if err := store.CreateConnection(ctx, duplicateAccount); err == nil {
+		t.Fatal("duplicate provider account fingerprint succeeded")
+	}
+	secondPending := connections[0]
+	secondPending.ID, secondPending.AccountFingerprint, secondPending.DisplayName = "second-pending", "", "Second pending account"
+	if err := store.CreateConnection(ctx, secondPending); err != nil {
+		t.Fatalf("second pending account rejected: %v", err)
 	}
 
 	for _, c := range []Calendar{
@@ -126,6 +137,12 @@ func runStorageContract(t *testing.T, store *Store) {
 	calendars, err := store.ListCalendars(ctx, "ms")
 	if err != nil || len(calendars) != 1 || calendars[0].ID != "source" {
 		t.Fatalf("calendars = %#v, err = %v", calendars, err)
+	}
+	for reference, want := range map[string]string{"microsoft:source-provider": "source", "google:target-provider": "target"} {
+		resolved, err := store.ResolveCalendarReference(ctx, reference)
+		if err != nil || resolved != want {
+			t.Fatalf("ResolveCalendarReference(%q) = %q, %v; want %q", reference, resolved, err, want)
+		}
 	}
 
 	rule := Rule{ID: "rule", SourceCalendarID: "source", TargetCalendarID: "target", State: "paused", IntervalSeconds: 600,
@@ -164,14 +181,18 @@ func runStorageContract(t *testing.T, store *Store) {
 	if err := store.StartRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishRun(ctx, "run", "job", "succeeded", now.Add(time.Minute), Run{CreatedCount: 2, SkippedCount: 1}); err != nil {
+	if err := store.FinishRun(ctx, "run", *claimed, "succeeded", now.Add(time.Minute), Run{CreatedCount: 2, SkippedCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 	claimedParallel, err := store.ClaimJob(ctx, "worker-2", now.Add(time.Minute))
 	if err != nil || claimedParallel == nil || claimedParallel.ID != "parallel" {
 		t.Fatalf("parallel claim = %#v, err = %v", claimedParallel, err)
 	}
-	if err := store.FinishRun(ctx, "missing-run", "parallel", "succeeded", now.Add(2*time.Minute), Run{}); err != nil {
+	parallelRun := Run{ID: "parallel-run", JobID: "parallel", RuleID: "rule", Trigger: "manual", Outcome: "running", StartedAt: now.Add(time.Minute)}
+	if err := store.StartRun(ctx, parallelRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishRun(ctx, "parallel-run", *claimedParallel, "succeeded", now.Add(2*time.Minute), Run{}); err != nil {
 		t.Fatal(err)
 	}
 	stale := Job{ID: "stale", RuleID: "rule", Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now.Add(2 * time.Minute)}
@@ -186,18 +207,31 @@ func runStorageContract(t *testing.T, store *Store) {
 	if err := store.StartRun(ctx, staleRun); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := store.RecoverStaleJobs(ctx, now.Add(4*time.Minute), now.Add(20*time.Minute)); err != nil || count != 1 {
+	if renewed, err := store.RenewJobLease(ctx, *claimedStale, now.Add(10*time.Minute)); err != nil || !renewed {
+		t.Fatalf("renewed=%v err=%v", renewed, err)
+	}
+	if count, err := store.RecoverStaleJobs(ctx, now.Add(4*time.Minute), now.Add(20*time.Minute)); err != nil || count != 0 {
+		t.Fatalf("premature recovery=%d err=%v", count, err)
+	}
+	if count, err := store.RecoverStaleJobs(ctx, now.Add(11*time.Minute), now.Add(20*time.Minute)); err != nil || count != 1 {
 		t.Fatalf("recovered=%d err=%v", count, err)
+	}
+	if err := store.FinishRun(ctx, "stale-run", *claimedStale, "succeeded", now.Add(20*time.Minute), Run{}); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale worker finish error = %v", err)
 	}
 	reclaimed, err := store.ClaimJob(ctx, "worker-3", now.Add(20*time.Minute))
 	if err != nil || reclaimed == nil || reclaimed.ID != "stale" || reclaimed.Attempt != 2 {
 		t.Fatalf("reclaimed = %#v, err = %v", reclaimed, err)
 	}
-	if err := store.FinishRun(ctx, "missing-run-2", "stale", "succeeded", now.Add(21*time.Minute), Run{}); err != nil {
+	reclaimedRun := Run{ID: "reclaimed-run", JobID: "stale", RuleID: "rule", Trigger: "manual", Outcome: "running", StartedAt: now.Add(20 * time.Minute)}
+	if err := store.StartRun(ctx, reclaimedRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishRun(ctx, "reclaimed-run", *reclaimed, "succeeded", now.Add(21*time.Minute), Run{}); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := store.ListRuns(ctx, 10)
-	if err != nil || len(runs) != 2 || runs[0].ErrorCode != "worker_lease_expired" || runs[1].CreatedCount != 2 || !runs[1].DryRun {
+	if err != nil || len(runs) != 4 || runs[1].ErrorCode != "worker_lease_expired" || runs[3].CreatedCount != 2 || !runs[3].DryRun {
 		t.Fatalf("runs = %#v, err = %v", runs, err)
 	}
 	if err := store.SetRuleState(ctx, "rule", "enabled", nil, now); err != nil {
@@ -218,6 +252,11 @@ func runStorageContract(t *testing.T, store *Store) {
 		OriginalStart: "2026-08-20T10:00:00Z", TargetEventID: "target-event", ContentHash: "one", LastSeenAt: now, ReconciliationState: "current"}
 	if err := store.UpsertMapping(ctx, mapping); err != nil {
 		t.Fatal(err)
+	}
+	conflict := mapping
+	conflict.ID, conflict.SourceEventID, conflict.OriginalStart = "mapping-conflict", "other-source", ""
+	if err := store.UpsertMapping(ctx, conflict); err == nil {
+		t.Fatal("duplicate target event mapping succeeded")
 	}
 	mapping.ContentHash = "two"
 	if err := store.UpsertMapping(ctx, mapping); err != nil {
@@ -267,5 +306,14 @@ func TestParseDatabaseURL(t *testing.T) {
 	}
 	if _, _, _, err := parseDatabaseURL("mysql://localhost/db"); err == nil {
 		t.Fatal("unsupported URL succeeded")
+	}
+	_, _, dsn, err := parseDatabaseURL("sqlite:///tmp/calendar.db?cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"cache=shared", "_pragma=foreign_keys%28ON%29", "_pragma=busy_timeout%285000%29", "_pragma=journal_mode%28WAL%29"} {
+		if !strings.Contains(dsn, value) {
+			t.Fatalf("SQLite DSN %q does not contain %q", dsn, value)
+		}
 	}
 }

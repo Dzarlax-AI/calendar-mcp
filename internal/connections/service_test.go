@@ -73,7 +73,7 @@ func TestOAuthConnectionEncryptsAndRefreshesToken(t *testing.T) {
 }
 
 func TestAppleConnectionRoundTrip(t *testing.T) {
-	service, _ := newTestService(t)
+	service, store := newTestService(t)
 	ctx := context.Background()
 	if err := service.CreateApple(ctx, "apple-1", "iCloud", "user@example.com", "app-password"); err != nil {
 		t.Fatal(err)
@@ -87,6 +87,19 @@ func TestAppleConnectionRoundTrip(t *testing.T) {
 	}
 	if err := service.CreateApple(ctx, "apple-2", "iCloud", "", ""); err == nil {
 		t.Fatal("empty Apple credentials succeeded")
+	}
+	if err := service.ReconnectApple(ctx, "apple-1", "", "new-password"); err == nil {
+		t.Fatal("reconnect accepted an empty Apple username")
+	}
+	if err := service.ReconnectApple(ctx, "apple-1", "user@example.com", "new-password"); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.ConnectionByID(ctx, "apple-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "pending" || record.LastVerifiedAt != nil {
+		t.Fatalf("reconnected record = %#v", record)
 	}
 }
 
@@ -132,9 +145,33 @@ func TestVerifyRejectsDuplicateProviderAccountWithoutDeletingConnection(t *testi
 	}
 }
 
+func TestVerifyRecordsErrorWhenCapabilityDiscoveryFails(t *testing.T) {
+	service, store := newTestService(t)
+	ctx := context.Background()
+	if err := service.CreateOAuth(ctx, "google-1", "google", "Google", &oauth2.Token{RefreshToken: "refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{name: "google", calendars: []calendar.Calendar{{ID: "primary", Name: "Primary"}}, capabilitiesErr: errors.New("capabilities unavailable")}
+	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err == nil {
+		t.Fatal("verification succeeded despite capability failure")
+	}
+	record, err := store.ConnectionByID(ctx, "google-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "error" || record.LastErrorCode != "provider_discovery_failed" {
+		t.Fatalf("connection status = %#v", record)
+	}
+}
+
 type fakeProvider struct {
-	name      string
-	calendars []calendar.Calendar
+	name            string
+	calendars       []calendar.Calendar
+	capabilitiesErr error
+}
+
+func (p *fakeProvider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
+	return calendar.CalendarCapabilities{}, p.capabilitiesErr
 }
 
 func (p *fakeProvider) Name() string { return p.name }

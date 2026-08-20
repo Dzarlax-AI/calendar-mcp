@@ -358,6 +358,12 @@ type graphEvent struct {
 	OnlineMeeting        *struct {
 		JoinUrl string `json:"joinUrl"`
 	} `json:"onlineMeeting,omitempty"`
+	SingleValueExtendedProperties []graphSingleValueProperty `json:"singleValueExtendedProperties,omitempty"`
+}
+
+type graphSingleValueProperty struct {
+	ID    string `json:"id"`
+	Value string `json:"value"`
 }
 
 type graphRecurrence struct {
@@ -367,18 +373,18 @@ type graphRecurrence struct {
 type graphRecurrencePattern struct {
 	Type           string   `json:"type"`
 	Interval       int      `json:"interval"`
-	Month          int      `json:"month"`
-	DayOfMonth     int      `json:"dayOfMonth"`
-	DaysOfWeek     []string `json:"daysOfWeek"`
-	FirstDayOfWeek string   `json:"firstDayOfWeek"`
-	Index          string   `json:"index"`
+	Month          int      `json:"month,omitempty"`
+	DayOfMonth     int      `json:"dayOfMonth,omitempty"`
+	DaysOfWeek     []string `json:"daysOfWeek,omitempty"`
+	FirstDayOfWeek string   `json:"firstDayOfWeek,omitempty"`
+	Index          string   `json:"index,omitempty"`
 }
 type graphRecurrenceRange struct {
 	Type                string `json:"type"`
 	StartDate           string `json:"startDate"`
-	EndDate             string `json:"endDate"`
-	NumberOfOccurrences int    `json:"numberOfOccurrences"`
-	RecurrenceTimeZone  string `json:"recurrenceTimeZone"`
+	EndDate             string `json:"endDate,omitempty"`
+	NumberOfOccurrences int    `json:"numberOfOccurrences,omitempty"`
+	RecurrenceTimeZone  string `json:"recurrenceTimeZone,omitempty"`
 }
 
 type graphAttendeeStatus struct {
@@ -416,16 +422,17 @@ type graphLocation struct {
 }
 
 type graphEventCreate struct {
-	Subject               string           `json:"subject"`
-	Body                  *graphBody       `json:"body,omitempty"`
-	Start                 graphDateTime    `json:"start"`
-	End                   graphDateTime    `json:"end"`
-	Location              *graphLocation   `json:"location,omitempty"`
-	Attendees             []graphAttendee  `json:"attendees,omitempty"`
-	IsAllDay              bool             `json:"isAllDay,omitempty"`
-	IsOnlineMeeting       bool             `json:"isOnlineMeeting,omitempty"`
-	OnlineMeetingProvider string           `json:"onlineMeetingProvider,omitempty"`
-	Recurrence            *graphRecurrence `json:"recurrence,omitempty"`
+	Subject                       string                     `json:"subject"`
+	Body                          *graphBody                 `json:"body,omitempty"`
+	Start                         graphDateTime              `json:"start"`
+	End                           graphDateTime              `json:"end"`
+	Location                      *graphLocation             `json:"location,omitempty"`
+	Attendees                     []graphAttendee            `json:"attendees,omitempty"`
+	IsAllDay                      bool                       `json:"isAllDay,omitempty"`
+	IsOnlineMeeting               bool                       `json:"isOnlineMeeting,omitempty"`
+	OnlineMeetingProvider         string                     `json:"onlineMeetingProvider,omitempty"`
+	Recurrence                    *graphRecurrence           `json:"recurrence,omitempty"`
+	SingleValueExtendedProperties []graphSingleValueProperty `json:"singleValueExtendedProperties,omitempty"`
 }
 
 func toGraphAttendees(attendees []calendar.Attendee) []graphAttendee {

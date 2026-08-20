@@ -117,6 +117,20 @@ func TestEngineHonorsRuleDepthAndDryRun(t *testing.T) {
 	}
 }
 
+func TestHashEventIncludesMirroredVisibilityAndTransparency(t *testing.T) {
+	base := calendar.EventV2{ID: "event", Title: "Meeting", Visibility: "private", Transparency: "opaque"}
+	visibilityChanged := base
+	visibilityChanged.Visibility = "public"
+	transparencyChanged := base
+	transparencyChanged.Transparency = "transparent"
+	if hashEvent(base) == hashEvent(visibilityChanged) {
+		t.Fatal("visibility change did not affect content hash")
+	}
+	if hashEvent(base) == hashEvent(transparencyChanged) {
+		t.Fatal("transparency change did not affect content hash")
+	}
+}
+
 func TestEngineBlocksLossyRecurrenceBeforeTargetMutation(t *testing.T) {
 	start := calendar.EventTime{DateTime: "2026-08-21T09:00:00Z", TimeZone: "UTC"}
 	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "series", InstanceKind: "seriesMaster", Start: start, End: calendar.EventTime{DateTime: "2026-08-21T10:00:00Z", TimeZone: "UTC"}, Recurrence: []string{"RRULE:FREQ=MONTHLY;BYSETPOS=5;BYDAY=MO"}}}}
