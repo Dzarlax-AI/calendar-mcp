@@ -12,6 +12,7 @@ type Config struct {
 	RESTListenAddr         string
 	WorkerHealthAddr       string
 	APIKey                 string
+	LegacyAPIKey           string
 	AllowUnauthenticated   bool
 	EnableV2               bool
 	TokenDir               string
@@ -47,6 +48,7 @@ func Load() *Config {
 		RESTListenAddr:         envStr("REST_LISTEN_ADDR", ""),
 		WorkerHealthAddr:       envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
 		APIKey:                 envStr("API_KEY", ""),
+		LegacyAPIKey:           envStr("API_KEY_LEGACY", ""),
 		AllowUnauthenticated:   envBool("ALLOW_UNAUTHENTICATED", false),
 		EnableV2:               envBool("ENABLE_V2", false),
 		TokenDir:               envStr("TOKEN_DIR", "/app/data"),

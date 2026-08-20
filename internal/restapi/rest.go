@@ -18,8 +18,8 @@ type Server struct {
 	enableV2 bool
 }
 
-func New(reg *calendar.Registry, app *application.Service, apiKey string, allowUnauthenticated, enableV2 bool) *Server {
-	return &Server{reg: reg, app: app, auth: auth.Options{APIKey: apiKey, AllowUnauthenticated: allowUnauthenticated}, enableV2: enableV2}
+func New(reg *calendar.Registry, app *application.Service, authOptions auth.Options, enableV2 bool) *Server {
+	return &Server{reg: reg, app: app, auth: authOptions, enableV2: enableV2}
 }
 
 func (s *Server) Handler() http.Handler {

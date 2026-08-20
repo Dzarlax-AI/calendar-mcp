@@ -8,6 +8,7 @@ import (
 
 type Options struct {
 	APIKey               string
+	LegacyAPIKey         string
 	AllowUnauthenticated bool
 }
 
@@ -27,7 +28,9 @@ func Middleware(opts Options) func(http.Handler) http.Handler {
 			if provided == "" {
 				provided = r.Header.Get("X-API-Key")
 			}
-			if !equal(provided, opts.APIKey) {
+			validPrimary := equal(provided, opts.APIKey)
+			validLegacy := opts.LegacyAPIKey != "" && equal(provided, opts.LegacyAPIKey)
+			if !validPrimary && !validLegacy {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

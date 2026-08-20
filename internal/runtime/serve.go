@@ -16,6 +16,7 @@ import (
 
 	"calendar-mcp/internal/apple"
 	"calendar-mcp/internal/application"
+	"calendar-mcp/internal/auth"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/config"
 	"calendar-mcp/internal/connections"
@@ -108,7 +109,12 @@ func Serve(_ context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mcpserver.Register(mux, reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
+	apiAuth := auth.Options{
+		APIKey:               cfg.APIKey,
+		LegacyAPIKey:         cfg.LegacyAPIKey,
+		AllowUnauthenticated: cfg.AllowUnauthenticated,
+	}
+	mcpserver.Register(mux, reg, appService, apiAuth, cfg.EnableV2)
 	if platformStore != nil {
 		publicURL := strings.TrimSuffix(cfg.PublicURL, "/")
 		oauthProviders := map[string]oauthflow.Provider{}
@@ -139,7 +145,7 @@ func Serve(_ context.Context) error {
 	}
 	servers := []*http.Server{NewHTTPServer(cfg.ListenAddr, mux, 0)}
 	if cfg.RESTListenAddr != "" {
-		rest := restapi.New(reg, appService, cfg.APIKey, cfg.AllowUnauthenticated, cfg.EnableV2)
+		rest := restapi.New(reg, appService, apiAuth, cfg.EnableV2)
 		servers = append(servers, NewHTTPServer(cfg.RESTListenAddr, rest.Handler(), 2*time.Minute))
 		log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
 	}

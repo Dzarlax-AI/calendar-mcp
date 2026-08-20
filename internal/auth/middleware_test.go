@@ -42,13 +42,15 @@ func TestMiddlewareAcceptsConfiguredCredentials(t *testing.T) {
 		header string
 		value  string
 	}{
-		{name: "bearer", header: "Authorization", value: "Bearer secret"},
-		{name: "api key", header: "X-API-Key", value: "secret"},
+		{name: "primary bearer", header: "Authorization", value: "Bearer primary"},
+		{name: "primary api key", header: "X-API-Key", value: "primary"},
+		{name: "legacy bearer", header: "Authorization", value: "Bearer legacy"},
+		{name: "legacy api key", header: "X-API-Key", value: "legacy"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := Middleware(Options{APIKey: "secret"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			h := Middleware(Options{APIKey: "primary", LegacyAPIKey: "legacy"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
@@ -61,6 +63,24 @@ func TestMiddlewareAcceptsConfiguredCredentials(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
 			}
 		})
+	}
+}
+
+func TestMiddlewareRejectsMissingCredentialWhenLegacyKeyIsEmpty(t *testing.T) {
+	called := false
+	h := Middleware(Options{APIKey: "primary"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if called {
+		t.Fatal("protected handler was called without a credential")
 	}
 }
 
