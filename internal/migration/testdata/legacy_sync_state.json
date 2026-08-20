@@ -1,0 +1,9 @@
+{
+  "last_sync": "2026-08-20T10:00:00Z",
+  "mappings": {
+    "legacy-source-event": {
+      "google_id": "legacy-target-event",
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}

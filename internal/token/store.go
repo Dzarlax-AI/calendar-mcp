@@ -17,6 +17,11 @@ type FileStore struct {
 	mu   sync.Mutex
 }
 
+type Store interface {
+	Load() (*oauth2.Token, error)
+	Save(*oauth2.Token) error
+}
+
 func NewFileStore(dir, provider string) *FileStore {
 	return &FileStore{path: filepath.Join(dir, provider+"_token.json")}
 }
@@ -107,14 +112,18 @@ func (s *FileStore) Save(tok *oauth2.Token) error {
 
 // TokenSource returns an oauth2.TokenSource that persists refreshed tokens to disk.
 func (s *FileStore) TokenSource(cfg *oauth2.Config, initial *oauth2.Token) oauth2.TokenSource {
+	return TokenSource(s, cfg, initial)
+}
+
+func TokenSource(store Store, cfg *oauth2.Config, initial *oauth2.Token) oauth2.TokenSource {
 	return &persistingTokenSource{
-		store: s,
+		store: store,
 		src:   cfg.TokenSource(context.Background(), initial),
 	}
 }
 
 type persistingTokenSource struct {
-	store *FileStore
+	store Store
 	src   oauth2.TokenSource
 	mu    sync.Mutex
 	last  *oauth2.Token

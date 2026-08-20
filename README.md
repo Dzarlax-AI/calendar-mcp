@@ -1,164 +1,357 @@
-# calendar-mcp
+# Calendar Platform
 
-Unified Calendar MCP server that aggregates Google Calendar, Microsoft 365, and Apple iCloud (CalDAV) into a single MCP endpoint.
+Calendar Platform is a single-user calendar control plane and MCP server for Google Calendar, Microsoft 365, and Apple iCloud.
 
-> **Related:** [calendar-sync](https://github.com/dzarlax/calendar-sync) — one-way M365 → Google Calendar sync built on top of this server's REST API.
+One Go repository and one container image provide:
 
-## Features
+- MCP and REST calendar APIs;
+- a web UI for provider connections and sync rules;
+- encrypted multi-account credential storage;
+- a separate synchronization worker;
+- one-way calendar copies across every provider pairing;
+- PostgreSQL for production and SQLite for small self-hosted installations.
 
-- **Google Calendar V2** — recurrence series and instances, search, RSVP, import, move, Meet, attachments, reminders, special event types, ETags, and recoverable this-and-following
-- **Microsoft 365** — safe portable CRUD and Teams meetings via Graph REST API (OAuth2), with unsupported V2 fields rejected explicitly
-- **Apple iCloud** — safe series-level CRUD and iCalendar recurrence via CalDAV (app-specific password)
-- **Unified interface** — five compatibility tools plus typed V2 lifecycle tools
-- **Provider-prefixed IDs** — `google:primary`, `microsoft:<id>`, `apple:<path>`
-- **Concurrent fan-out** — `get_events` without calendar_id queries all providers in parallel
+The image has two long-running commands:
 
-## MCP Tools
+- `calendar serve` runs migrations, MCP, optional REST, OAuth callbacks, and the web UI;
+- `calendar worker` schedules and executes synchronization jobs.
 
-| Tool | Description |
-|---|---|
-| `list_calendars` | List all calendars across all providers |
-| `get_events` | Get events by calendar ID and date range (or all calendars) |
-| `create_event` | Create event in a specific calendar |
-| `update_event` | Partial update of an existing event |
-| `delete_event` | Delete an event |
+The former `calendar-sync` repository is migration history and rollback material. New synchronization development belongs here.
 
-The compatibility tools remain available. Set `ENABLE_V2=true` to additionally expose:
+## Status and safety model
 
-| V2 tool | Description |
-|---|---|
-| `get_calendar_capabilities` | Report the exact operations, fields, scopes, and notification policies supported by a calendar |
-| `get_events_v2` / `get_event_v2` | Read typed events with recurrence identity, provider metadata, pagination, and completeness |
-| `get_event_instances_v2` | Read bounded occurrences of a recurring Google series |
-| `search_events_v2` | Search one calendar or fan out across configured providers |
-| `create_event_v2` | Create a typed event; notifications default to `none` |
-| `update_event_v2` / `delete_event_v2` | Mutate `series`, `single`, or recoverable Google `following` scope |
-| `respond_to_event_v2` | RSVP as the authenticated Google user |
-| `move_event_v2` | Move a supported Google event between Google calendars |
-| `import_event_v2` | Import an external Google event using `ical_uid` |
+The platform is intentionally conservative around calendar writes:
 
-Google `following` is deliberately reported as a composite operation. It supports a non-mutating preview, ETag protection, an idempotency marker, compensation, and explicit recovery metadata if both the primary and compensating writes fail. `RDATE`-based series are rejected for this workflow because they cannot yet be split without ambiguity.
+- every sync rule is one-way;
+- new rules start paused;
+- a successful read-only dry run is required before enablement;
+- attendees are never copied;
+- provider notifications and invitations are fixed to `none`;
+- direct and transitive rule cycles are rejected;
+- unsupported recurrence is a blocker, never silently flattened;
+- absence from a bounded sync window is not treated as deletion evidence;
+- only one job for a rule may run at a time;
+- abandoned jobs are recoverable after a 15-minute worker lease expires.
 
-`create_event` and `update_event` accept either RFC3339 datetimes (`2026-05-30T13:00:00+02:00`) or all-day date-only boundaries (`2026-05-30` to `2026-05-31`). Date-only boundaries are exclusive on `end`, matching Google Calendar and iCalendar all-day semantics.
-
-## Configuration
-
-All configuration via environment variables:
-
-```bash
-# Server
-LISTEN_ADDR=:8080
-API_KEY=your-api-key
-# Explicit local-only opt-in when no API key is configured
-ALLOW_UNAUTHENTICATED=false
-ENABLE_V2=false
-TOKEN_DIR=/app/data
-
-# Google Calendar (OAuth2 — Desktop app type)
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_REFRESH_TOKEN=
-
-# Microsoft 365 (Azure AD OAuth2)
-MS365_CLIENT_ID=
-MS365_CLIENT_SECRET=
-MS365_TENANT_ID=common
-MS365_REFRESH_TOKEN=
-
-# Apple iCloud (CalDAV)
-APPLE_USERNAME=
-APPLE_APP_PASSWORD=
-APPLE_CALDAV_URL=https://caldav.icloud.com/
-
-# Fan-out filtering (affects get_events without calendar_id only)
-EXCLUDE_CALENDAR_IDS=            # comma-separated prefixed IDs to skip
-INCLUDE_IMPORTED_CALENDARS=      # set true to include google:*@import.calendar.google.com
-
-# Internal REST API (optional, separate port)
-REST_LISTEN_ADDR=
-```
-
-Providers are enabled automatically when their credentials are set. You can run with any subset (e.g. Google only).
-
-The server fails closed when `API_KEY` is empty. Set `ALLOW_UNAUTHENTICATED=true` only for an intentionally unauthenticated local instance. Keep `ENABLE_V2=false` during rollout, then enable it after clients have adopted the typed schemas. Legacy Google writes suppress attendee notifications by default. V2 writes default to `notification_policy=none`; providers reject writes whose scheduling side effects cannot be suppressed.
-
-Before any first run against real calendar data, use an empty dedicated test calendar, omit attendees, and verify `notification_policy=none`. The automated test suite uses local fake HTTP/CalDAV endpoints and never writes to real providers.
-
-By default fan-out skips Google ICS subscriptions (typical M365/iCloud mirrors) to avoid duplicate events. Explicit `calendar_id` queries and `list_calendars` are unaffected — downstream consumers like Granola can still reach them.
-
-## Getting OAuth Tokens
-
-### Google
-
-1. Create a **Desktop** OAuth client in [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Open the consent URL:
-   ```
-   https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost&response_type=code&scope=https://www.googleapis.com/auth/calendar&access_type=offline&prompt=consent
-   ```
-3. Copy the `code` from the redirect URL
-4. Exchange for refresh token:
-   ```bash
-   curl -s -X POST https://oauth2.googleapis.com/token \
-     -d "code=AUTH_CODE" \
-     -d "client_id=YOUR_CLIENT_ID" \
-     -d "client_secret=YOUR_SECRET" \
-     -d "redirect_uri=http://localhost" \
-     -d "grant_type=authorization_code"
-   ```
-
-### Microsoft 365
-
-1. Register an app in [Azure AD](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
-2. Add `Calendars.ReadWrite` and `offline_access` permissions
-3. Complete OAuth2 consent flow to obtain a refresh token
-
-### Apple
-
-Generate an [app-specific password](https://appleid.apple.com/) — no OAuth needed.
-
-## Build & Run
-
-```bash
-go build -o server ./cmd/server
-API_KEY=test GOOGLE_CLIENT_ID=... ./server
-```
-
-## Docker
-
-```bash
-docker build -t calendar-mcp .
-docker run -e API_KEY=... -e GOOGLE_CLIENT_ID=... -p 8080:8080 -v ./data:/app/data calendar-mcp
-```
-
-## Deploy
-
-Docker image built via GitHub Actions: `ghcr.io/dzarlax-ai/calendar-mcp:latest`
-
-MCP endpoint: `https://mcp.dzarlax.dev/calendar` (Traefik path rewrite `/calendar` → `/mcp`)
-
-## Apple CalDAV Notes
-
-Apple iCloud CalDAV has quirks for certain calendar types:
-
-- **Family Sharing calendars** have hash-based paths (`/calendars/<64-char-hex>/`) instead of UUID paths
-- Apple's server returns HTTP 500 with malformed XML for CalDAV `REPORT` (calendar-query) on these calendars — a known Apple server-side bug
-- **Workaround**: the server automatically falls back to `PROPFIND Depth:1` (enumerate `.ics` paths) + 20 concurrent `GET` requests when `REPORT` fails, then filters by date range in code
-- This is transparent to the caller — events are returned normally, just with slightly higher latency for large calendars
+Before using real data, connect dedicated empty calendars and verify the complete dry-run and write path. Automated tests use fake provider endpoints and never write to real calendars.
 
 ## Architecture
 
+```text
+                         one calendar image
+                    ┌────────────────────────┐
+MCP clients ───────▶│ calendar serve         │
+REST clients ──────▶│  /mcp                  │
+Authentik ─────────▶│  web UI + OAuth        │
+                    │  provider registry     │
+                    └───────────┬────────────┘
+                                │
+                         PostgreSQL / SQLite
+                                │
+                    ┌───────────▼────────────┐
+                    │ calendar worker        │
+                    │ scheduler + sync engine│
+                    └───────────┬────────────┘
+                                │
+                    Google / Microsoft / Apple
 ```
-cmd/server/main.go          — entrypoint, provider init, HTTP server
-internal/
-  config/                    — env-based configuration
-  calendar/                  — Provider interface, Registry (prefix routing), types
-  application/               — V2 use cases, capabilities, fan-out, recoverable composite operations
-  google/                    — Google Calendar API v3 + OAuth2
-  microsoft/                 — Microsoft Graph REST API + OAuth2
-  apple/                     — CalDAV client (go-webdav) + basic auth
-  mcpserver/                 — MCP server (Streamable HTTP), tools, API key middleware
-  token/                     — File-based OAuth2 token persistence with auto-refresh
+
+`serve` owns schema migration. `worker` checks the schema version and stays unavailable when it does not match the binary. Both processes use the same persisted provider connections and account-scoped provider registry, so calendars connected in the UI are immediately available to MCP and REST.
+
+## Provider and synchronization support
+
+Multiple accounts can be connected for every provider. A calendar has a canonical account-scoped ID:
+
+```text
+google@<connection-id>:<provider-calendar-id>
+microsoft@<connection-id>:<provider-calendar-id>
+apple@<connection-id>:<provider-calendar-id>
 ```
+
+The legacy `provider:calendar-id` form remains accepted only when it resolves to exactly one connected account. Ambiguous aliases are rejected.
+
+Any readable calendar can be a source and any writable calendar can be a target:
+
+| Source | Google target | Microsoft target | Apple target |
+|---|---:|---:|---:|
+| Google | Yes | Yes | Yes |
+| Microsoft | Yes | Yes | Yes |
+| Apple | Yes | Yes | Yes |
+
+This includes copies between two calendars owned by the same provider or account. It is not bidirectional conflict resolution: configure directed rules, and keep the overall rule graph acyclic.
+
+### Recurrence
+
+The sync engine reads bounded series and instance views and preserves:
+
+- series masters;
+- ordinary occurrences;
+- modified exceptions;
+- cancelled occurrences;
+- all-day boundaries;
+- original occurrence identity and time zone data.
+
+Google and Apple can express broader iCalendar recurrence than Microsoft Graph. A Google or Apple series that cannot be represented exactly by Graph fails preflight with `recurrence_unsupported`. The rule is not approximated or flattened.
+
+Google targets receive private rule/source markers. Before a create, the engine checks those markers so a target created before a timeout or local mapping failure can be recovered on the next run. Microsoft and Apple currently rely on persisted mappings and do not yet provide equivalent provider-side marker recovery for an ambiguous remote create.
+
+## Web control plane
+
+Platform mode adds these pages:
+
+- Dashboard — connection, rule, run, and attention summaries;
+- Connections — add, reconnect, verify, discover, and safely remove accounts;
+- Sync Rules — create directed routes and run dry runs or manual jobs;
+- Runs — sanitized outcomes and mutation counters;
+- Settings — installation readiness without displaying secrets.
+
+Google and Microsoft use OAuth 2.0 with expiring single-use state and PKCE. Apple uses an app-specific password. Provider credentials are encrypted with AES-256-GCM before database storage.
+
+Production UI access is designed for Authentik ForwardAuth. With `UI_TRUST_FORWARD_AUTH=true`, protected pages require the `X-authentik-username` header. OAuth callbacks remain outside ForwardAuth and are protected by their state/PKCE flow. Mutating UI requests additionally require an exact public origin and a same-site CSRF token.
+
+## Quick start with SQLite
+
+Requirements:
+
+- Docker with Compose, or Go 1.25+ for a source build;
+- a random 32-byte encryption key encoded as base64;
+- OAuth application credentials for providers you want to connect.
+
+Create `.env` from `.env.example`, replace every placeholder, then run:
+
+```bash
+docker compose -f docker-compose.example.yml up -d
+```
+
+The example starts `calendar-serve` and `calendar-worker` from the same image and shares `/app/data` between them. The UI is available at `http://localhost:8080`.
+
+The SQLite deployment supports one worker only. Use PostgreSQL for production or multiple service replicas.
+
+## PostgreSQL deployment
+
+The production-oriented example includes PostgreSQL 17:
+
+```bash
+docker compose -f docker-compose.postgres.example.yml up -d
+```
+
+Do not keep the example database password. Prefer an existing managed PostgreSQL instance, a dedicated role/schema, and an immutable calendar image digest.
+
+Startup order matters:
+
+1. PostgreSQL becomes healthy.
+2. `calendar serve` applies or validates the schema migration.
+3. `calendar worker` validates the same schema version and exposes readiness.
+
+Health endpoints:
+
+| Process | Default endpoint |
+|---|---|
+| `calendar serve` | `http://127.0.0.1:8080/health` |
+| `calendar worker` | `http://127.0.0.1:8082/health` |
+| optional internal REST | `${REST_LISTEN_ADDR}/health` |
+
+## Configuration
+
+### Core server
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LISTEN_ADDR` | `:8080` | MCP, UI, OAuth callback, and serve health listener |
+| `WORKER_HEALTH_ADDR` | `127.0.0.1:8082` | Worker readiness listener |
+| `REST_LISTEN_ADDR` | empty | Optional separate internal REST listener |
+| `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
+| `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
+| `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
+| `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
+
+The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set.
+
+### Platform mode
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | empty | Enables platform mode; accepts `postgres://`, `postgresql://`, or `sqlite://` |
+| `CALENDAR_ENCRYPTION_KEY` | empty | Base64-encoded 32-byte key for provider credentials |
+| `CALENDAR_PUBLIC_URL` | empty | Absolute external UI/OAuth origin, without a trailing slash |
+| `UI_TRUST_FORWARD_AUTH` | `true` | Requires Authentik identity header on protected UI routes |
+
+Examples:
+
+```text
+sqlite:///app/data/calendar.db
+postgres://calendar:password@postgres:5432/calendar?sslmode=disable
+```
+
+Back up the encryption key separately from the database. Losing it requires reconnecting every provider account.
+
+### Provider applications
+
+| Variable | Purpose |
+|---|---|
+| `GOOGLE_CLIENT_ID` | Google OAuth application client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth application client secret |
+| `MS365_CLIENT_ID` | Microsoft Entra application client ID |
+| `MS365_CLIENT_SECRET` | Microsoft Entra application client secret |
+| `MS365_TENANT_ID` | Tenant ID or `common` |
+| `APPLE_CALDAV_URL` | Apple CalDAV root; defaults to `https://caldav.icloud.com` |
+
+Apple username and app-specific password are entered through the UI in platform mode.
+
+`GOOGLE_REFRESH_TOKEN`, `MS365_REFRESH_TOKEN`, `APPLE_USERNAME`, and `APPLE_APP_PASSWORD` are retained only for standalone compatibility mode.
+
+### Fan-out filtering
+
+| Variable | Purpose |
+|---|---|
+| `EXCLUDE_CALENDAR_IDS` | Comma-separated canonical or legacy calendar IDs skipped by implicit fan-out |
+| `INCLUDE_IMPORTED_CALENDARS` | Includes Google `@import.calendar.google.com` calendars in implicit fan-out |
+
+These settings affect only `get_events` calls without an explicit `calendar_id`. Explicit reads and `list_calendars` still expose the calendar.
+
+## MCP API
+
+MCP uses Streamable HTTP at `/mcp`.
+
+The compatibility catalog is always registered:
+
+| Tool | Purpose |
+|---|---|
+| `list_calendars` | List calendars across connected accounts |
+| `get_events` | Read an explicit calendar or fan out across providers |
+| `create_event` | Create a calendar event |
+| `update_event` | Partially update an event |
+| `delete_event` | Delete an event |
+
+With `ENABLE_V2=true`, the typed lifecycle catalog is also registered:
+
+| Tool | Purpose |
+|---|---|
+| `get_calendar_capabilities` | Exact operations, fields, scopes, and notification policies |
+| `get_events_v2`, `get_event_v2` | Typed recurrence-aware event reads |
+| `get_event_instances_v2` | Bounded recurring instances |
+| `search_events_v2` | Calendar search or provider fan-out |
+| `create_event_v2` | Typed event creation with notification policy |
+| `update_event_v2`, `delete_event_v2` | Series, single-instance, and supported following mutations |
+| `respond_to_event_v2` | RSVP through Google |
+| `move_event_v2` | Move supported Google events between calendars |
+| `import_event_v2` | Import an external event into Google using `ical_uid` |
+
+Google `following` is a recoverable composite workflow, not an atomic provider operation. It uses preview, ETag protection, operation markers, compensation, and explicit partial-failure metadata. `RDATE`-based series are rejected because they cannot currently be split unambiguously.
+
+## REST API
+
+Set `REST_LISTEN_ADDR` to expose the compatibility REST API on a separate listener. It uses the same API-key middleware and provider registry as MCP.
+
+Compatibility routes:
+
+```text
+GET    /api/calendars
+GET    /api/events
+POST   /api/events
+PATCH  /api/events
+DELETE /api/events
+```
+
+When `ENABLE_V2=true`, typed routes are also available under `/api/v2`, including capabilities, event lifecycle, instances, search, response, move, and import.
+
+Keep this listener internal unless an external client explicitly requires it.
+
+## Standalone compatibility mode
+
+When `DATABASE_URL` is empty, `calendar serve` runs the original MCP/REST service without the web control plane or worker. Configure providers through environment variables and legacy token files:
+
+```bash
+API_KEY=change-me \
+GOOGLE_CLIENT_ID=... \
+GOOGLE_CLIENT_SECRET=... \
+GOOGLE_REFRESH_TOKEN=... \
+./calendar serve
+```
+
+At least one provider must be configured in this mode. The worker requires platform storage and will refuse to start without `DATABASE_URL`.
+
+## Sync rule lifecycle
+
+1. Connect and verify provider accounts.
+2. Confirm discovered calendar read/write capabilities.
+3. Create a source-to-target rule.
+4. Set independent `lookback_days` and `lookahead_days` values.
+5. Review the automatically queued dry run.
+6. Enable only after the dry run succeeds.
+7. Monitor scheduled or manual runs and sanitized errors.
+
+Allowed intervals are 10, 30, or 60 minutes. Lookback is 0–365 days; lookahead is 1–365 days.
+
+## Legacy sync import
+
+Preview is read-only and does not require a database:
+
+```bash
+./calendar import-legacy \
+  --state-file /data/sync_state.json \
+  --source microsoft:SOURCE_ID \
+  --target google:TARGET_ID \
+  --preview
+```
+
+After the source and target calendars are connected and discovered, omit `--preview` and supply `DATABASE_URL`. The import creates one paused rule and legacy-marked mappings atomically.
+
+The import does not call providers, mutate events, revoke OAuth grants, delete token files, or stop the old worker. A legacy calendar alias must resolve to exactly one account.
+
+## Build and development
+
+```bash
+make assets            # verify or fetch pinned HTMX 2.0.4
+make build             # build ./calendar
+make test              # full race-enabled test suite
+make vet               # Go static analysis
+make html-check        # embedded UI tests
+make image             # local calendar-platform:local image
+```
+
+PostgreSQL integration tests require a disposable database:
+
+```bash
+TEST_POSTGRES_URL='postgres://calendar:password@127.0.0.1:5432/calendar?sslmode=disable' \
+make test-integration
+```
+
+The runtime image contains the compiled binary, CA certificates, timezone data, templates, CSS, and checksum-verified HTMX. It has no runtime CDN dependency.
+
+## Repository layout
+
+```text
+cmd/calendar/          serve, worker, and import-legacy CLI
+cmd/server/            compatibility entry point for calendar serve
+internal/application/  typed lifecycle use cases
+internal/calendar/     provider contracts, routing, and shared types
+internal/connections/  encrypted multi-account connection lifecycle
+internal/credentials/  AES-256-GCM envelope
+internal/google/       Google Calendar API and OAuth adapter
+internal/microsoft/    Microsoft Graph and OAuth adapter
+internal/apple/        Apple CalDAV adapter and bounded recurrence expansion
+internal/oauthflow/    state, PKCE, exchange, and reconnect intent
+internal/providers/    account-scoped provider factory
+internal/storage/      PostgreSQL/SQLite schema and operations
+internal/syncengine/   one-way reconciliation and recurrence handling
+internal/web/          embedded UI templates and assets
+```
+
+## Production rollout checklist
+
+- build and review an immutable image digest;
+- back up the existing calendar environment, tokens, and legacy sync state;
+- create the dedicated PostgreSQL role/schema and back up the encryption key;
+- place the UI behind Authentik and keep OAuth callback routes reachable;
+- validate MCP, REST, UI, serve health, and worker readiness;
+- connect dedicated empty calendars first;
+- verify standalone, all-day, recurring, moved, and cancelled occurrences;
+- verify `notification_policy=none` and that attendees are absent;
+- run legacy import preview before any database write;
+- never run the legacy and new synchronization workers against the same route concurrently.
+
+No deployment or provider grant change is performed by building this repository.
 
 ## License
 

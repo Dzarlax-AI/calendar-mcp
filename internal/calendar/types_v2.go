@@ -153,6 +153,7 @@ type EventV2 struct {
 	End              EventTime             `json:"end"`
 	OriginalStart    *EventTime            `json:"original_start,omitempty"`
 	RecurringEventID string                `json:"recurring_event_id,omitempty"`
+	InstanceKind     string                `json:"instance_kind,omitempty"`
 	Recurrence       []string              `json:"recurrence,omitempty"`
 	Organizer        *PersonV2             `json:"organizer,omitempty"`
 	Attendees        []AttendeeV2          `json:"attendees,omitempty"`

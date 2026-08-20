@@ -14,6 +14,48 @@ type Provider interface {
 	DeleteEvent(ctx context.Context, calendarID string, eventID string) error
 }
 
+// AccountRoutedProvider lets one registry host multiple authenticated
+// accounts for the same provider without changing the provider's public type.
+type AccountRoutedProvider interface {
+	Provider
+	RouteName() string
+	OwnsCalendar(calendarID string) bool
+}
+
+type RouteConfigurableProvider interface {
+	AccountRoutedProvider
+	SetRoute(route string, calendarIDs []string)
+}
+
+// RecurrenceWriteValidator lets the sync engine block a rule during dry run
+// before any target mutation when the target cannot represent a series
+// without changing its recurrence semantics.
+type RecurrenceWriteValidator interface {
+	ValidateRecurrenceWrite([]string, EventTime) error
+}
+
+// SyncMarkerLookupProvider lets the sync engine recover a target object after
+// an ambiguous create or a local mapping-write failure without creating a
+// duplicate on the next run.
+type SyncMarkerLookupProvider interface {
+	Provider
+	FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*EventV2, error)
+}
+
+func ProviderRouteName(provider Provider) string {
+	if routed, ok := provider.(AccountRoutedProvider); ok && routed.RouteName() != "" {
+		return routed.RouteName()
+	}
+	return provider.Name()
+}
+
+func ProviderOwnsCalendar(provider Provider, calendarID string) bool {
+	if routed, ok := provider.(AccountRoutedProvider); ok {
+		return routed.OwnsCalendar(calendarID)
+	}
+	return true
+}
+
 type CapabilityProvider interface {
 	Provider
 	Capabilities(ctx context.Context, calendarID string) (CalendarCapabilities, error)

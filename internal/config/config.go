@@ -10,10 +10,15 @@ import (
 type Config struct {
 	ListenAddr           string
 	RESTListenAddr       string
+	WorkerHealthAddr     string
 	APIKey               string
 	AllowUnauthenticated bool
 	EnableV2             bool
 	TokenDir             string
+	DatabaseURL          string
+	EncryptionKey        string
+	PublicURL            string
+	TrustForwardAuth     bool
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -39,10 +44,15 @@ func Load() *Config {
 	return &Config{
 		ListenAddr:           envStr("LISTEN_ADDR", ":8080"),
 		RESTListenAddr:       envStr("REST_LISTEN_ADDR", ""),
+		WorkerHealthAddr:     envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
 		APIKey:               envStr("API_KEY", ""),
 		AllowUnauthenticated: envBool("ALLOW_UNAUTHENTICATED", false),
 		EnableV2:             envBool("ENABLE_V2", false),
 		TokenDir:             envStr("TOKEN_DIR", "/app/data"),
+		DatabaseURL:          envStr("DATABASE_URL", ""),
+		EncryptionKey:        envStr("CALENDAR_ENCRYPTION_KEY", ""),
+		PublicURL:            envStr("CALENDAR_PUBLIC_URL", ""),
+		TrustForwardAuth:     envBool("UI_TRUST_FORWARD_AUTH", true),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
@@ -65,6 +75,9 @@ func Load() *Config {
 func (c *Config) Validate() error {
 	if c.APIKey == "" && !c.AllowUnauthenticated {
 		return fmt.Errorf("API_KEY is required unless ALLOW_UNAUTHENTICATED=true")
+	}
+	if c.DatabaseURL != "" && c.PublicURL == "" {
+		return fmt.Errorf("CALENDAR_PUBLIC_URL is required when DATABASE_URL is configured")
 	}
 	if err := requireCompleteProvider("Google", map[string]string{"GOOGLE_CLIENT_ID": c.GoogleClientID, "GOOGLE_CLIENT_SECRET": c.GoogleClientSecret}); err != nil {
 		return err

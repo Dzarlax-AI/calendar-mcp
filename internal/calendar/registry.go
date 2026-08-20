@@ -10,6 +10,7 @@ import (
 )
 
 type Registry struct {
+	mu              sync.RWMutex
 	providers       []Provider
 	byName          map[string]Provider
 	excludeIDs      map[string]struct{} // prefixed IDs to skip in fan-out
@@ -24,7 +25,7 @@ type RegistryOptions struct {
 func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
 	byName := make(map[string]Provider, len(providers))
 	for _, p := range providers {
-		byName[p.Name()] = p
+		byName[ProviderRouteName(p)] = p
 	}
 	r := &Registry{providers: providers, byName: byName, excludeIDs: map[string]struct{}{}}
 	if len(opts) > 0 {
@@ -43,7 +44,7 @@ func (r *Registry) skipInFanOut(prefixedID string) bool {
 	if _, ok := r.excludeIDs[prefixedID]; ok {
 		return true
 	}
-	if !r.includeImported && strings.HasPrefix(prefixedID, "google:") && strings.Contains(prefixedID, "@import.calendar.google.com") {
+	if !r.includeImported && (strings.HasPrefix(prefixedID, "google:") || strings.HasPrefix(prefixedID, "google@")) && strings.Contains(prefixedID, "@import.calendar.google.com") {
 		return true
 	}
 	return false
@@ -55,13 +56,13 @@ func (r *Registry) SkipInFanOut(prefixedID string) bool {
 
 func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 	var all []Calendar
-	for _, p := range r.providers {
+	for _, p := range r.Providers() {
 		cals, err := p.ListCalendars(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", p.Name(), err)
 		}
 		for i := range cals {
-			cals[i].ID = p.Name() + ":" + cals[i].ID
+			cals[i].ID = ProviderRouteName(p) + ":" + cals[i].ID
 			cals[i].Provider = p.Name()
 		}
 		all = append(all, cals...)
@@ -79,7 +80,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 		if err != nil {
 			return nil, err
 		}
-		prefixEvents(events, provider.Name())
+		prefixEvents(events, ProviderRouteName(provider))
 		return events, nil
 	}
 
@@ -88,9 +89,10 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 		events []Event
 		errs   []error
 	}
-	ch := make(chan result, len(r.providers))
+	providers := r.Providers()
+	ch := make(chan result, len(providers))
 	var wg sync.WaitGroup
-	for _, p := range r.providers {
+	for _, p := range providers {
 		wg.Add(1)
 		go func(p Provider) {
 			defer wg.Done()
@@ -102,7 +104,9 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 			var all []Event
 			var providerErrs []error
 			for _, cal := range cals {
-				if r.skipInFanOut(p.Name() + ":" + cal.ID) {
+				canonicalID := ProviderRouteName(p) + ":" + cal.ID
+				legacyID := p.Name() + ":" + cal.ID
+				if r.skipInFanOut(canonicalID) || r.skipInFanOut(legacyID) {
 					continue
 				}
 				events, err := p.GetEvents(ctx, cal.ID, start, end)
@@ -112,7 +116,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 				}
 				all = append(all, events...)
 			}
-			prefixEvents(all, p.Name())
+			prefixEvents(all, ProviderRouteName(p))
 			ch <- result{events: all, errs: providerErrs}
 		}(p)
 	}
@@ -141,7 +145,7 @@ func (r *Registry) CreateEvent(ctx context.Context, calendarID string, event Eve
 	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
-	ev.ID = provider.Name() + ":" + ev.ID
+	ev.ID = ProviderRouteName(provider) + ":" + ev.ID
 	return ev, nil
 }
 
@@ -150,7 +154,7 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if err != nil {
 		return nil, err
 	}
-	rawEventID, err := validateEventProvider(provider.Name(), eventID)
+	rawEventID, err := validateEventProvider(ProviderRouteName(provider), provider.Name(), eventID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +164,7 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
-	ev.ID = provider.Name() + ":" + ev.ID
+	ev.ID = ProviderRouteName(provider) + ":" + ev.ID
 	return ev, nil
 }
 
@@ -169,14 +173,14 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	if err != nil {
 		return err
 	}
-	rawEventID, err := validateEventProvider(provider.Name(), eventID)
+	rawEventID, err := validateEventProvider(ProviderRouteName(provider), provider.Name(), eventID)
 	if err != nil {
 		return err
 	}
 	return provider.DeleteEvent(ctx, rawCalID, rawEventID)
 }
 
-func validateEventProvider(providerName, eventID string) (string, error) {
+func validateEventProvider(routeName, providerName, eventID string) (string, error) {
 	eventProvider, rawEventID := splitPrefix(eventID)
 	if eventProvider == "" {
 		if rawEventID == "" {
@@ -184,7 +188,7 @@ func validateEventProvider(providerName, eventID string) (string, error) {
 		}
 		return rawEventID, nil
 	}
-	if eventProvider != providerName {
+	if eventProvider != routeName && eventProvider != providerName {
 		return "", fmt.Errorf("event provider %q does not match calendar provider %q", eventProvider, providerName)
 	}
 	if rawEventID == "" {
@@ -195,11 +199,27 @@ func validateEventProvider(providerName, eventID string) (string, error) {
 
 func (r *Registry) resolve(prefixedID string) (Provider, string, error) {
 	name, rawID := splitPrefix(prefixedID)
+	r.mu.RLock()
 	p, ok := r.byName[name]
-	if !ok {
-		return nil, "", fmt.Errorf("unknown provider: %s", name)
+	providers := append([]Provider(nil), r.providers...)
+	r.mu.RUnlock()
+	if ok {
+		return p, rawID, nil
 	}
-	return p, rawID, nil
+	var matched Provider
+	for _, candidate := range providers {
+		if candidate.Name() != name || !ProviderOwnsCalendar(candidate, rawID) {
+			continue
+		}
+		if matched != nil {
+			return nil, "", fmt.Errorf("calendar %q is ambiguous across multiple %s accounts; use an account-scoped calendar ID", prefixedID, name)
+		}
+		matched = candidate
+	}
+	if matched == nil {
+		return nil, "", fmt.Errorf("unknown provider or calendar: %s", name)
+	}
+	return matched, rawID, nil
 }
 
 func (r *Registry) Resolve(prefixedID string) (Provider, string, error) {
@@ -207,7 +227,20 @@ func (r *Registry) Resolve(prefixedID string) (Provider, string, error) {
 }
 
 func (r *Registry) Providers() []Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return append([]Provider(nil), r.providers...)
+}
+
+func (r *Registry) ReplaceProviders(providers []Provider) {
+	byName := make(map[string]Provider, len(providers))
+	for _, provider := range providers {
+		byName[ProviderRouteName(provider)] = provider
+	}
+	r.mu.Lock()
+	r.providers = append([]Provider(nil), providers...)
+	r.byName = byName
+	r.mu.Unlock()
 }
 
 func splitPrefix(id string) (string, string) {

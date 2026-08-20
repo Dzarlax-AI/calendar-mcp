@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: calendar
+      POSTGRES_USER: calendar
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calendar -d calendar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  calendar-serve:
+    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    command: ["serve"]
+    restart: unless-stopped
+    env_file: ${CALENDAR_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgres://calendar:change-me@postgres:5432/calendar?sslmode=disable
+      UI_TRUST_FORWARD_AUTH: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  calendar-worker:
+    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    command: ["worker"]
+    restart: unless-stopped
+    env_file: ${CALENDAR_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgres://calendar:change-me@postgres:5432/calendar?sslmode=disable
+    depends_on:
+      calendar-serve:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

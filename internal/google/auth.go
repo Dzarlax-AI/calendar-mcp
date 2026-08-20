@@ -24,12 +24,11 @@ func newOAuthConfig(clientID, clientSecret string) *oauth2.Config {
 	}
 }
 
-func newHTTPClient(store *token.FileStore, cfg *oauth2.Config, refreshToken string) *http.Client {
-	initial := &oauth2.Token{RefreshToken: refreshToken}
+func newHTTPClient(store token.Store, cfg *oauth2.Config, initial *oauth2.Token) *http.Client {
 	if saved, err := store.Load(); err == nil && saved.RefreshToken != "" {
 		initial = saved
 	}
-	ts := store.TokenSource(cfg, initial)
+	ts := token.TokenSource(store, cfg, initial)
 	client := oauth2.NewClient(context.Background(), ts)
 	client.Timeout = 30 * time.Second
 	return client

@@ -90,7 +90,7 @@ func TestGetEventsFollowsNextLink(t *testing.T) {
 	}
 }
 
-func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
+func TestV2CapabilitiesAdvertiseReadableRecurrenceWithoutFollowingWrites(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"canEdit":true}`)
@@ -100,11 +100,48 @@ func TestV2CapabilitiesDoNotPromiseUnsupportedRecurrenceWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Fields.Recurrence || capabilities.SupportsScope(calendar.ScopeFollowing) {
+	if !capabilities.Fields.Recurrence || capabilities.SupportsScope(calendar.ScopeFollowing) {
 		t.Fatalf("capabilities overstate recurrence support: %#v", capabilities)
 	}
 	if !capabilities.Fields.Conferencing || !capabilities.Fields.OptimisticLocking {
 		t.Fatalf("capabilities omit supported fields: %#v", capabilities)
+	}
+}
+
+func TestListEventsV2BothReturnsMasterExceptionAndBoundedCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/me/calendars/calendar/calendarView":
+			_, _ = io.WriteString(w, `{"value":[{"id":"exception","subject":"Moved","type":"exception","seriesMasterId":"master","originalStart":"2026-08-21T09:00:00Z","start":{"dateTime":"2026-08-21T11:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-21T12:00:00","timeZone":"UTC"}}]}`)
+		case "/me/calendars/calendar/events/master":
+			_, _ = io.WriteString(w, `{"id":"master","subject":"Daily","type":"seriesMaster","start":{"dateTime":"2026-08-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-20T10:00:00","timeZone":"UTC"},"recurrence":{"pattern":{"type":"daily","interval":1},"range":{"type":"noEnd","startDate":"2026-08-20","recurrenceTimeZone":"UTC"}},"cancelledOccurrences":["OID.master.2026-08-22","OID.master.2026-09-30"]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).ListEventsV2(context.Background(), calendar.ListEventsRequestV2{
+		CalendarID: "calendar",
+		Start:      time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
+		End:        time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC),
+		View:       calendar.RecurrenceBoth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("items = %#v", page.Items)
+	}
+	if page.Items[0].InstanceKind != "seriesMaster" || len(page.Items[0].Recurrence) != 1 {
+		t.Fatalf("master = %#v", page.Items[0])
+	}
+	if page.Items[1].InstanceKind != "cancelled" || page.Items[1].OriginalStart == nil || page.Items[1].OriginalStart.DateTime != "2026-08-22T09:00:00Z" {
+		t.Fatalf("cancellation = %#v", page.Items[1])
+	}
+	if page.Items[2].InstanceKind != "exception" || page.Items[2].OriginalStart == nil {
+		t.Fatalf("exception = %#v", page.Items[2])
 	}
 }
 

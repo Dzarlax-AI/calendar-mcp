@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/oauth2"
 	gcal "google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 
@@ -13,13 +14,19 @@ import (
 )
 
 type Provider struct {
-	svc *gcal.Service
+	svc       *gcal.Service
+	routeName string
+	calendars map[string]struct{}
 }
 
 func New(clientID, clientSecret, refreshToken, tokenDir string) (*Provider, error) {
 	store := token.NewFileStore(tokenDir, "google")
+	return NewWithTokenStore(clientID, clientSecret, store, &oauth2.Token{RefreshToken: refreshToken})
+}
+
+func NewWithTokenStore(clientID, clientSecret string, store token.Store, initial *oauth2.Token) (*Provider, error) {
 	cfg := newOAuthConfig(clientID, clientSecret)
-	client := newHTTPClient(store, cfg, refreshToken)
+	client := newHTTPClient(store, cfg, initial)
 
 	svc, err := gcal.NewService(context.Background(), option.WithHTTPClient(client))
 	if err != nil {
@@ -29,6 +36,26 @@ func New(clientID, clientSecret, refreshToken, tokenDir string) (*Provider, erro
 }
 
 func (p *Provider) Name() string { return "google" }
+func (p *Provider) RouteName() string {
+	if p.routeName != "" {
+		return p.routeName
+	}
+	return p.Name()
+}
+func (p *Provider) OwnsCalendar(id string) bool {
+	if len(p.calendars) == 0 {
+		return true
+	}
+	_, ok := p.calendars[id]
+	return ok
+}
+func (p *Provider) SetRoute(route string, calendarIDs []string) {
+	p.routeName = route
+	p.calendars = make(map[string]struct{}, len(calendarIDs))
+	for _, id := range calendarIDs {
+		p.calendars[id] = struct{}{}
+	}
+}
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
 	var cals []calendar.Calendar

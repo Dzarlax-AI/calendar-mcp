@@ -59,6 +59,14 @@ func fromGoogleEventV2(event *gcal.Event, calendarID, fallbackTimeZone string) c
 		value := fromGoogleEventTime(event.OriginalStartTime, fallbackTimeZone)
 		result.OriginalStart = &value
 	}
+	if event.RecurringEventId != "" {
+		result.InstanceKind = "occurrence"
+		if event.Status == "cancelled" {
+			result.InstanceKind = "cancelled"
+		}
+	} else if len(event.Recurrence) > 0 {
+		result.InstanceKind = "seriesMaster"
+	}
 	if event.Organizer != nil {
 		result.Organizer = &calendar.PersonV2{ID: event.Organizer.Id, Email: event.Organizer.Email, Name: event.Organizer.DisplayName, Self: event.Organizer.Self}
 	}
