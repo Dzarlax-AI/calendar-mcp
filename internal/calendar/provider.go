@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,19 @@ func ProviderRouteName(provider Provider) string {
 		return routed.RouteName()
 	}
 	return provider.Name()
+}
+
+func AccountCalendarID(providerName, connectionID, providerCalendarID string) string {
+	return providerName + ":" + connectionID + ":" + providerCalendarID
+}
+
+func CanonicalCalendarID(provider Provider, providerCalendarID string) string {
+	route := ProviderRouteName(provider)
+	providerName, connectionID, routed := strings.Cut(route, "@")
+	if routed && providerName != "" && connectionID != "" {
+		return AccountCalendarID(providerName, connectionID, providerCalendarID)
+	}
+	return provider.Name() + ":" + providerCalendarID
 }
 
 func ProviderOwnsCalendar(provider Provider, calendarID string) bool {

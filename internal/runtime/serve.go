@@ -63,7 +63,7 @@ func Serve(_ context.Context) error {
 			return fmt.Errorf("stored providers: %w", err)
 		}
 		calendarProviders = storedProviders
-	} else if cfg.GoogleClientID != "" {
+	} else if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		g, err := google.New(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRefreshToken, cfg.TokenDir)
 		if err != nil {
 			return fmt.Errorf("google provider: %w", err)
@@ -71,7 +71,7 @@ func Serve(_ context.Context) error {
 		calendarProviders = append(calendarProviders, g)
 		log.Println("google calendar provider enabled")
 	}
-	if platformStore == nil && cfg.MS365ClientID != "" {
+	if platformStore == nil && cfg.MS365ClientID != "" && cfg.MS365ClientSecret != "" && cfg.MS365TenantID != "" {
 		m, err := microsoft.New(cfg.MS365ClientID, cfg.MS365ClientSecret, cfg.MS365TenantID, cfg.MS365RefreshToken, cfg.TokenDir)
 		if err != nil {
 			return fmt.Errorf("microsoft provider: %w", err)
@@ -79,7 +79,7 @@ func Serve(_ context.Context) error {
 		calendarProviders = append(calendarProviders, m)
 		log.Println("microsoft calendar provider enabled")
 	}
-	if platformStore == nil && cfg.AppleUsername != "" {
+	if platformStore == nil && cfg.AppleUsername != "" && cfg.AppleAppPassword != "" {
 		a, err := apple.New(cfg.AppleUsername, cfg.AppleAppPassword, cfg.AppleCalDAVURL)
 		if err != nil {
 			return fmt.Errorf("apple provider: %w", err)

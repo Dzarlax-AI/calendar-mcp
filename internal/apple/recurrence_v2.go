@@ -142,8 +142,10 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		original := appleTimeLikeMaster(occurrence, base.Start)
 		key := appleTimeKey(original)
 		if exception, ok := exceptions[key]; ok {
-			result = append(result, exception)
 			delete(exceptions, key)
+			if exception.InstanceKind == "cancelled" || appleEventOverlaps(exception, request.Start, request.End) {
+				result = append(result, exception)
+			}
 			continue
 		}
 		item := base
@@ -167,9 +169,15 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		}
 	}
 	for _, exception := range exceptions {
-		instant, err := exception.OriginalStart.Instant()
-		if err == nil && !instant.Before(request.Start) && instant.Before(request.End) {
+		if exception.InstanceKind != "cancelled" && appleEventOverlaps(exception, request.Start, request.End) {
 			result = append(result, exception)
+			continue
+		}
+		if exception.InstanceKind == "cancelled" && exception.OriginalStart != nil {
+			instant, err := exception.OriginalStart.Instant()
+			if err == nil && !instant.Before(request.Start) && instant.Before(request.End) {
+				result = append(result, exception)
+			}
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -178,6 +186,12 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		return left.Before(right)
 	})
 	return result, nil
+}
+
+func appleEventOverlaps(event calendar.EventV2, start, end time.Time) bool {
+	eventStart, startErr := event.Start.Instant()
+	eventEnd, endErr := event.End.Instant()
+	return startErr == nil && endErr == nil && eventEnd.After(start) && eventStart.Before(end)
 }
 
 func appleRecurrenceDates(prop ical.Prop, location *time.Location) ([]time.Time, error) {

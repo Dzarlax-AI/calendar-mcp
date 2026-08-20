@@ -182,8 +182,8 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 			continue
 		}
 		if !mapped {
-			result.Created++
 			if dryRun {
+				result.Created++
 				if objectKind(event) == "series" {
 					byKey[key] = storage.Mapping{ObjectKind: "series", SourceEventID: event.ID}
 				}
@@ -198,6 +198,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 				return result, fmt.Errorf("recover target event by sync marker: %w", err)
 			}
 			if created == nil {
+				result.Created++
 				created, err = target.CreateEventV2(ctx, calendar.CreateEventRequestV2{CalendarID: targetCalendarID, Event: mirrorCreate(rule.ID, event, targetProvider.Name()), Notifications: calendar.NotificationsNone})
 				if err != nil {
 					return result, fmt.Errorf("create target event: %w", err)

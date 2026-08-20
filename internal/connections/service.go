@@ -180,7 +180,7 @@ func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, pr
 			supportsRecurrence = capabilities.Fields.Recurrence
 		}
 		if err := s.store.UpsertCalendar(ctx, storage.Calendar{
-			ID: provider.Name() + "@" + connectionID + ":" + discovered.ID, ConnectionID: connectionID, ProviderCalendarID: discovered.ID,
+			ID: calendar.AccountCalendarID(provider.Name(), connectionID, discovered.ID), ConnectionID: connectionID, ProviderCalendarID: discovered.ID,
 			Name: discovered.Name, CanRead: true, CanWrite: canWrite, SupportsRecurrence: supportsRecurrence, DiscoveredAt: now,
 		}); err != nil {
 			_ = s.store.UpdateConnectionVerification(ctx, connectionID, "error", "provider_discovery_failed", s.now())

@@ -127,25 +127,30 @@ func runStorageContract(t *testing.T, store *Store) {
 	}
 
 	for _, c := range []Calendar{
-		{ID: "source", ConnectionID: "ms", ProviderCalendarID: "source-provider", Name: "Source", CanRead: true, SupportsRecurrence: true, DiscoveredAt: now},
-		{ID: "target", ConnectionID: "google", ProviderCalendarID: "target-provider", Name: "Target", CanRead: true, CanWrite: true, SupportsRecurrence: true, DiscoveredAt: now},
+		{ID: "microsoft:ms:source-provider", ConnectionID: "ms", ProviderCalendarID: "source-provider", Name: "Source", CanRead: true, SupportsRecurrence: true, DiscoveredAt: now},
+		{ID: "google:google:target-provider", ConnectionID: "google", ProviderCalendarID: "target-provider", Name: "Target", CanRead: true, CanWrite: true, SupportsRecurrence: true, DiscoveredAt: now},
 	} {
 		if err := store.UpsertCalendar(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
 	calendars, err := store.ListCalendars(ctx, "ms")
-	if err != nil || len(calendars) != 1 || calendars[0].ID != "source" {
+	if err != nil || len(calendars) != 1 || calendars[0].ID != "microsoft:ms:source-provider" {
 		t.Fatalf("calendars = %#v, err = %v", calendars, err)
 	}
-	for reference, want := range map[string]string{"microsoft:source-provider": "source", "google:target-provider": "target"} {
+	for reference, want := range map[string]string{
+		"microsoft:ms:source-provider":  "microsoft:ms:source-provider",
+		"microsoft:source-provider":     "microsoft:ms:source-provider",
+		"google:google:target-provider": "google:google:target-provider",
+		"google:target-provider":        "google:google:target-provider",
+	} {
 		resolved, err := store.ResolveCalendarReference(ctx, reference)
 		if err != nil || resolved != want {
 			t.Fatalf("ResolveCalendarReference(%q) = %q, %v; want %q", reference, resolved, err, want)
 		}
 	}
 
-	rule := Rule{ID: "rule", SourceCalendarID: "source", TargetCalendarID: "target", State: "paused", IntervalSeconds: 600,
+	rule := Rule{ID: "rule", SourceCalendarID: "microsoft:ms:source-provider", TargetCalendarID: "google:google:target-provider", State: "paused", IntervalSeconds: 600,
 		LookbackDays: 0, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err := store.CreateRule(ctx, rule); err != nil {
 		t.Fatal(err)

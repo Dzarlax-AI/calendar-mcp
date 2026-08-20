@@ -64,3 +64,31 @@ func TestFactoryBuildsDatabaseBackedProviders(t *testing.T) {
 		t.Fatalf("account routes = %#v", routes)
 	}
 }
+
+func TestFactorySkipsConnectedProvidersWithoutApplicationCredentials(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)))
+	service := connections.New(store, cipher)
+	if err := service.CreateOAuth(ctx, "google", "google", "Google", &oauth2.Token{RefreshToken: "refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CreateApple(ctx, "apple", "Apple", "user@example.com", "password"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewFactory(&config.Config{AppleCalDAVURL: "https://caldav.icloud.com"}, store, service).Build(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name() != "apple" {
+		t.Fatalf("providers = %#v, want only Apple", got)
+	}
+}

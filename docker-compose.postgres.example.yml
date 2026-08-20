@@ -1,11 +1,11 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to an immutable image digest}
     restart: unless-stopped
     environment:
       POSTGRES_DB: calendar
       POSTGRES_USER: calendar
-      POSTGRES_PASSWORD: change-me
+      POSTGRES_PASSWORD: ${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -15,12 +15,12 @@ services:
       retries: 20
 
   calendar-serve:
-    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
     command: ["serve"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
     environment:
-      DATABASE_URL: postgres://calendar:change-me@postgres:5432/calendar?sslmode=disable
+      DATABASE_URL: postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable
       UI_TRUST_FORWARD_AUTH: "true"
     ports:
       - "127.0.0.1:8080:8080"
@@ -34,12 +34,12 @@ services:
       retries: 10
 
   calendar-worker:
-    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
     command: ["worker"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
     environment:
-      DATABASE_URL: postgres://calendar:change-me@postgres:5432/calendar?sslmode=disable
+      DATABASE_URL: postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable
     depends_on:
       calendar-serve:
         condition: service_healthy

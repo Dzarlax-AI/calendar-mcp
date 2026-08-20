@@ -131,24 +131,56 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, error_code=?, error_summary=?
-		WHERE outcome=? AND job_id IN (SELECT id FROM sync_jobs WHERE state=? AND claimed_at<?)`),
-		"failed", now, "worker_lease_expired", "Worker stopped before the synchronization run completed", "running", "running", staleBefore); err != nil {
-		return 0, fmt.Errorf("close stale runs: %w", err)
+	selectStale := `SELECT id FROM sync_jobs WHERE state=? AND claimed_at<? ORDER BY id`
+	if s.dialect == DialectPostgres {
+		selectStale += " FOR UPDATE"
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, available_at=?, claimed_at=NULL, claimed_by=NULL, finished_at=NULL
-		WHERE state=? AND claimed_at<?`), "pending", now, "running", staleBefore)
+	rows, err := tx.QueryContext(ctx, s.query(selectStale), "running", staleBefore)
 	if err != nil {
-		return 0, fmt.Errorf("recover stale jobs: %w", err)
+		return 0, fmt.Errorf("select stale jobs: %w", err)
 	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
+	var candidates []string
+	for rows.Next() {
+		var jobID string
+		if err := rows.Scan(&jobID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan stale job: %w", err)
+		}
+		candidates = append(candidates, jobID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate stale jobs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale jobs: %w", err)
+	}
+	recovered := make([]string, 0, len(candidates))
+	for _, jobID := range candidates {
+		res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, available_at=?, claimed_at=NULL, claimed_by=NULL, finished_at=NULL
+			WHERE id=? AND state=? AND claimed_at<?`), "pending", now, jobID, "running", staleBefore)
+		if err != nil {
+			return 0, fmt.Errorf("recover stale job %q: %w", jobID, err)
+		}
+		changed, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if changed == 1 {
+			recovered = append(recovered, jobID)
+		}
+	}
+	for _, jobID := range recovered {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, error_code=?, error_summary=?
+			WHERE outcome=? AND job_id=?`), "failed", now, "worker_lease_expired",
+			"Worker stopped before the synchronization run completed", "running", jobID); err != nil {
+			return 0, fmt.Errorf("close stale runs for job %q: %w", jobID, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return int(count), nil
+	return len(recovered), nil
 }
 
 func (s *Store) RenewJobLease(ctx context.Context, job Job, now time.Time) (bool, error) {

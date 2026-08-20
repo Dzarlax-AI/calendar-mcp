@@ -47,13 +47,13 @@ func (f *Factory) Build(ctx context.Context) ([]calendar.Provider, error) {
 		switch record.Provider {
 		case "google":
 			if f.config.GoogleClientID == "" || f.config.GoogleClientSecret == "" {
-				return nil, fmt.Errorf("build google connection %q: application credentials are not configured", record.ID)
+				continue
 			}
 			provider, err = google.NewWithTokenStore(f.config.GoogleClientID, f.config.GoogleClientSecret,
 				f.connections.OAuthTokenStore(record.ID, record.Provider), &oauth2.Token{})
 		case "microsoft":
 			if f.config.MS365ClientID == "" || f.config.MS365ClientSecret == "" || f.config.MS365TenantID == "" {
-				return nil, fmt.Errorf("build microsoft connection %q: application credentials are not configured", record.ID)
+				continue
 			}
 			provider, err = microsoft.NewWithTokenStore(f.config.MS365ClientID, f.config.MS365ClientSecret, f.config.MS365TenantID,
 				f.connections.OAuthTokenStore(record.ID, record.Provider), &oauth2.Token{})

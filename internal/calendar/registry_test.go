@@ -64,12 +64,32 @@ func TestRegistryRoutesMultipleAccountsAndRejectsAmbiguousLegacyID(t *testing.T)
 	first := &routedFakeProvider{fakeProvider: fakeProvider{name: "google"}, route: "google@first", owned: map[string]bool{"primary": true}}
 	second := &routedFakeProvider{fakeProvider: fakeProvider{name: "google"}, route: "google@second", owned: map[string]bool{"primary": true}}
 	r := NewRegistry([]Provider{first, second})
-	provider, raw, err := r.Resolve("google@second:primary")
+	provider, raw, err := r.Resolve("google:second:primary")
 	if err != nil || provider != second || raw != "primary" {
 		t.Fatalf("canonical resolve = %#v, %q, %v", provider, raw, err)
 	}
 	if _, _, err := r.Resolve("google:primary"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("legacy resolve error = %v", err)
+	}
+}
+
+func TestRegistryAccountScopedCalendarIDPreservesProviderNativeColon(t *testing.T) {
+	provider := &routedFakeProvider{fakeProvider: fakeProvider{name: "microsoft", calendars: []Calendar{{ID: "group:calendar"}}}, route: "microsoft@work", owned: map[string]bool{"group:calendar": true}}
+	r := NewRegistry([]Provider{provider})
+
+	got, raw, err := r.Resolve("microsoft:work:group:calendar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != provider || raw != "group:calendar" {
+		t.Fatalf("Resolve() = (%T, %q), want provider and group:calendar", got, raw)
+	}
+	calendars, err := r.ListCalendars(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calendars) != 1 || calendars[0].ID != "microsoft:work:group:calendar" {
+		t.Fatalf("calendars = %#v", calendars)
 	}
 }
 

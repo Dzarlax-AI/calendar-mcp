@@ -114,7 +114,7 @@ func TestVerifyDiscoversCalendarsWithPrefixedIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	discovered, err := store.ListCalendars(ctx, "google-1")
-	if err != nil || len(discovered) != 1 || discovered[0].ID != "google@google-1:primary" {
+	if err != nil || len(discovered) != 1 || discovered[0].ID != "google:google-1:primary" {
 		t.Fatalf("calendars = %#v, err = %v", discovered, err)
 	}
 	if err := service.Delete(ctx, "google-1"); err != nil {

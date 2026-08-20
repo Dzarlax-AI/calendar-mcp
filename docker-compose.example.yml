@@ -1,6 +1,6 @@
 services:
   calendar-serve:
-    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
     command: ["serve"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   calendar-worker:
-    image: ghcr.io/dzarlax-ai/calendar-mcp:latest
+    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
     command: ["worker"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}

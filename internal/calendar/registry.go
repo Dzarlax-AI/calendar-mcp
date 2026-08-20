@@ -62,7 +62,7 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 			return nil, fmt.Errorf("%s: %w", p.Name(), err)
 		}
 		for i := range cals {
-			cals[i].ID = ProviderRouteName(p) + ":" + cals[i].ID
+			cals[i].ID = CanonicalCalendarID(p, cals[i].ID)
 			cals[i].Provider = p.Name()
 		}
 		all = append(all, cals...)
@@ -80,7 +80,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 		if err != nil {
 			return nil, err
 		}
-		prefixEvents(events, ProviderRouteName(provider))
+		prefixEvents(events, provider)
 		return events, nil
 	}
 
@@ -104,7 +104,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 			var all []Event
 			var providerErrs []error
 			for _, cal := range cals {
-				canonicalID := ProviderRouteName(p) + ":" + cal.ID
+				canonicalID := CanonicalCalendarID(p, cal.ID)
 				legacyID := p.Name() + ":" + cal.ID
 				if r.skipInFanOut(canonicalID) || r.skipInFanOut(legacyID) {
 					continue
@@ -116,7 +116,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 				}
 				all = append(all, events...)
 			}
-			prefixEvents(all, ProviderRouteName(p))
+			prefixEvents(all, p)
 			ch <- result{events: all, errs: providerErrs}
 		}(p)
 	}
@@ -145,7 +145,7 @@ func (r *Registry) CreateEvent(ctx context.Context, calendarID string, event Eve
 	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
-	ev.ID = ProviderRouteName(provider) + ":" + ev.ID
+	ev.ID = provider.Name() + ":" + ev.ID
 	return ev, nil
 }
 
@@ -164,7 +164,7 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
-	ev.ID = ProviderRouteName(provider) + ":" + ev.ID
+	ev.ID = provider.Name() + ":" + ev.ID
 	return ev, nil
 }
 
@@ -201,6 +201,15 @@ func (r *Registry) resolve(prefixedID string) (Provider, string, error) {
 	name, rawID := splitPrefix(prefixedID)
 	r.mu.RLock()
 	p, ok := r.byName[name]
+	if !ok {
+		if connectionID, providerCalendarID, scoped := strings.Cut(rawID, ":"); scoped {
+			p, ok = r.byName[name+"@"+connectionID]
+			if ok {
+				r.mu.RUnlock()
+				return p, providerCalendarID, nil
+			}
+		}
+	}
 	providers := append([]Provider(nil), r.providers...)
 	r.mu.RUnlock()
 	if ok {
@@ -251,10 +260,10 @@ func splitPrefix(id string) (string, string) {
 	return parts[0], parts[1]
 }
 
-func prefixEvents(events []Event, provider string) {
+func prefixEvents(events []Event, provider Provider) {
 	for i := range events {
-		events[i].ID = provider + ":" + events[i].ID
-		events[i].CalendarID = provider + ":" + events[i].CalendarID
-		events[i].Provider = provider
+		events[i].ID = provider.Name() + ":" + events[i].ID
+		events[i].CalendarID = CanonicalCalendarID(provider, events[i].CalendarID)
+		events[i].Provider = provider.Name()
 	}
 }

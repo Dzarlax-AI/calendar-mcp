@@ -84,31 +84,6 @@ func (c *Config) Validate() error {
 	if c.DatabaseURL != "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
 		return fmt.Errorf("platform UI requires UI_TRUST_FORWARD_AUTH=true unless UI_ALLOW_UNAUTHENTICATED=true is explicitly set")
 	}
-	if err := requireCompleteProvider("Google", map[string]string{"GOOGLE_CLIENT_ID": c.GoogleClientID, "GOOGLE_CLIENT_SECRET": c.GoogleClientSecret}); err != nil {
-		return err
-	}
-	if err := requireCompleteProvider("Microsoft", map[string]string{"MS365_CLIENT_ID": c.MS365ClientID, "MS365_CLIENT_SECRET": c.MS365ClientSecret, "MS365_TENANT_ID": c.MS365TenantID}); err != nil {
-		return err
-	}
-	if err := requireCompleteProvider("Apple", map[string]string{"APPLE_USERNAME": c.AppleUsername, "APPLE_APP_PASSWORD": c.AppleAppPassword}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func requireCompleteProvider(name string, values map[string]string) error {
-	configured := false
-	for _, value := range values {
-		configured = configured || value != ""
-	}
-	if !configured {
-		return nil
-	}
-	for key, value := range values {
-		if value == "" {
-			return fmt.Errorf("%s provider is partially configured: %s is required", name, key)
-		}
-	}
 	return nil
 }
 

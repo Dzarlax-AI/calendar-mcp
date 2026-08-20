@@ -159,7 +159,7 @@ func TestEngineRecoversGoogleTargetByMarkerBeforeCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != 1 || target.created != 0 || target.lookupRuleID != "rule" || target.lookupSourceEventID != "source-event" {
+	if result.Created != 0 || target.created != 0 || target.lookupRuleID != "rule" || target.lookupSourceEventID != "source-event" {
 		t.Fatalf("result=%#v creates=%d lookup=%q/%q", result, target.created, target.lookupRuleID, target.lookupSourceEventID)
 	}
 	for _, mapping := range mappings.values {

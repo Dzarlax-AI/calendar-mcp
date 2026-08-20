@@ -38,10 +38,10 @@ func TestValidateAllowsAPIKey(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsPartialProviderConfiguration(t *testing.T) {
+func TestValidateAllowsPartialProviderConfigurationToBeSkipped(t *testing.T) {
 	cfg := &Config{APIKey: "secret", GoogleClientID: "client"}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() accepted a provider with missing client secret")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected skippable partial provider: %v", err)
 	}
 }
 

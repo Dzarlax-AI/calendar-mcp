@@ -63,9 +63,9 @@ Authentik ─────────▶│  web UI + OAuth        │
 Multiple accounts can be connected for every provider. A calendar has a canonical account-scoped ID:
 
 ```text
-google@<connection-id>:<provider-calendar-id>
-microsoft@<connection-id>:<provider-calendar-id>
-apple@<connection-id>:<provider-calendar-id>
+google:<connection-id>:<provider-calendar-id>
+microsoft:<connection-id>:<provider-calendar-id>
+apple:<connection-id>:<provider-calendar-id>
 ```
 
 The legacy `provider:calendar-id` form remains accepted only when it resolves to exactly one connected account. Ambiguous aliases are rejected.
@@ -123,19 +123,19 @@ Create `.env` from `.env.example`, replace every placeholder, then run:
 docker compose -f docker-compose.example.yml up -d
 ```
 
-The example starts `calendar-serve` and `calendar-worker` from the same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the UI is available only from the same machine at `http://localhost:8080`. Do not expose this example through a public interface.
+Set `CALENDAR_IMAGE` to a reviewed immutable `image@sha256:...` reference. The example starts `calendar-serve` and `calendar-worker` from that same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the UI is available only from the same machine at `http://localhost:8080`. Do not expose this example through a public interface.
 
 The SQLite deployment supports one worker only. Use PostgreSQL for production or multiple service replicas.
 
 ## PostgreSQL deployment
 
-The production-oriented example includes PostgreSQL 17 and keeps the UI in ForwardAuth mode:
+The production-oriented example includes PostgreSQL 17 and keeps the UI in ForwardAuth mode. Set `CALENDAR_IMAGE` and `POSTGRES_IMAGE` to reviewed immutable digest references and set `CALENDAR_POSTGRES_PASSWORD` to a random URL-safe value before rendering Compose:
 
 ```bash
 docker compose -f docker-compose.postgres.example.yml up -d
 ```
 
-Put a configured Authentik reverse proxy in front of the loopback-bound service before using the UI. Do not keep the example database password. Prefer an existing managed PostgreSQL instance, a dedicated role/schema, and an immutable calendar image digest.
+Put a configured Authentik reverse proxy in front of the loopback-bound service before using the UI. The proxy must strip any client-supplied `X-authentik-username` header and set the authenticated identity itself. Prefer an existing managed PostgreSQL instance and a dedicated role/schema.
 
 Startup order matters:
 
@@ -174,7 +174,7 @@ The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true`
 | `DATABASE_URL` | empty | Enables platform mode; accepts `postgres://`, `postgresql://`, or `sqlite://` |
 | `CALENDAR_ENCRYPTION_KEY` | empty | Base64-encoded 32-byte key for provider credentials |
 | `CALENDAR_PUBLIC_URL` | empty | Absolute external UI/OAuth origin, without a trailing slash |
-| `UI_TRUST_FORWARD_AUTH` | `true` | Requires Authentik identity header on protected UI routes |
+| `UI_TRUST_FORWARD_AUTH` | `false` | Explicitly trusts the Authentik identity header on protected UI routes; enable only behind the documented trusted proxy boundary |
 | `UI_ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only UI bypass; rejected unless set when ForwardAuth is disabled |
 
 Examples:
