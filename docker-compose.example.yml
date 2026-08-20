@@ -1,6 +1,6 @@
 services:
   calendar-serve:
-    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
     command: ["serve"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   calendar-worker:
-    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
     command: ["worker"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}

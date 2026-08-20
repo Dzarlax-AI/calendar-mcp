@@ -120,22 +120,24 @@ Requirements:
 Create `.env` from `.env.example`, replace every placeholder, then run:
 
 ```bash
-docker compose -f docker-compose.example.yml up -d
+./scripts/compose.sh sqlite up -d
 ```
 
-Set `CALENDAR_IMAGE` to a reviewed immutable `image@sha256:...` reference. The example starts `calendar-serve` and `calendar-worker` from that same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the UI is available only from the same machine at `http://localhost:8080`. Do not expose this example through a public interface.
+Set `CALENDAR_IMAGE` to a reviewed immutable `image@sha256:...` reference. The wrapper renders the Compose model, validates every resolved service image, and rejects missing, tagged, or malformed references before starting any service. The example starts `calendar-serve` and `calendar-worker` from that same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the UI is available only from the same machine at `http://localhost:8080`. Do not expose this example through a public interface.
 
 The SQLite deployment supports one worker only. Use PostgreSQL for production or multiple service replicas.
 
 ## PostgreSQL deployment
 
-The production-oriented example includes PostgreSQL 17 and keeps the UI in ForwardAuth mode. Set `CALENDAR_IMAGE` and `POSTGRES_IMAGE` to reviewed immutable digest references and set `CALENDAR_POSTGRES_PASSWORD` to a random URL-safe value before rendering Compose:
+The production-oriented example uses a configurable PostgreSQL image and keeps the UI in ForwardAuth mode. PostgreSQL 17 is the tested and recommended major version; set `POSTGRES_IMAGE` to a reviewed PostgreSQL 17 digest. Set `CALENDAR_IMAGE` to a reviewed calendar-service digest and `CALENDAR_POSTGRES_PASSWORD` to a random URL-safe value before rendering Compose:
 
 ```bash
-docker compose -f docker-compose.postgres.example.yml up -d
+./scripts/compose.sh postgres up -d
 ```
 
-Put a configured Authentik reverse proxy in front of the loopback-bound service before using the UI. The proxy must strip any client-supplied `X-authentik-username` header and set the authenticated identity itself. Prefer an existing managed PostgreSQL instance and a dedicated role/schema.
+The wrapper requires every resolved service image to use the exact `image@sha256:<64-hex-digest>` form before any of the three services starts. Put a configured Authentik reverse proxy in front of the loopback-bound service before using the UI. The proxy must strip any client-supplied `X-authentik-username` header and set the authenticated identity itself.
+
+The default `sslmode=disable` connection is only for the bundled PostgreSQL container on the private Compose network. For an existing managed or shared-network PostgreSQL instance, set `CALENDAR_DATABASE_URL` to a certificate-verified connection such as `postgres://calendar:password@db.example.com/calendar?sslmode=verify-full&sslrootcert=/run/secrets/postgres-ca.pem`, mount the CA certificate, and use a dedicated role/schema. Do not use the bundled non-TLS default outside its local Compose network.
 
 Startup order matters:
 
@@ -182,6 +184,7 @@ Examples:
 ```text
 sqlite:///app/data/calendar.db
 postgres://calendar:password@postgres:5432/calendar?sslmode=disable
+postgres://calendar:password@db.example.com/calendar?sslmode=verify-full&sslrootcert=/run/secrets/postgres-ca.pem
 ```
 
 Back up the encryption key separately from the database. Losing it requires reconnecting every provider account.

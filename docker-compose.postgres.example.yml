@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to an immutable image digest}
+    image: ${POSTGRES_IMAGE:?Run scripts/compose.sh with an immutable image digest}
     restart: unless-stopped
     environment:
       POSTGRES_DB: calendar
@@ -15,13 +15,14 @@ services:
       retries: 20
 
   calendar-serve:
-    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
     command: ["serve"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
     environment:
-      DATABASE_URL: postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable
+      DATABASE_URL: ${CALENDAR_DATABASE_URL:-postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable}
       UI_TRUST_FORWARD_AUTH: "true"
+      UI_ALLOW_UNAUTHENTICATED: "false"
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -34,12 +35,12 @@ services:
       retries: 10
 
   calendar-worker:
-    image: ${CALENDAR_IMAGE:?Set CALENDAR_IMAGE to an immutable image digest}
+    image: ${CALENDAR_IMAGE:?Run scripts/compose.sh with an immutable image digest}
     command: ["worker"]
     restart: unless-stopped
     env_file: ${CALENDAR_ENV_FILE:-.env}
     environment:
-      DATABASE_URL: postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable
+      DATABASE_URL: ${CALENDAR_DATABASE_URL:-postgres://calendar:${CALENDAR_POSTGRES_PASSWORD:?Set CALENDAR_POSTGRES_PASSWORD}@postgres:5432/calendar?sslmode=disable}
     depends_on:
       calendar-serve:
         condition: service_healthy

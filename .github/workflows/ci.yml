@@ -31,6 +31,20 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+      - name: Validate Compose examples
+        env:
+          CALENDAR_ENV_FILE: .env.example
+          CALENDAR_IMAGE: ghcr.io/example/calendar@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          POSTGRES_IMAGE: postgres@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+          CALENDAR_POSTGRES_PASSWORD: test-password
+        run: |
+          ./scripts/compose.sh sqlite config --quiet
+          ./scripts/compose.sh postgres config --quiet
+          if CALENDAR_IMAGE=ghcr.io/example/calendar:latest ./scripts/compose.sh sqlite config --quiet; then
+            echo "mutable calendar image unexpectedly passed validation" >&2
+            exit 1
+          fi
+
       - name: Build
         run: CGO_ENABLED=0 go build ./...
 

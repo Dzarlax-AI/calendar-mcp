@@ -42,6 +42,8 @@ type fakeV2Provider struct {
 	recovered                 *calendar.EventV2
 	lookupRuleID              string
 	lookupSourceEventID       string
+	lastInstancesRequest      calendar.InstancesRequestV2
+	filterInstancesByWindow   bool
 }
 
 func (p *fakeV2Provider) Name() string                                               { return p.name }
@@ -66,8 +68,23 @@ func (p *fakeV2Provider) ListEventsV2(_ context.Context, request calendar.ListEv
 func (p *fakeV2Provider) GetEventV2(context.Context, calendar.EventRef) (*calendar.EventV2, error) {
 	return nil, nil
 }
-func (p *fakeV2Provider) GetEventInstancesV2(_ context.Context, _ calendar.InstancesRequestV2) (calendar.Page[calendar.EventV2], error) {
-	return calendar.Page[calendar.EventV2]{Items: p.instances, Complete: true}, nil
+func (p *fakeV2Provider) GetEventInstancesV2(_ context.Context, request calendar.InstancesRequestV2) (calendar.Page[calendar.EventV2], error) {
+	p.lastInstancesRequest = request
+	if !p.filterInstancesByWindow {
+		return calendar.Page[calendar.EventV2]{Items: p.instances, Complete: true}, nil
+	}
+	items := make([]calendar.EventV2, 0, len(p.instances))
+	for _, item := range p.instances {
+		candidate := item.OriginalStart
+		if candidate == nil {
+			candidate = &item.Start
+		}
+		instant, err := candidate.Instant()
+		if err == nil && !instant.Before(request.Start) && instant.Before(request.End) {
+			items = append(items, item)
+		}
+	}
+	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
 }
 func (p *fakeV2Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime) error {
 	if p.recurrenceErr != nil {
@@ -290,5 +307,41 @@ func TestEngineRestoresOccurrenceWhenSourceExceptionDisappears(t *testing.T) {
 	}
 	if len(mappings.values) != 1 {
 		t.Fatalf("mapping count = %d, want only series mapping", len(mappings.values))
+	}
+}
+
+func TestFindTargetInstanceIncludesOriginalStartOutsideSyncWindow(t *testing.T) {
+	tests := []struct {
+		name     string
+		original calendar.EventTime
+	}{
+		{name: "timed", original: calendar.EventTime{DateTime: "2026-08-20T09:00:00Z", TimeZone: "UTC"}},
+		{name: "all day", original: calendar.EventTime{Date: "2026-08-20"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &fakeV2Provider{
+				name:                    "google",
+				instances:               []calendar.EventV2{{ID: "target-instance", OriginalStart: &tt.original, Start: tt.original}},
+				filterInstancesByWindow: true,
+			}
+			windowStart := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
+			windowEnd := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+
+			id, found, err := findTargetInstance(context.Background(), provider, "target", "series", &tt.original, windowStart, windowEnd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !found || id != "target-instance" {
+				t.Fatalf("found=%v id=%q", found, id)
+			}
+			originalInstant, err := tt.original.Instant()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider.lastInstancesRequest.Start.After(originalInstant) || !provider.lastInstancesRequest.End.After(originalInstant) {
+				t.Fatalf("lookup window %s..%s does not include %s", provider.lastInstancesRequest.Start, provider.lastInstancesRequest.End, originalInstant)
+			}
+		})
 	}
 }

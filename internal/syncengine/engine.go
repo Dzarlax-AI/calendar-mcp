@@ -315,6 +315,20 @@ func findTargetInstance(ctx context.Context, provider calendar.Provider, calenda
 	if original == nil {
 		return "", false, errors.New("recurring instance is missing original_start")
 	}
+	originalInstant, err := original.Instant()
+	if err != nil {
+		return "", false, fmt.Errorf("invalid recurring instance original_start: %w", err)
+	}
+	if originalInstant.Before(start) {
+		start = originalInstant
+	}
+	originalEnd := originalInstant.Add(time.Second)
+	if original.IsAllDay() {
+		originalEnd = originalInstant.AddDate(0, 0, 1)
+	}
+	if originalEnd.After(end) {
+		end = originalEnd
+	}
 	instances, ok := provider.(calendar.InstanceProviderV2)
 	if !ok {
 		return "", false, errors.New("target provider does not support recurring instance lookup")
