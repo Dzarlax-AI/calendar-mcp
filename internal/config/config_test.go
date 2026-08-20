@@ -2,6 +2,18 @@ package config
 
 import "testing"
 
+func TestLoadRequiresExplicitForwardAuthOptIn(t *testing.T) {
+	t.Setenv("UI_TRUST_FORWARD_AUTH", "")
+	if cfg := Load(); cfg.TrustForwardAuth {
+		t.Fatal("TrustForwardAuth = true without explicit opt-in")
+	}
+
+	t.Setenv("UI_TRUST_FORWARD_AUTH", "true")
+	if cfg := Load(); !cfg.TrustForwardAuth {
+		t.Fatal("TrustForwardAuth = false with explicit opt-in")
+	}
+}
+
 func TestValidateRejectsMissingAPIKeyByDefault(t *testing.T) {
 	cfg := &Config{}
 

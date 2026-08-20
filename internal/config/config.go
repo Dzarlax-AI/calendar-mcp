@@ -53,7 +53,7 @@ func Load() *Config {
 		DatabaseURL:            envStr("DATABASE_URL", ""),
 		EncryptionKey:          envStr("CALENDAR_ENCRYPTION_KEY", ""),
 		PublicURL:              envStr("CALENDAR_PUBLIC_URL", ""),
-		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", true),
+		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", false),
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),

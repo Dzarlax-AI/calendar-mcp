@@ -165,6 +165,9 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 
 func maintainJobLease(ctx context.Context, ticks <-chan time.Time, renew func(time.Time) (bool, error), cancelWork context.CancelFunc) error {
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -172,8 +175,14 @@ func maintainJobLease(ctx context.Context, ticks <-chan time.Time, renew func(ti
 			if !ok {
 				return nil
 			}
+			if ctx.Err() != nil {
+				return nil
+			}
 			owned, err := renew(at)
 			if err != nil {
+				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+					return nil
+				}
 				cancelWork()
 				return fmt.Errorf("renew worker lease: %w", err)
 			}

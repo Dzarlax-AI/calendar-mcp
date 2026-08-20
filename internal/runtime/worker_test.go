@@ -52,3 +52,59 @@ func TestMaintainJobLeaseCancelsWorkWhenOwnershipIsLost(t *testing.T) {
 		t.Fatal("work context was not cancelled")
 	}
 }
+
+func TestMaintainJobLeaseSkipsRenewAfterShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	cancel()
+	renewed := false
+
+	err := maintainJobLease(ctx, ticks, func(time.Time) (bool, error) {
+		renewed = true
+		return true, nil
+	}, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed {
+		t.Fatal("lease renewed after shutdown")
+	}
+}
+
+func TestMaintainJobLeaseIgnoresContextRenewalErrorDuringShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	workCancelled := false
+
+	err := maintainJobLease(ctx, ticks, func(time.Time) (bool, error) {
+		cancel()
+		return false, context.Canceled
+	}, func() { workCancelled = true })
+	if err != nil {
+		t.Fatalf("error = %v, want nil", err)
+	}
+	if workCancelled {
+		t.Fatal("work cancellation invoked for shutdown-related renewal error")
+	}
+}
+
+func TestMaintainJobLeasePreservesUnrelatedRenewalErrorDuringShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	want := errors.New("database unavailable")
+	workCancelled := false
+
+	err := maintainJobLease(ctx, ticks, func(time.Time) (bool, error) {
+		cancel()
+		return false, want
+	}, func() { workCancelled = true })
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	if !workCancelled {
+		t.Fatal("work cancellation not invoked for unrelated renewal error")
+	}
+}
