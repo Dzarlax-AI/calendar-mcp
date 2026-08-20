@@ -2,6 +2,16 @@ package config
 
 import "testing"
 
+func TestLoadReadsLegacyAPIKey(t *testing.T) {
+	t.Setenv("API_KEY", "primary")
+	t.Setenv("API_KEY_LEGACY", "legacy")
+
+	cfg := Load()
+	if cfg.APIKey != "primary" || cfg.LegacyAPIKey != "legacy" {
+		t.Fatalf("keys = %q/%q", cfg.APIKey, cfg.LegacyAPIKey)
+	}
+}
+
 func TestLoadRequiresExplicitForwardAuthOptIn(t *testing.T) {
 	t.Setenv("UI_TRUST_FORWARD_AUTH", "")
 	if cfg := Load(); cfg.TrustForwardAuth {
@@ -19,6 +29,14 @@ func TestValidateRejectsMissingAPIKeyByDefault(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() returned nil, want missing API key error")
+	}
+}
+
+func TestValidateRejectsLegacyKeyWithoutPrimaryKey(t *testing.T) {
+	cfg := &Config{LegacyAPIKey: "legacy"}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() returned nil, want missing primary API key error")
 	}
 }
 

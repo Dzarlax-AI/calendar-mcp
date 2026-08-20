@@ -163,11 +163,12 @@ Health endpoints:
 | `WORKER_HEALTH_ADDR` | `127.0.0.1:8082` | Worker readiness listener |
 | `REST_LISTEN_ADDR` | empty | Optional separate internal REST listener |
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
+| `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
 | `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
-The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set.
+The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
 
 ### Platform mode
 

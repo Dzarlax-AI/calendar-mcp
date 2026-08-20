@@ -13,11 +13,11 @@ import (
 	"calendar-mcp/internal/httpx"
 )
 
-func Register(mux *http.ServeMux, reg *calendar.Registry, app *application.Service, apiKey string, allowUnauthenticated, enableV2 bool) {
+func Register(mux *http.ServeMux, reg *calendar.Registry, app *application.Service, authOptions auth.Options, enableV2 bool) {
 	s := buildServer(reg, app, enableV2)
 	h := server.NewStreamableHTTPServer(s)
 	limited := httpx.LimitRequestBody(h, httpx.DefaultMaxRequestBodyBytes)
-	protected := auth.Middleware(auth.Options{APIKey: apiKey, AllowUnauthenticated: allowUnauthenticated})(limited)
+	protected := auth.Middleware(authOptions)(limited)
 	mux.Handle("/mcp", protected)
 	mux.Handle("/mcp/", protected)
 }
