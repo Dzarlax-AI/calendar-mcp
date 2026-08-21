@@ -316,7 +316,6 @@ The import does not call providers, mutate events, revoke OAuth grants, delete t
 ## Build and development
 
 ```bash
-make assets            # verify or fetch pinned HTMX 2.0.4
 make build             # build ./calendar
 make test              # full race-enabled test suite
 make vet               # Go static analysis
@@ -331,7 +330,7 @@ TEST_POSTGRES_URL='postgres://calendar:password@127.0.0.1:5432/calendar?sslmode=
 make test-integration
 ```
 
-The runtime image contains the compiled binary, CA certificates, timezone data, templates, CSS, and checksum-verified HTMX. It has no runtime CDN dependency.
+The runtime image contains the compiled binary, CA certificates, timezone data, templates, CSS, and the first-party action-progress JavaScript. It has no runtime CDN dependency.
 
 ## Repository layout
 
