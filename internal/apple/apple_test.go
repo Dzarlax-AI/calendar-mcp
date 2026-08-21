@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
+	"github.com/emersion/go-webdav/caldav"
 
 	"calendar-mcp/internal/calendar"
 )
@@ -37,6 +38,39 @@ func TestGetEventsFallbackReturnsPropfindFailure(t *testing.T) {
 	_, err := p.getEventsFallback(context.Background(), "/calendar/", time.Now(), time.Now().Add(time.Hour))
 	if err == nil {
 		t.Fatal("getEventsFallback() returned nil error for PROPFIND failure")
+	}
+}
+
+func TestCalendarObjectsFallbackSkipsObjectsDeletedAfterPropfind(t *testing.T) {
+	const calendarPath = "/calendar/"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PROPFIND" && r.URL.Path == calendarPath:
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>/calendar/active.ics</D:href></D:response><D:response><D:href>/calendar/deleted.ics</D:href></D:response></D:multistatus>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/calendar/active.ics":
+			w.Header().Set("Content-Type", "text/calendar")
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:active\r\nDTSTART:20260821T090000Z\r\nDTEND:20260821T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"))
+		case r.Method == http.MethodGet && r.URL.Path == "/calendar/deleted.ics":
+			http.NotFound(w, r)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	client, err := caldav.NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Provider{client: client, httpClient: server.Client(), caldavURL: server.URL}
+
+	objects, err := p.getCalendarObjectsFallback(t.Context(), calendarPath)
+	if err != nil {
+		t.Fatalf("getCalendarObjectsFallback() error = %v", err)
+	}
+	if len(objects) != 1 || objects[0].Path != "/calendar/active.ics" {
+		t.Fatalf("objects = %#v, want only active object", objects)
 	}
 }
 

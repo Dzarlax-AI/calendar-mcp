@@ -105,6 +105,11 @@ func uiPageKey(request calendar.ListEventsRequestV2) string {
 }
 
 func newUIAPIHandler(t *testing.T, cfg Config, provider *uiAPIProvider) http.Handler {
+	handler, _ := newUIAPIHandlerWithStore(t, cfg, provider)
+	return handler
+}
+
+func newUIAPIHandlerWithStore(t *testing.T, cfg Config, provider *uiAPIProvider) (http.Handler, *storage.Store) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -138,7 +143,7 @@ func newUIAPIHandler(t *testing.T, cfg Config, provider *uiAPIProvider) http.Han
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server.Handler()
+	return server.Handler(), store
 }
 
 func uiProvider() *uiAPIProvider {
@@ -191,6 +196,41 @@ func TestUIAPIBootstrapIsProtectedSafeAndFlat(t *testing.T) {
 		t.Fatalf("csrf cookie = %#v, want Secure cookie for HTTPS public URL", cookies)
 	}
 	assertNoStoreHeaders(t, response)
+}
+
+func TestUIAPIBootstrapOmitsCalendarsFromInactiveConnections(t *testing.T) {
+	provider := uiProvider()
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true}, provider)
+	now := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
+	if err := store.CreateConnection(t.Context(), storage.Connection{
+		ID: "pending-account", Provider: "google", DisplayName: "Pending account", Status: "pending",
+		EncryptedCredentials: []byte("pending-credential"), CredentialVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{
+		ID: "google:pending-account:stale", ConnectionID: "pending-account", ProviderCalendarID: "stale",
+		Name: "Stale", CanRead: true, CanWrite: true, DiscoveredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/bootstrap", nil)
+	request.Header.Set("X-authentik-username", "alexey")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Calendars []uiCalendar `json:"calendars"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Calendars) != 1 || payload.Calendars[0].ID != "google:primary" {
+		t.Fatalf("bootstrap calendars = %#v, want only the connected calendar", payload.Calendars)
+	}
 }
 
 func TestUIAPIEventMutationsRequireJSONCSRFAndForceNone(t *testing.T) {

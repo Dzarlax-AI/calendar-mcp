@@ -350,8 +350,9 @@ func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID st
 	log.Printf("apple: GET fallback for %s: fetching %d objects (concurrency=%d)", calendarID, len(paths), fallbackConcurrency)
 
 	type slot struct {
-		object *caldav.CalendarObject
-		err    error
+		object  *caldav.CalendarObject
+		err     error
+		missing bool
 	}
 	results := make([]slot, len(paths))
 	sem := make(chan struct{}, fallbackConcurrency)
@@ -370,6 +371,10 @@ func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID st
 
 			obj, err := p.client.GetCalendarObject(ctx, path)
 			if err != nil {
+				if isMissingCalendarObject(err) {
+					results[i].missing = true
+					return
+				}
 				results[i].err = fmt.Errorf("GET %s: %w", path, err)
 				return
 			}
@@ -381,18 +386,33 @@ func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID st
 
 	var objects []caldav.CalendarObject
 	var objectErrs []error
+	missingCount := 0
 	for _, r := range results {
 		if r.object != nil {
 			objects = append(objects, *r.object)
+		}
+		if r.missing {
+			missingCount++
 		}
 		if r.err != nil {
 			objectErrs = append(objectErrs, r.err)
 		}
 	}
+	if missingCount > 0 {
+		log.Printf("apple: GET fallback for %s skipped %d object(s) deleted after PROPFIND", calendarID, missingCount)
+	}
 	if len(objectErrs) > 0 {
 		return nil, fmt.Errorf("apple GET fallback incomplete: %w", errors.Join(objectErrs...))
 	}
 	return objects, nil
+}
+
+func isMissingCalendarObject(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "404 Not Found") || strings.HasPrefix(message, "410 Gone")
 }
 
 // propfindCalendarObjects does a PROPFIND Depth:1 and returns paths of all

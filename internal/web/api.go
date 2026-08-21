@@ -225,12 +225,17 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 	}
 	connectionProviders := make(map[string]string, len(connectionsList))
 	connectionNames := make(map[string]string, len(connectionsList))
+	connected := make(map[string]bool, len(connectionsList))
 	for _, item := range connectionsList {
 		result.Connections = append(result.Connections, uiConnection{ID: item.ID, Provider: item.Provider, DisplayName: item.DisplayName, Status: item.Status, LastVerifiedAt: item.LastVerifiedAt, LastErrorCode: item.LastErrorCode})
 		connectionProviders[item.ID] = item.Provider
 		connectionNames[item.ID] = item.DisplayName
+		connected[item.ID] = item.Status == "connected"
 	}
 	for _, item := range calendars {
+		if !connected[item.ConnectionID] {
+			continue
+		}
 		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence})
 	}
 	for _, item := range rules {
