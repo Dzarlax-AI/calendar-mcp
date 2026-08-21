@@ -119,3 +119,31 @@ func TestAppleEventsFromObjectReportsMalformedStandaloneTime(t *testing.T) {
 		t.Fatal("malformed event was silently dropped")
 	}
 }
+
+func TestAppleEventsFromObjectsKeepsValidEventsWhenOneObjectIsMalformed(t *testing.T) {
+	valid := ical.NewEvent()
+	valid.Props.SetText(ical.PropUID, "valid")
+	valid.Props.SetDateTime(ical.PropDateTimeStart, time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC))
+	valid.Props.SetDateTime(ical.PropDateTimeEnd, time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC))
+	validCalendar := ical.NewCalendar()
+	validCalendar.Children = append(validCalendar.Children, valid.Component)
+
+	malformed := ical.NewEvent()
+	malformed.Props.SetText(ical.PropUID, "malformed")
+	malformedCalendar := ical.NewCalendar()
+	malformedCalendar.Children = append(malformedCalendar.Children, malformed.Component)
+
+	items, skipped := appleEventsFromObjects([]caldav.CalendarObject{
+		{Path: "/cal/valid.ics", Data: validCalendar},
+		{Path: "/cal/malformed.ics", Data: malformedCalendar},
+	}, calendar.ListEventsRequestV2{
+		CalendarID: "/cal", Start: time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceExpanded,
+	})
+
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	if len(items) != 1 || items[0].ICalUID != "valid" {
+		t.Fatalf("items = %#v, want the valid event", items)
+	}
+}

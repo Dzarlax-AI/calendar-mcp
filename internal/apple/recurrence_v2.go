@@ -188,6 +188,20 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 	return result, nil
 }
 
+func appleEventsFromObjects(objects []caldav.CalendarObject, request calendar.ListEventsRequestV2) ([]calendar.EventV2, int) {
+	items := make([]calendar.EventV2, 0, len(objects))
+	skipped := 0
+	for _, object := range objects {
+		expanded, err := appleEventsFromObject(object, request)
+		if err != nil {
+			skipped++
+			continue
+		}
+		items = append(items, expanded...)
+	}
+	return items, skipped
+}
+
 func appleEventOverlaps(event calendar.EventV2, start, end time.Time) bool {
 	eventStart, startErr := event.Start.Instant()
 	eventEnd, endErr := event.End.Instant()

@@ -77,13 +77,9 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 			return calendar.Page[calendar.EventV2]{}, err
 		}
 	}
-	items := make([]calendar.EventV2, 0, len(objects))
-	for _, object := range objects {
-		expanded, expandErr := appleEventsFromObject(object, request)
-		if expandErr != nil {
-			return calendar.Page[calendar.EventV2]{}, expandErr
-		}
-		items = append(items, expanded...)
+	items, skipped := appleEventsFromObjects(objects, request)
+	if skipped > 0 {
+		log.Printf("apple: calendar %s skipped %d malformed object(s) while listing events", request.CalendarID, skipped)
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
 }
