@@ -260,6 +260,15 @@ func TestPublicPagesBypassForwardAuthWhileApplicationStaysProtected(t *testing.T
 	}
 }
 
+func TestSPAAssetsBypassForwardAuth(t *testing.T) {
+	handler := newTestHandler(t, true, false)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "https://calendar.example/spa/placeholder.txt", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("unauthenticated SPA asset status = %d, want %d", res.Code, http.StatusOK)
+	}
+}
+
 func TestMarkdownRenderingOmitsUnsafeHTMLAndLinks(t *testing.T) {
 	rendered, err := renderMarkdown([]byte("<script>alert('x')</script>\n\n[unsafe](javascript:alert(1))"))
 	if err != nil {

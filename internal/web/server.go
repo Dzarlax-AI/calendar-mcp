@@ -109,7 +109,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	assets, _ := fs.Sub(content, "assets")
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
-	mux.Handle("GET /spa/", s.protected(http.StripPrefix("/spa/", http.FileServer(http.FS(s.spa)))))
+	// The SPA bundle contains only immutable client assets. Keeping it behind
+	// ForwardAuth can turn an expired-session redirect into a cross-origin
+	// module load, preventing React from rendering the sign-in flow or an error.
+	mux.Handle("GET /spa/", http.StripPrefix("/spa/", http.FileServer(http.FS(s.spa))))
 	mux.Handle("GET /{$}", http.HandlerFunc(s.publicPage("home")))
 	mux.Handle("GET /privacy", http.HandlerFunc(s.publicPage("privacy")))
 	mux.Handle("GET /terms", http.HandlerFunc(s.publicPage("terms")))

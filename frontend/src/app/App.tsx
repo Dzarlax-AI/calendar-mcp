@@ -1,6 +1,6 @@
 import { createContext, lazy, Suspense, useContext, useState } from "react";
 import type { ReactNode } from "react";
-import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation, useRouteError } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, PlayCircle, Settings2, X } from "lucide-react";
 import { getBootstrap } from "../lib/api";
@@ -24,6 +24,16 @@ const navItems = [
 
 function SuspendedRoute() {
   return <div className="route-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={22} aria-hidden="true" /><span>Loading view</span></div>;
+}
+
+export function RouteErrorPage() {
+  useRouteError();
+  return <div className="app-gate" role="alert">
+    <div className="empty-illustration"><CalendarDays size={30} /></div>
+    <h1>Calendar couldn't finish loading</h1>
+    <p>Refresh the page to load the latest version of the calendar.</p>
+    <button className="button button-primary" onClick={() => window.location.reload()}>Refresh calendar</button>
+  </div>;
 }
 
 function Sidebar({ open, onClose, username }: { open: boolean; onClose: () => void; username?: string }) {
@@ -88,6 +98,7 @@ const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/app" replace /> },
   {
     element: <Root />,
+    errorElement: <RouteErrorPage />,
     children: [
       { path: "/app", element: <CalendarPage /> },
       { path: "/connections", element: <ControlPlanePage section="connections" /> },
