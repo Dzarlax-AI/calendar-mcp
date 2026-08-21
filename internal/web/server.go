@@ -22,13 +22,14 @@ import (
 	"github.com/yuin/goldmark"
 
 	"calendar-mcp/internal/apple"
+	"calendar-mcp/internal/application"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/connections"
 	"calendar-mcp/internal/oauthflow"
 	"calendar-mcp/internal/storage"
 )
 
-//go:embed templates/*.html assets/* legal/*.md
+//go:embed templates/*.html assets/* legal/*.md spa/dist/*
 var content embed.FS
 
 type ProviderBuilder func(context.Context) ([]calendar.Provider, error)
@@ -42,7 +43,11 @@ type Config struct {
 	GoogleConfigured       bool
 	MicrosoftConfigured    bool
 	AppleCalDAVURL         string
-	OnProvidersChanged     func([]calendar.Provider)
+	// ApplicationService is the shared typed event service used by the
+	// same-origin browser API. It must not be replaced by the API-key REST
+	// server because browser requests never receive an MCP API key.
+	ApplicationService *application.Service
+	OnProvidersChanged func([]calendar.Provider)
 }
 
 type Server struct {
@@ -50,9 +55,11 @@ type Server struct {
 	connections *connections.Service
 	oauth       *oauthflow.Service
 	providers   ProviderBuilder
+	app         *application.Service
 	config      Config
 	template    *template.Template
 	publicDocs  map[string]template.HTML
+	spa         fs.FS
 	origin      string
 }
 
@@ -62,6 +69,10 @@ func New(store *storage.Store, connectionService *connections.Service, oauthServ
 		return nil, fmt.Errorf("parse UI templates: %w", err)
 	}
 	publicDocs := make(map[string]template.HTML, 2)
+	spa, err := fs.Sub(content, "spa/dist")
+	if err != nil {
+		return nil, fmt.Errorf("open embedded React client: %w", err)
+	}
 	for _, name := range []string{"privacy", "terms"} {
 		source, err := content.ReadFile("legal/" + name + ".md")
 		if err != nil {
@@ -81,7 +92,7 @@ func New(store *storage.Store, connectionService *connections.Service, oauthServ
 		}
 		origin = u.Scheme + "://" + u.Host
 	}
-	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, config: cfg, template: parsed, publicDocs: publicDocs, origin: origin}, nil
+	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, app: cfg.ApplicationService, config: cfg, template: parsed, publicDocs: publicDocs, spa: spa, origin: origin}, nil
 }
 
 func renderMarkdown(source []byte) (template.HTML, error) {
@@ -98,16 +109,24 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	assets, _ := fs.Sub(content, "assets")
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
+	mux.Handle("GET /spa/", s.protected(http.StripPrefix("/spa/", http.FileServer(http.FS(s.spa)))))
 	mux.Handle("GET /{$}", http.HandlerFunc(s.publicPage("home")))
 	mux.Handle("GET /privacy", http.HandlerFunc(s.publicPage("privacy")))
 	mux.Handle("GET /terms", http.HandlerFunc(s.publicPage("terms")))
 	mux.Handle("GET /oauth/{provider}/callback", http.HandlerFunc(s.oauthCallback))
-	mux.Handle("GET /app", s.protected(http.HandlerFunc(s.page("dashboard"))))
-	mux.Handle("GET /connections", s.protected(http.HandlerFunc(s.page("connections"))))
-	mux.Handle("GET /rules", s.protected(http.HandlerFunc(s.page("rules"))))
-	mux.Handle("GET /rules/new", s.protected(http.HandlerFunc(s.page("new-rule"))))
-	mux.Handle("GET /runs", s.protected(http.HandlerFunc(s.page("runs"))))
-	mux.Handle("GET /settings", s.protected(http.HandlerFunc(s.page("settings"))))
+	mux.Handle("GET /api/ui/bootstrap", noStore(s.uiProtected(http.HandlerFunc(s.bootstrap))))
+	mux.Handle("GET /api/ui/control-plane", noStore(s.uiProtected(http.HandlerFunc(s.controlPlane))))
+	mux.Handle("GET /api/ui/events", noStore(s.uiProtected(http.HandlerFunc(s.listUIEvents))))
+	mux.Handle("GET /api/ui/event", noStore(s.uiProtected(http.HandlerFunc(s.getUIEvent))))
+	mux.Handle("POST /api/ui/events", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.createUIEvent)))))
+	mux.Handle("PATCH /api/ui/event", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.updateUIEvent)))))
+	mux.Handle("DELETE /api/ui/event", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.deleteUIEvent)))))
+	mux.Handle("GET /app", s.protected(s.spaPage("dashboard")))
+	mux.Handle("GET /connections", s.protected(s.spaPage("connections")))
+	mux.Handle("GET /rules", s.protected(s.spaPage("rules")))
+	mux.Handle("GET /rules/new", s.protected(s.spaPage("new-rule")))
+	mux.Handle("GET /runs", s.protected(s.spaPage("runs")))
+	mux.Handle("GET /settings", s.protected(s.spaPage("settings")))
 	mux.Handle("POST /settings/mcp-key/reveal", noStore(s.protected(s.mutating(http.HandlerFunc(s.revealMCPKey)))))
 	mux.Handle("GET /oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
 	mux.Handle("GET /connections/{id}/oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
@@ -198,7 +217,7 @@ func (s *Server) page(page string) func(http.ResponseWriter, *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := s.viewData(r.Context(), page, csrfToken(w, r))
+		data, err := s.viewData(r.Context(), page, s.csrfToken(w, r))
 		if err != nil {
 			log.Printf("calendar UI page data: %v", err)
 			http.Error(w, "Calendar UI is temporarily unavailable", http.StatusServiceUnavailable)
@@ -210,6 +229,29 @@ func (s *Server) page(page string) func(http.ResponseWriter, *http.Request) {
 			log.Printf("calendar UI template: %v", err)
 		}
 	}
+}
+
+// spaPage serves the production React client when it was staged before the Go
+// build. Source-only Go test runs deliberately fall back to the legacy
+// server-rendered page so the backend remains testable without Node artifacts.
+func (s *Server) spaPage(fallbackPage string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index, err := fs.ReadFile(s.spa, "index.html")
+		if errors.Is(err, fs.ErrNotExist) {
+			s.page(fallbackPage)(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("calendar React client: %v", err)
+			http.Error(w, "Calendar UI is temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(index)
+	})
 }
 
 func (s *Server) viewData(ctx context.Context, page, csrf string) (viewData, error) {
@@ -520,12 +562,26 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) protected(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated) {
+		if s.unauthenticated(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) uiProtected(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.unauthenticated(r) {
+			writeUIError(w, http.StatusUnauthorized, calendar.NewAPIError(calendar.ErrorPermissionDenied, "authentication is required"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) unauthenticated(r *http.Request) bool {
+	return (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated)
 }
 
 func (s *Server) mutating(next http.Handler) http.Handler {
@@ -543,14 +599,35 @@ func (s *Server) mutating(next http.Handler) http.Handler {
 	})
 }
 
-func csrfToken(w http.ResponseWriter, r *http.Request) string {
+// jsonMutating is deliberately separate from mutating. Legacy HTML forms use
+// the form field while JSON requests must prove that script code read the token
+// from the authenticated bootstrap response.
+func (s *Server) jsonMutating(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.origin == "" || r.Header.Get("Origin") != s.origin {
+			writeUIError(w, http.StatusForbidden, calendar.NewAPIError(calendar.ErrorPermissionDenied, "invalid request origin"))
+			return
+		}
+		cookie, err := r.Cookie("calendar_csrf")
+		token := r.Header.Get("X-CSRF-Token")
+		if err != nil || token == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) != 1 {
+			writeUIError(w, http.StatusForbidden, calendar.NewAPIError(calendar.ErrorPermissionDenied, "invalid CSRF token"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) csrfToken(w http.ResponseWriter, r *http.Request) string {
 	if cookie, err := r.Cookie("calendar_csrf"); err == nil && cookie.Value != "" {
 		return cookie.Value
 	}
 	value := make([]byte, 32)
 	_, _ = rand.Read(value)
 	token := base64.RawURLEncoding.EncodeToString(value)
-	http.SetCookie(w, &http.Cookie{Name: "calendar_csrf", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
+	publicURL, _ := url.Parse(s.config.PublicURL)
+	secure := publicURL != nil && publicURL.Scheme == "https"
+	http.SetCookie(w, &http.Cookie{Name: "calendar_csrf", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure})
 	return token
 }
 
@@ -564,6 +641,6 @@ func pageTitle(page string) string {
 	return titles[page]
 }
 func flashMessage(code string) string {
-	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
+	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "connection_failed": "The connection could not be saved.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "oauth_start_failed": "Authorization could not be started. Try again.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
 	return messages[code]
 }

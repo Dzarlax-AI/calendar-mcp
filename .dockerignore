@@ -11,3 +11,7 @@ server
 docs
 AGENTS.md
 CLAUDE.md
+frontend/node_modules
+frontend/dist
+internal/web/spa/dist/*
+!internal/web/spa/dist/placeholder.txt
