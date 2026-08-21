@@ -97,7 +97,9 @@ Google targets receive private rule/source markers. Before a create, the engine 
 
 ## Web control plane
 
-Platform mode adds these pages:
+Platform mode exposes a public product landing page at `/`, plus the repository-maintained [Privacy Policy](internal/web/legal/privacy.md) at `/privacy` and [Terms of Service](internal/web/legal/terms.md) at `/terms`. These routes contain no connection or calendar state. They can be routed publicly for OAuth application verification while the control plane stays authenticated.
+
+The authenticated control plane starts at `/app` and adds these pages:
 
 - Dashboard — connection, rule, run, and attention summaries;
 - Connections — add, reconnect, verify, discover, and safely remove accounts;
@@ -107,7 +109,7 @@ Platform mode adds these pages:
 
 Google and Microsoft use OAuth 2.0 with expiring single-use state and PKCE. Apple uses an app-specific password. Provider credentials are encrypted with AES-256-GCM before database storage.
 
-Production UI access is designed for Authentik ForwardAuth. With `UI_TRUST_FORWARD_AUTH=true`, protected pages require the `X-authentik-username` header. The service must not be directly reachable around the trusted reverse proxy: the proxy must discard any client-supplied identity header and set the authenticated value itself. OAuth callbacks remain outside ForwardAuth and are protected by their state/PKCE flow. Mutating UI requests additionally require an exact public origin and a same-site CSRF token.
+Production UI access is designed for Authentik ForwardAuth. With `UI_TRUST_FORWARD_AUTH=true`, `/app` and all connection, rule, run, settings, and OAuth-start routes require the `X-authentik-username` header. The service must not be directly reachable around the trusted reverse proxy: the proxy must discard any client-supplied identity header and set the authenticated value itself. The public landing/policy routes and OAuth callbacks remain outside ForwardAuth; callbacks are protected by their state/PKCE flow. Mutating UI requests additionally require an exact public origin and a same-site CSRF token.
 
 ## Quick start with SQLite
 
@@ -123,7 +125,7 @@ Create `.env` from `.env.example`, replace every placeholder, then run:
 ./scripts/compose.sh sqlite up -d
 ```
 
-Set `CALENDAR_IMAGE` to a reviewed immutable `image@sha256:...` reference. The wrapper renders the Compose model, validates every resolved service image, and rejects missing, tagged, or malformed references before starting any service. The example starts `calendar-serve` and `calendar-worker` from that same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the UI is available only from the same machine at `http://localhost:8080`. Do not expose this example through a public interface.
+Set `CALENDAR_IMAGE` to a reviewed immutable `image@sha256:...` reference. The wrapper renders the Compose model, validates every resolved service image, and rejects missing, tagged, or malformed references before starting any service. The example starts `calendar-serve` and `calendar-worker` from that same image and shares `/app/data` between them. It explicitly enables the unauthenticated UI bypass and binds the port to `127.0.0.1`, so the landing page is available at `http://localhost:8080/` and the control plane at `http://localhost:8080/app` only from the same machine. Do not expose this example through a public interface.
 
 The SQLite deployment supports one worker only. Use PostgreSQL for production or multiple service replicas.
 

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="{{.Description}}">
+  <title>{{.Title}}{{if ne .Page "home"}} — Calendar Platform{{end}}</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="public-page">
+  <header class="public-header">
+    <a class="public-brand" href="/" aria-label="Calendar Platform home"><span class="brand-mark">C</span><span>Calendar Platform</span></a>
+    <nav class="public-nav" aria-label="Public navigation">
+      <a {{if eq .Page "privacy"}}aria-current="page"{{end}} href="/privacy">Privacy</a>
+      <a {{if eq .Page "terms"}}aria-current="page"{{end}} href="/terms">Terms</a>
+      <a class="btn small" href="/app">Open app</a>
+    </nav>
+  </header>
+  <main class="public-main">
+    {{if eq .Page "home"}}
+    <section class="hero">
+      <div class="eyebrow">One calendar control plane</div>
+      <h1>Keep your calendars connected without giving up control.</h1>
+      <p>Calendar Platform connects multiple Google Calendar, Microsoft 365, and Apple Calendar accounts. Create explicit one-way sync rules between any supported calendars and use the same backend from MCP clients.</p>
+      <div class="hero-actions">
+        <a class="btn" href="/app">Open Calendar Platform</a>
+        <a class="btn secondary" href="https://github.com/Dzarlax-AI/calendar-mcp">View source on GitHub</a>
+      </div>
+    </section>
+    <section class="feature-grid" aria-label="Product features">
+      <article class="public-card"><span class="feature-number">01</span><h2>Multiple accounts</h2><p>Connect more than one account from each provider and address every calendar independently.</p></article>
+      <article class="public-card"><span class="feature-number">02</span><h2>Safe one-way sync</h2><p>Rules start paused, require a dry run, reject cycles, preserve supported recurrence, and never copy attendees or send invitations.</p></article>
+      <article class="public-card"><span class="feature-number">03</span><h2>One backend for MCP</h2><p>Calendar clients and synchronization use the same provider connections, calendar registry, and lifecycle-aware event model.</p></article>
+    </section>
+    <section class="public-callout">
+      <div><h2>Built for a single operator. Available to self-host.</h2><p>The hosted control plane is private behind authentication. Public pages contain product and policy information only.</p></div>
+      <a class="text-link" href="/privacy">How calendar data is handled →</a>
+    </section>
+    {{else}}
+    <article class="legal-document">{{.Content}}</article>
+    {{end}}
+  </main>
+  <footer class="public-footer">
+    <span>Calendar Platform</span>
+    <span><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="https://github.com/Dzarlax-AI/calendar-mcp">GitHub</a></span>
+  </footer>
+</body>
+</html>

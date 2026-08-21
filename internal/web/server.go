@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yuin/goldmark"
+
 	"calendar-mcp/internal/apple"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/connections"
@@ -24,7 +27,7 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-//go:embed templates/*.html assets/*
+//go:embed templates/*.html assets/* legal/*.md
 var content embed.FS
 
 type ProviderBuilder func(context.Context) ([]calendar.Provider, error)
@@ -46,13 +49,26 @@ type Server struct {
 	providers   ProviderBuilder
 	config      Config
 	template    *template.Template
+	publicDocs  map[string]template.HTML
 	origin      string
 }
 
 func New(store *storage.Store, connectionService *connections.Service, oauthService *oauthflow.Service, providers ProviderBuilder, cfg Config) (*Server, error) {
-	parsed, err := template.New("app.html").ParseFS(content, "templates/app.html")
+	parsed, err := template.New("app.html").ParseFS(content, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse UI templates: %w", err)
+	}
+	publicDocs := make(map[string]template.HTML, 2)
+	for _, name := range []string{"privacy", "terms"} {
+		source, err := content.ReadFile("legal/" + name + ".md")
+		if err != nil {
+			return nil, fmt.Errorf("read %s document: %w", name, err)
+		}
+		rendered, err := renderMarkdown(source)
+		if err != nil {
+			return nil, fmt.Errorf("render %s document: %w", name, err)
+		}
+		publicDocs[name] = rendered
 	}
 	origin := ""
 	if cfg.PublicURL != "" {
@@ -62,15 +78,28 @@ func New(store *storage.Store, connectionService *connections.Service, oauthServ
 		}
 		origin = u.Scheme + "://" + u.Host
 	}
-	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, config: cfg, template: parsed, origin: origin}, nil
+	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, config: cfg, template: parsed, publicDocs: publicDocs, origin: origin}, nil
+}
+
+func renderMarkdown(source []byte) (template.HTML, error) {
+	var rendered bytes.Buffer
+	if err := goldmark.New().Convert(source, &rendered); err != nil {
+		return "", err
+	}
+	// Goldmark omits raw HTML and dangerous link destinations by default. The
+	// result is generated only from repository-controlled Markdown.
+	return template.HTML(rendered.String()), nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	assets, _ := fs.Sub(content, "assets")
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assets))))
+	mux.Handle("GET /{$}", http.HandlerFunc(s.publicPage("home")))
+	mux.Handle("GET /privacy", http.HandlerFunc(s.publicPage("privacy")))
+	mux.Handle("GET /terms", http.HandlerFunc(s.publicPage("terms")))
 	mux.Handle("GET /oauth/{provider}/callback", http.HandlerFunc(s.oauthCallback))
-	mux.Handle("GET /", s.protected(http.HandlerFunc(s.page("dashboard"))))
+	mux.Handle("GET /app", s.protected(http.HandlerFunc(s.page("dashboard"))))
 	mux.Handle("GET /connections", s.protected(http.HandlerFunc(s.page("connections"))))
 	mux.Handle("GET /rules", s.protected(http.HandlerFunc(s.page("rules"))))
 	mux.Handle("GET /rules/new", s.protected(http.HandlerFunc(s.page("new-rule"))))
@@ -84,6 +113,39 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /rules/{id}/enable", s.protected(s.mutating(http.HandlerFunc(s.enableRule))))
 	mux.Handle("POST /rules/{id}/run", s.protected(s.mutating(http.HandlerFunc(s.runRule))))
 	return mux
+}
+
+type publicViewData struct {
+	Title, Description, Page string
+	Content                  template.HTML
+}
+
+func (s *Server) publicPage(page string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data := publicViewData{Page: page}
+		switch page {
+		case "home":
+			data.Title = "Calendar Platform"
+			data.Description = "Connect Google, Microsoft, and Apple calendars, create safe one-way sync rules, and use one calendar backend from MCP clients."
+		case "privacy":
+			data.Title = "Privacy Policy"
+			data.Description = "How Calendar Platform accesses, uses, stores, and shares calendar data."
+			data.Content = s.publicDocs[page]
+		case "terms":
+			data.Title = "Terms of Service"
+			data.Description = "Terms for using the hosted Calendar Platform service and self-hosted software."
+			data.Content = s.publicDocs[page]
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if err := s.template.ExecuteTemplate(w, "public.html", data); err != nil {
+			log.Printf("calendar public page template: %v", err)
+		}
+	}
 }
 
 type providerCard struct {
@@ -126,7 +188,7 @@ type viewData struct {
 
 func (s *Server) page(page string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" && page == "dashboard" {
+		if r.URL.Path != "/app" && page == "dashboard" {
 			http.NotFound(w, r)
 			return
 		}

@@ -39,7 +39,7 @@ func newTestHandler(t *testing.T, trustForwardAuth, allowUnauthenticated bool) h
 
 func TestPagesRenderWithoutFabricatedOperationalData(t *testing.T) {
 	handler := newTestHandler(t, false, true)
-	for _, path := range []string{"/", "/connections", "/rules", "/rules/new", "/runs", "/settings"} {
+	for _, path := range []string{"/app", "/connections", "/rules", "/rules/new", "/runs", "/settings"} {
 		req := httptest.NewRequest(http.MethodGet, "https://calendar.example"+path, nil)
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
@@ -49,6 +49,54 @@ func TestPagesRenderWithoutFabricatedOperationalData(t *testing.T) {
 		if strings.Contains(res.Body.String(), "Interactive design mockup") {
 			t.Fatalf("GET %s contains mockup data", path)
 		}
+	}
+}
+
+func TestPublicPagesBypassForwardAuthWhileApplicationStaysProtected(t *testing.T) {
+	handler := newTestHandler(t, true, false)
+	for _, test := range []struct {
+		path, text string
+	}{
+		{"/", "Keep your calendars connected"},
+		{"/privacy", "Google API Services User Data Policy"},
+		{"/terms", "Calendar changes and synchronization"},
+	} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "https://calendar.example"+test.path, nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body = %s", test.path, res.Code, res.Body.String())
+		}
+		if !strings.Contains(res.Body.String(), test.text) {
+			t.Fatalf("GET %s does not contain %q", test.path, test.text)
+		}
+		if res.Header().Get("Content-Security-Policy") == "" {
+			t.Fatalf("GET %s has no Content-Security-Policy", test.path)
+		}
+	}
+
+	for _, path := range []string{"/app", "/connections", "/rules", "/runs", "/settings"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "https://calendar.example"+path, nil))
+		if res.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated GET %s status = %d, want %d", path, res.Code, http.StatusUnauthorized)
+		}
+	}
+
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "https://calendar.example/not-public", nil))
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("unknown path status = %d, want %d", res.Code, http.StatusNotFound)
+	}
+}
+
+func TestMarkdownRenderingOmitsUnsafeHTMLAndLinks(t *testing.T) {
+	rendered, err := renderMarkdown([]byte("<script>alert('x')</script>\n\n[unsafe](javascript:alert(1))"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "<script") || strings.Contains(text, "javascript:") {
+		t.Fatalf("unsafe Markdown rendered as %q", text)
 	}
 }
 

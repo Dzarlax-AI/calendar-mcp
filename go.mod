@@ -10,6 +10,7 @@ require (
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/teambition/rrule-go v1.8.2
 	github.com/thommeo/winianatz v0.0.2
+	github.com/yuin/goldmark v1.8.5
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.274.0
 	modernc.org/sqlite v1.57.0
