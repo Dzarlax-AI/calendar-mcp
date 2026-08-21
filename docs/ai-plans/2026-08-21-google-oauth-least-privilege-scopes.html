@@ -141,6 +141,7 @@
     <ul>
       <li>Commit <code>aa6cfe634e77bc6d775bd43ea79c6a74c33db0cd</code> added the canonical <code>google.OAuthScopes()</code> contract and used it in both standalone and platform OAuth flows.</li>
       <li>Regression tests assert the exact scope list, absence of the broad scope, defensive copying, and legacy OAuth-config integration.</li>
+      <li>Follow-up commit <code>38e6333ebe37629706715d0e2956ff5a2729f803</code> prevents HTMX from converting Add account and Reconnect into cross-origin XHR requests; both OAuth links now use normal top-level browser navigation.</li>
       <li>The README now documents the two scopes and the need to revoke old grants before reconnecting.</li>
       <li>No database schema, stored connection, provider credential, or sync rule was changed.</li>
     </ul>
@@ -153,12 +154,13 @@
       <li><code>go vet ./...</code> — passed.</li>
       <li><code>go build ./cmd/calendar ./cmd/server</code> — passed.</li>
       <li>GitHub Actions run <code>32472246637</code> — Build &amp; Vet and Docker Build &amp; Push passed.</li>
-      <li>Deployed only <code>calendar-serve</code> from <code>ghcr.io/dzarlax-ai/calendar-mcp@sha256:99f330aa256495a1e0f335aacfcc1522870cb3f10d79149de6278310864adff3</code>.</li>
+      <li>Final deployed <code>calendar-serve</code> image: <code>ghcr.io/dzarlax-ai/calendar-mcp@sha256:bfe5487b68479a98be1442a77f69b5a486764c92e0102df0a857b4e846fbb8a0</code>.</li>
       <li>Post-deploy state: healthy, zero restarts, internal health <code>ok</code>, zero recent panic/fatal/error matches.</li>
       <li>Legacy <code>calendar-mcp</code> remained on revision <code>285c038535182cddcdd8931bea0ff6e9555cac51</code>; worker remained absent.</li>
       <li>Production preflight confirmed both Google OAuth credential variables are non-empty without exposing their values, and found zero existing Google connections.</li>
       <li>The live authorization redirect used <code>accounts.google.com</code>, the exact two approved scopes, no broad scope, callback <code>https://calendar.dzarlax.dev/oauth/google/callback</code>, offline access, state, and PKCE S256.</li>
-      <li>Server environment backup: <code>/root/calendar-mcp/.env.pre-google-scope-narrowing-20260821T1025Z</code>.</li>
+      <li>The rendered production Connections page confirms the Google Add account link carries <code>hx-boost="false"</code>, preventing the observed CORS failure.</li>
+      <li>Server environment backups: <code>/root/calendar-mcp/.env.pre-google-scope-narrowing-20260821T1025Z</code> and <code>/root/calendar-mcp/.env.pre-oauth-navigation-20260821T1035Z</code>.</li>
     </ul>
   </section>
 
