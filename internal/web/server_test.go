@@ -57,7 +57,7 @@ func TestPublicPagesBypassForwardAuthWhileApplicationStaysProtected(t *testing.T
 	for _, test := range []struct {
 		path, text string
 	}{
-		{"/", "Keep your calendars connected"},
+		{"/", "Why Calendar platform requests Google Calendar data"},
 		{"/privacy", "Google API Services User Data Policy"},
 		{"/terms", "Calendar changes and synchronization"},
 	} {
@@ -68,6 +68,19 @@ func TestPublicPagesBypassForwardAuthWhileApplicationStaysProtected(t *testing.T
 		}
 		if !strings.Contains(res.Body.String(), test.text) {
 			t.Fatalf("GET %s does not contain %q", test.path, test.text)
+		}
+		if test.path == "/" {
+			for _, required := range []string{
+				"<title>Calendar platform</title>",
+				"<h1>Calendar platform</h1>",
+				"The purpose of Calendar platform is to let one person connect",
+				"list available calendars",
+				"Google Calendar data is not sold or used for advertising",
+			} {
+				if !strings.Contains(res.Body.String(), required) {
+					t.Fatalf("homepage does not contain required identity/purpose text %q", required)
+				}
+			}
 		}
 		if res.Header().Get("Content-Security-Policy") == "" {
 			t.Fatalf("GET %s has no Content-Security-Policy", test.path)

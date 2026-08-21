@@ -1,6 +1,6 @@
-# Calendar Platform
+# Calendar platform
 
-Calendar Platform is a single-user calendar control plane and MCP server for Google Calendar, Microsoft 365, and Apple iCloud.
+Calendar platform is a single-user calendar control plane and MCP server for Google Calendar, Microsoft 365, and Apple iCloud.
 
 One Go repository and one container image provide:
 

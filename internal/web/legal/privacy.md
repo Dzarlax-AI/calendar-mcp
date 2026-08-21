@@ -2,7 +2,7 @@
 
 **Effective date: August 21, 2026**
 
-Calendar Platform is an open-source calendar connection, synchronization, and MCP service. This policy explains how the hosted Calendar Platform instance at `calendar.dzarlax.dev` (the **Service**) handles information. Independently self-hosted installations are controlled by their respective operators, who are responsible for their own privacy practices.
+Calendar platform is an open-source calendar connection, synchronization, and MCP service. This policy explains how the hosted Calendar platform instance at `calendar.dzarlax.dev` (the **Service**) handles information. Independently self-hosted installations are controlled by their respective operators, who are responsible for their own privacy practices.
 
 ## Information the Service accesses
 
@@ -54,7 +54,7 @@ Each calendar provider processes information under its own privacy policy and ac
 
 Connection credentials and discovered calendar metadata are retained while a provider connection remains configured. Sync rules, event mappings, and run metadata are retained while needed to operate and diagnose configured synchronization.
 
-You can stop future provider access by revoking Calendar Platform in the provider's account settings. Removing a connection from Calendar Platform deletes its stored credentials and discovered calendar records once rules that reference the connection have been removed. Revoking or deleting a connection does not automatically delete events that were already copied into a target calendar.
+You can stop future provider access by revoking Calendar platform in the provider's account settings. Removing a connection from Calendar platform deletes its stored credentials and discovered calendar records once rules that reference the connection have been removed. Revoking or deleting a connection does not automatically delete events that were already copied into a target calendar.
 
 For deletion or privacy requests concerning the hosted instance, open a minimal request through the [project issue tracker](https://github.com/Dzarlax-AI/calendar-mcp/issues). Do not include credentials, calendar content, or other sensitive information in a public issue; the operator will arrange a private channel if needed.
 
@@ -68,4 +68,4 @@ This policy may be updated when the Service, its data handling, or legal require
 
 ## Contact
 
-The Service is operated as **Calendar Platform**. For privacy questions, use the [project issue tracker](https://github.com/Dzarlax-AI/calendar-mcp/issues) without posting sensitive information.
+The Service is operated as **Calendar platform**. For privacy questions, use the [project issue tracker](https://github.com/Dzarlax-AI/calendar-mcp/issues) without posting sensitive information.

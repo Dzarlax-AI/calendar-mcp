@@ -2,11 +2,11 @@
 
 **Effective date: August 21, 2026**
 
-These Terms govern use of the hosted Calendar Platform instance at `calendar.dzarlax.dev` (the **Service**). The Calendar Platform source code can also be deployed independently; a self-hosted installation is operated under the responsibility and terms of its deployer.
+These Terms govern use of the hosted Calendar platform instance at `calendar.dzarlax.dev` (the **Service**). The Calendar platform source code can also be deployed independently; a self-hosted installation is operated under the responsibility and terms of its deployer.
 
 ## The Service
 
-Calendar Platform connects Google Calendar, Microsoft 365, and Apple Calendar accounts, exposes calendar operations to MCP and API clients, and runs configured one-way synchronization rules between calendars.
+Calendar platform connects Google Calendar, Microsoft 365, and Apple Calendar accounts, exposes calendar operations to MCP and API clients, and runs configured one-way synchronization rules between calendars.
 
 The hosted Service is a private, single-user control plane. Public access to the landing page and policy documents does not grant access to the application or its connected calendar accounts.
 
@@ -26,7 +26,7 @@ Maintain appropriate backups or recovery options for important calendars. Test n
 
 ## Third-party services
 
-Google, Microsoft, Apple, hosting providers, MCP clients, and other connected systems are independent third parties. Their terms, privacy policies, availability, and technical limitations apply separately. Calendar Platform does not control and is not responsible for those services.
+Google, Microsoft, Apple, hosting providers, MCP clients, and other connected systems are independent third parties. Their terms, privacy policies, availability, and technical limitations apply separately. Calendar platform does not control and is not responsible for those services.
 
 ## Availability and changes
 

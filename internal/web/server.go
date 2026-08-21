@@ -125,15 +125,15 @@ func (s *Server) publicPage(page string) func(http.ResponseWriter, *http.Request
 		data := publicViewData{Page: page}
 		switch page {
 		case "home":
-			data.Title = "Calendar Platform"
+			data.Title = "Calendar platform"
 			data.Description = "Connect Google, Microsoft, and Apple calendars, create safe one-way sync rules, and use one calendar backend from MCP clients."
 		case "privacy":
 			data.Title = "Privacy Policy"
-			data.Description = "How Calendar Platform accesses, uses, stores, and shares calendar data."
+			data.Description = "How Calendar platform accesses, uses, stores, and shares calendar data."
 			data.Content = s.publicDocs[page]
 		case "terms":
 			data.Title = "Terms of Service"
-			data.Description = "Terms for using the hosted Calendar Platform service and self-hosted software."
+			data.Description = "Terms for using the hosted Calendar platform service and self-hosted software."
 			data.Content = s.publicDocs[page]
 		default:
 			http.NotFound(w, r)
