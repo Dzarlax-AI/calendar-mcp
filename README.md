@@ -105,11 +105,15 @@ The authenticated control plane starts at `/app` and adds these pages:
 - Connections — add, reconnect, verify, discover, and safely remove accounts;
 - Sync Rules — create directed routes and run dry runs or manual jobs;
 - Runs — sanitized outcomes and mutation counters;
-- Settings — installation readiness without displaying secrets.
+- Settings — installation readiness plus deliberate, short-lived MCP access-key reveal for a single-user installation.
 
 Google and Microsoft use OAuth 2.0 with expiring single-use state and PKCE. Apple uses an app-specific password. Provider credentials are encrypted with AES-256-GCM before database storage.
 
 Production UI access is designed for Authentik ForwardAuth. With `UI_TRUST_FORWARD_AUTH=true`, `/app` and all connection, rule, run, settings, and OAuth-start routes require the `X-authentik-username` header. The service must not be directly reachable around the trusted reverse proxy: the proxy must discard any client-supplied identity header and set the authenticated value itself. The public landing/policy routes and OAuth callbacks remain outside ForwardAuth; callbacks are protected by their state/PKCE flow. Mutating UI requests additionally require an exact public origin and a same-site CSRF token.
+
+The Settings page shows the MCP endpoint and can reveal the primary `API_KEY` only after an explicit authenticated, same-origin, CSRF-protected action. The key is absent from the initial HTML and is removed from the page after 30 seconds, when hidden, or when the page exits. Copying uses the browser Clipboard API; the application does not automatically clear the OS clipboard because doing so could overwrite newer clipboard contents. `API_KEY_LEGACY` is never revealed and appears only as a configured/not-configured status.
+
+This convenience assumes a single-user Authentik boundary. Every identity accepted by that boundary can retrieve the primary master key, and a compromised browser session can do the same. Before enabling multi-user UI access, replace master-key reveal with independently revocable per-client credentials.
 
 ## Quick start with SQLite
 
