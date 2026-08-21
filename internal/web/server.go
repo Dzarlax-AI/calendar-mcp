@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -33,13 +34,15 @@ var content embed.FS
 type ProviderBuilder func(context.Context) ([]calendar.Provider, error)
 
 type Config struct {
-	PublicURL            string
-	TrustForwardAuth     bool
-	AllowUnauthenticated bool
-	GoogleConfigured     bool
-	MicrosoftConfigured  bool
-	AppleCalDAVURL       string
-	OnProvidersChanged   func([]calendar.Provider)
+	PublicURL              string
+	TrustForwardAuth       bool
+	AllowUnauthenticated   bool
+	MCPAPIKey              string
+	LegacyAPIKeyConfigured bool
+	GoogleConfigured       bool
+	MicrosoftConfigured    bool
+	AppleCalDAVURL         string
+	OnProvidersChanged     func([]calendar.Provider)
 }
 
 type Server struct {
@@ -105,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /rules/new", s.protected(http.HandlerFunc(s.page("new-rule"))))
 	mux.Handle("GET /runs", s.protected(http.HandlerFunc(s.page("runs"))))
 	mux.Handle("GET /settings", s.protected(http.HandlerFunc(s.page("settings"))))
+	mux.Handle("POST /settings/mcp-key/reveal", noStore(s.protected(s.mutating(http.HandlerFunc(s.revealMCPKey)))))
 	mux.Handle("GET /oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
 	mux.Handle("GET /connections/{id}/oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
 	mux.Handle("POST /connections/apple", s.protected(s.mutating(http.HandlerFunc(s.connectApple))))
@@ -174,6 +178,8 @@ type calendarOption struct {
 }
 type viewData struct {
 	Title, Page, Flash, CSRFToken    string
+	MCPEndpoint                      string
+	LegacyAPIKeyConfigured           bool
 	Connections                      []storage.Connection
 	ConnectionViews                  []connectionView
 	Calendars                        []storage.Calendar
@@ -223,7 +229,7 @@ func (s *Server) viewData(ctx context.Context, page, csrf string) (viewData, err
 	if err != nil {
 		return viewData{}, err
 	}
-	data := viewData{Title: pageTitle(page), Page: page, CSRFToken: csrf, Connections: connectionsList, Calendars: calendars, Rules: rules, Runs: runs}
+	data := viewData{Title: pageTitle(page), Page: page, CSRFToken: csrf, MCPEndpoint: strings.TrimSuffix(s.config.PublicURL, "/") + "/mcp", LegacyAPIKeyConfigured: s.config.LegacyAPIKeyConfigured, Connections: connectionsList, Calendars: calendars, Rules: rules, Runs: runs}
 	connectionCounts := map[string]int{}
 	providerCalendarCounts := map[string]int{}
 	calendarNames := map[string]string{}
@@ -287,6 +293,24 @@ func (s *Server) viewData(ctx context.Context, page, csrf string) (viewData, err
 	}
 	data.Settings = []settingView{{"Database", "PostgreSQL recommended; SQLite supported for self-hosters.", true}, {"Credential encryption", "Application-level authenticated encryption.", true}, {"Google OAuth application", "Client configuration supplied through environment variables.", s.config.GoogleConfigured}, {"Microsoft OAuth application", "Tenant and client configuration supplied through environment variables.", s.config.MicrosoftConfigured}}
 	return data, nil
+}
+
+func (s *Server) revealMCPKey(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.config.MCPAPIKey == "" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "MCP API key is unavailable"})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.config.MCPAPIKey})
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, private")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func calendarProviderName(calendarID string) string {

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP token reveal — implementation plan</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fb; --card:#fff; --text:#172033; --muted:#5f6b7a; --line:#dce2ea; --accent:#4338ca; --soft:#eef2ff; --warn:#92400e; --warn-bg:#fff7ed; --ok:#166534; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(960px, calc(100% - 32px)); margin:36px auto 64px; }
+    header, section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px; margin-bottom:16px; }
+    header { border-top:5px solid var(--accent); }
+    h1 { margin:0 0 8px; font-size:30px; line-height:1.2; }
+    h2 { margin:0 0 12px; font-size:20px; }
+    h3 { margin:18px 0 6px; font-size:16px; }
+    p { margin:8px 0; }
+    ul, ol { margin:8px 0 0; padding-left:24px; }
+    li + li { margin-top:6px; }
+    code { padding:2px 5px; border-radius:5px; background:var(--soft); color:#312e81; }
+    .meta { color:var(--muted); }
+    .decision { border-left:4px solid var(--accent); background:var(--soft); padding:14px 16px; border-radius:8px; }
+    .warning { border-left:4px solid #d97706; background:var(--warn-bg); color:var(--warn); padding:14px 16px; border-radius:8px; }
+    .gate { border:2px solid var(--accent); }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { padding:10px 12px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:#f8fafc; }
+    .yes { color:var(--ok); font-weight:700; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>MCP token reveal in Settings</h1>
+    <p class="meta">Implementation plan · 2026-08-21 · Branch <code>feat/mcp-token-display</code></p>
+    <p>Add a deliberate, short-lived way for the authenticated single user to retrieve the primary MCP API key while keeping the legacy migration key hidden.</p>
+  </header>
+
+  <section>
+    <h2>Summary and decision</h2>
+    <div class="decision">
+      <strong>Approved design: option A.</strong> The Settings page shows the MCP endpoint, a masked token field, Reveal, Copy, and Hide controls. Only <code>API_KEY</code> can be revealed. <code>API_KEY_LEGACY</code> is represented only by a Configured / Not configured status.
+    </div>
+    <p>This is intentionally a single-user convenience. It does not introduce token creation, rotation, revocation, per-client scopes, or a database schema.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li>The MCP Streamable HTTP endpoint is served at <code>/mcp</code>; the external origin comes from <code>CALENDAR_PUBLIC_URL</code>.</li>
+      <li><code>API_KEY</code> and optional <code>API_KEY_LEGACY</code> are loaded from the environment and accepted by the MCP authentication middleware.</li>
+      <li>The protected Settings page reports installation readiness and deliberately displays no secrets.</li>
+      <li>Protected UI routes trust the Authentik identity header; state-changing POST requests additionally enforce exact Origin and CSRF validation.</li>
+      <li>There is no UI path to retrieve a configured MCP key, so client setup requires server-side environment access.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ol>
+      <li>Settings initially renders the MCP endpoint as <code>{CALENDAR_PUBLIC_URL}/mcp</code>, a masked key placeholder, and the legacy-key status. Neither key appears in the initial HTML.</li>
+      <li>Reveal sends a same-origin authenticated POST containing the existing CSRF token.</li>
+      <li>The server returns only the primary <code>API_KEY</code> in a non-cacheable JSON response.</li>
+      <li>The browser inserts the key using <code>textContent</code>, enables Copy and Hide, and starts a 30-second timer.</li>
+      <li>Hide, timer expiry, and page exit remove the key value from the DOM and reset the controls.</li>
+      <li>Failures appear inline without putting the key in a URL, redirect, flash message, or log.</li>
+    </ol>
+    <div class="warning"><strong>Security boundary:</strong> any identity accepted by the configured Authentik ForwardAuth boundary can retrieve the primary master key. This is acceptable only while the installation remains single-user. A multi-user deployment must move to per-client, revocable, stored-as-hash tokens.</div>
+  </section>
+
+  <section>
+    <h2>Assumptions</h2>
+    <ul>
+      <li>The web UI and MCP endpoint share the same public origin.</li>
+      <li><code>CALENDAR_PUBLIC_URL</code> has no trailing slash, as required by current configuration validation.</li>
+      <li>Authentik remains the only public ingress to protected UI routes and strips client-supplied identity headers.</li>
+      <li>The primary API key exists in authenticated deployments; the legacy key may be absent.</li>
+      <li>No token value will be added to persistence, analytics, audit records, or application logs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely file changes</h2>
+    <table>
+      <thead><tr><th>File</th><th>Planned change</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/runtime/serve.go</code></td><td>Pass the primary key and a legacy-configured boolean into the web server. Do not pass legacy plaintext.</td></tr>
+        <tr><td><code>internal/web/server.go</code></td><td>Add view data, the protected reveal POST route, JSON response, and explicit no-store headers.</td></tr>
+        <tr><td><code>internal/web/templates/app.html</code></td><td>Add the MCP access card and non-secret initial state to Settings.</td></tr>
+        <tr><td><code>internal/web/assets/app.js</code></td><td>Implement reveal, copy, hide, expiry, cleanup, pending, and inline error states.</td></tr>
+        <tr><td><code>internal/web/assets/app.css</code></td><td>Add focused styles for the access card and secret controls.</td></tr>
+        <tr><td><code>internal/web/server_test.go</code></td><td>Cover authentication, CSRF, non-disclosure, headers, and response contents.</td></tr>
+        <tr><td><code>README.md</code></td><td>Document the single-user reveal flow and its security limitations.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Extend the web configuration with <code>MCPAPIKey string</code> and <code>LegacyAPIKeyConfigured bool</code>. Keep the legacy secret outside the web package boundary.</li>
+      <li>Derive the displayed endpoint from the validated public URL plus <code>/mcp</code>.</li>
+      <li>Register <code>POST /settings/mcp-key/reveal</code> behind both existing <code>protected</code> and <code>mutating</code> middleware.</li>
+      <li>Return <code>{"token":"…"}</code> with <code>Cache-Control: no-store, private</code>, <code>Pragma: no-cache</code>, and JSON content type. Return a safe error if the primary key is unavailable.</li>
+      <li>Render only a masked placeholder in the initial HTML. Render the legacy boolean as Configured / Not configured.</li>
+      <li>Add dependency-free browser behavior: Fetch with same-origin credentials and CSRF form data; display via <code>textContent</code>; copy with the Clipboard API; clear after 30 seconds, explicit Hide, or <code>pagehide</code>.</li>
+      <li>Show a short warning that the OS clipboard is not automatically cleared. Do not overwrite the clipboard later because it may contain newer user data.</li>
+      <li>Update documentation and tests, then run the repository verification suite.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Scope and impact</h2>
+    <ul>
+      <li><span class="yes">No change</span> to the MCP protocol, provider integrations, sync rules, recurrence behavior, or event data.</li>
+      <li><span class="yes">No change</span> to database schema or migrations.</li>
+      <li><span class="yes">No change</span> to key format or the existing primary-plus-legacy authentication behavior.</li>
+      <li>The new endpoint exposes an existing secret only after explicit user action inside the protected single-user UI.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Automated test plan</h2>
+    <ul>
+      <li>Settings GET does not contain the primary or legacy key value.</li>
+      <li>Settings displays the correct MCP endpoint and legacy configured state.</li>
+      <li>Reveal without trusted Authentik identity is rejected.</li>
+      <li>Reveal with invalid Origin or CSRF token is rejected.</li>
+      <li>Successful reveal returns the primary key only, never the legacy key.</li>
+      <li>Successful and error reveal responses carry non-cacheable headers and never redirect with secret data.</li>
+      <li>Run <code>node --check internal/web/assets/app.js</code>.</li>
+      <li>Run <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, and <code>go build ./cmd/server</code> with build output outside tracked source paths.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA checklist</h2>
+    <ul>
+      <li>Open Settings through Authentik and confirm the endpoint and masked state are visible.</li>
+      <li>Inspect page source before Reveal and confirm neither real key is present.</li>
+      <li>Reveal and copy the primary key; verify a client can authenticate to <code>/mcp</code>.</li>
+      <li>Confirm explicit Hide and the 30-second timeout remove the token from the DOM.</li>
+      <li>Reveal again, navigate away/back, and confirm the token is not restored.</li>
+      <li>Confirm the legacy key has status only and is absent from HTML and reveal responses.</li>
+      <li>Confirm an expired or missing Authentik session produces a useful failure state without exposing data.</li>
+      <li>Do not capture the real key in screenshots, recordings, console output, or copied test artifacts.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Risks and mitigations</h2>
+    <table>
+      <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+      <tbody>
+        <tr><td>Authenticated UI compromise reveals the master MCP key.</td><td>Keep the feature single-user, require explicit POST + CSRF, and document the boundary.</td></tr>
+        <tr><td>Secret leaks through initial HTML or cache.</td><td>Fetch only on demand; use no-store headers; test absence from initial HTML.</td></tr>
+        <tr><td>Secret remains visible in the DOM.</td><td>Clear on Hide, 30-second timeout, and page exit.</td></tr>
+        <tr><td>Copied secret persists in the OS clipboard.</td><td>Warn the user. Do not schedule clipboard clearing that could erase unrelated clipboard data.</td></tr>
+        <tr><td>Secret appears in logs or URLs.</td><td>Use POST body and JSON response; never log the payload or place it in redirects/flash messages.</td></tr>
+        <tr><td>Multi-user access becomes enabled later.</td><td>Treat that change as a security trigger to replace this design with per-client revocable tokens.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <p>Revert the feature commit and redeploy the previous immutable image. No data rollback or environment change is required. Existing <code>API_KEY</code> and <code>API_KEY_LEGACY</code> authentication continues unchanged.</p>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <p>None blocking. The next architecture decision is deliberately deferred: if the UI becomes multi-user, replace the master-key reveal with independently revocable per-client tokens.</p>
+  </section>
+
+  <section>
+    <h2>Implementation outcome</h2>
+    <p><strong>Implemented on 2026-08-21 in the isolated <code>feat/mcp-token-display</code> worktree.</strong></p>
+    <ul>
+      <li>Added the protected, CSRF-checked <code>POST /settings/mcp-key/reveal</code> endpoint with private no-store responses.</li>
+      <li>Passed only the primary key and a legacy-configured boolean into the web layer; legacy plaintext remains outside that boundary.</li>
+      <li>Added the Settings access card, endpoint, masked initial state, reveal/copy/hide controls, 30-second expiry, page-exit cleanup, clipboard warning, and inline feedback.</li>
+      <li>Added focused server tests for initial non-disclosure, legacy status, authentication, Origin, CSRF, successful primary-only reveal, and safe unavailable-key behavior.</li>
+      <li>Updated the README with the single-user security boundary and multi-user migration trigger.</li>
+    </ul>
+    <h3>Verification performed</h3>
+    <ul>
+      <li><code>go test -race -count=1 ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build -o /private/tmp/calendar-mcp-token-reveal-server ./cmd/server</code></li>
+      <li><code>node --check internal/web/assets/app.js</code></li>
+      <li><code>git diff --check</code></li>
+    </ul>
+    <p>No schema, migration, provider, sync-engine, recurrence, or MCP protocol behavior changed. The known limitation remains the approved one: an accepted Authentik identity can retrieve the installation-wide primary key, and a copied key may remain in the OS clipboard.</p>
+  </section>
+
+  <section class="gate">
+    <h2>Integration gate</h2>
+    <p><strong>Implementation is complete but uncommitted.</strong> Review the cumulative diff before authorizing a commit, merge, push, or deployment action.</p>
+  </section>
+</main>
+</body>
+</html>

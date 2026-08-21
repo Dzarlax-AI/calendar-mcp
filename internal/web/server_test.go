@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,10 @@ import (
 )
 
 func newTestHandler(t *testing.T, trustForwardAuth, allowUnauthenticated bool) http.Handler {
+	return newTestHandlerWithConfig(t, Config{PublicURL: "https://calendar.example", TrustForwardAuth: trustForwardAuth, AllowUnauthenticated: allowUnauthenticated, AppleCalDAVURL: "https://caldav.icloud.com"})
+}
+
+func newTestHandlerWithConfig(t *testing.T, cfg Config) http.Handler {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -30,11 +35,149 @@ func newTestHandler(t *testing.T, trustForwardAuth, allowUnauthenticated bool) h
 		t.Fatal(err)
 	}
 	cipher, _ := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32)))
-	server, err := New(store, connections.New(store, cipher), nil, func(context.Context) ([]calendar.Provider, error) { return nil, nil }, Config{PublicURL: "https://calendar.example", TrustForwardAuth: trustForwardAuth, AllowUnauthenticated: allowUnauthenticated, AppleCalDAVURL: "https://caldav.icloud.com"})
+	server, err := New(store, connections.New(store, cipher), nil, func(context.Context) ([]calendar.Provider, error) { return nil, nil }, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return server.Handler()
+}
+
+func TestSettingsShowsMCPAccessWithoutRenderingKeys(t *testing.T) {
+	handler := newTestHandlerWithConfig(t, Config{
+		PublicURL:              "https://calendar.example",
+		AllowUnauthenticated:   true,
+		MCPAPIKey:              "primary-secret",
+		LegacyAPIKeyConfigured: true,
+		AppleCalDAVURL:         "https://caldav.icloud.com",
+	})
+	req := httptest.NewRequest(http.MethodGet, "https://calendar.example/settings", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for _, secret := range []string{"primary-secret", "legacy-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("Settings HTML contains secret %q", secret)
+		}
+	}
+	for _, expected := range []string{"https://calendar.example/mcp", "API_KEY_LEGACY status only", ">Configured</span>"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("Settings HTML does not contain %q", expected)
+		}
+	}
+}
+
+func TestMCPKeyRevealRequiresForwardAuthOriginAndCSRF(t *testing.T) {
+	handler := newTestHandlerWithConfig(t, Config{
+		PublicURL:        "https://calendar.example",
+		TrustForwardAuth: true,
+		MCPAPIKey:        "primary-secret",
+		AppleCalDAVURL:   "https://caldav.icloud.com",
+	})
+
+	tests := []struct {
+		name       string
+		identity   string
+		origin     string
+		csrfCookie string
+		csrfForm   string
+		wantStatus int
+	}{
+		{name: "missing Authentik identity", origin: "https://calendar.example", csrfCookie: "token", csrfForm: "token", wantStatus: http.StatusUnauthorized},
+		{name: "different origin", identity: "admin", origin: "https://evil.example", csrfCookie: "token", csrfForm: "token", wantStatus: http.StatusForbidden},
+		{name: "invalid CSRF", identity: "admin", origin: "https://calendar.example", csrfCookie: "right", csrfForm: "wrong", wantStatus: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			form := url.Values{"csrf_token": {test.csrfForm}}
+			req := httptest.NewRequest(http.MethodPost, "https://calendar.example/settings/mcp-key/reveal", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Origin", test.origin)
+			if test.identity != "" {
+				req.Header.Set("X-authentik-username", test.identity)
+			}
+			req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: test.csrfCookie})
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", res.Code, test.wantStatus)
+			}
+			assertNoStoreHeaders(t, res)
+			if strings.Contains(res.Body.String(), "primary-secret") {
+				t.Fatal("error response contains primary key")
+			}
+		})
+	}
+}
+
+func TestMCPKeyRevealReturnsPrimaryOnly(t *testing.T) {
+	handler := newTestHandlerWithConfig(t, Config{
+		PublicURL:              "https://calendar.example",
+		TrustForwardAuth:       true,
+		MCPAPIKey:              "primary-secret",
+		LegacyAPIKeyConfigured: true,
+		AppleCalDAVURL:         "https://caldav.icloud.com",
+	})
+	res := revealMCPKey(t, handler)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	assertNoStoreHeaders(t, res)
+	var response map[string]string
+	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != 1 || response["token"] != "primary-secret" {
+		t.Fatalf("response = %#v", response)
+	}
+	if strings.Contains(res.Body.String(), "legacy-secret") {
+		t.Fatal("response contains legacy key")
+	}
+}
+
+func TestMCPKeyRevealUnavailableIsSafeAndNotCacheable(t *testing.T) {
+	handler := newTestHandlerWithConfig(t, Config{
+		PublicURL:        "https://calendar.example",
+		TrustForwardAuth: true,
+		AppleCalDAVURL:   "https://caldav.icloud.com",
+	})
+	res := revealMCPKey(t, handler)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	assertNoStoreHeaders(t, res)
+	if strings.Contains(res.Body.String(), "token") {
+		t.Fatalf("safe error contains token field: %s", res.Body.String())
+	}
+}
+
+func revealMCPKey(t *testing.T, handler http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{"csrf_token": {"token"}}
+	req := httptest.NewRequest(http.MethodPost, "https://calendar.example/settings/mcp-key/reveal", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://calendar.example")
+	req.Header.Set("X-authentik-username", "admin")
+	req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: "token"})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	return res
+}
+
+func assertNoStoreHeaders(t *testing.T, res *httptest.ResponseRecorder) {
+	t.Helper()
+	if got := res.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if got := res.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q", got)
+	}
 }
 
 func TestPagesRenderWithoutFabricatedOperationalData(t *testing.T) {

@@ -70,4 +70,90 @@
   window.addEventListener("pageshow", () => {
     document.querySelectorAll(`${pendingSelector}[aria-busy="true"]`).forEach(restorePending);
   });
+
+  const mcpAccess = document.querySelector("[data-mcp-access]");
+  if (!mcpAccess) {
+    return;
+  }
+
+  const revealForm = mcpAccess.querySelector("[data-mcp-reveal-form]");
+  const revealButton = mcpAccess.querySelector("[data-mcp-reveal]");
+  const copyButton = mcpAccess.querySelector("[data-mcp-copy]");
+  const hideButton = mcpAccess.querySelector("[data-mcp-hide]");
+  const token = mcpAccess.querySelector("[data-mcp-token]");
+  const feedback = mcpAccess.querySelector("[data-mcp-feedback]");
+  const maskedToken = token.textContent;
+  let revealedToken = "";
+  let hideTimer;
+  let feedbackTimer;
+  let revealGeneration = 0;
+
+  function setFeedback(message, isError = false) {
+    window.clearTimeout(feedbackTimer);
+    feedback.textContent = message;
+    feedback.classList.toggle("error", isError);
+  }
+
+  function hideToken() {
+    revealGeneration += 1;
+    window.clearTimeout(hideTimer);
+    revealedToken = "";
+    token.textContent = maskedToken;
+    token.setAttribute("aria-label", "API key masked");
+    copyButton.disabled = true;
+    hideButton.disabled = true;
+    revealButton.disabled = false;
+    setFeedback("");
+  }
+
+  revealButton.addEventListener("click", async () => {
+    if (!setPending(revealButton)) {
+      return;
+    }
+    const requestGeneration = ++revealGeneration;
+    setFeedback("");
+    try {
+      const response = await fetch(revealForm.action, {
+        method: "POST",
+        body: new FormData(revealForm),
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || typeof result.token !== "string" || result.token === "") {
+        throw new Error(typeof result.error === "string" ? result.error : "The MCP API key could not be revealed.");
+      }
+      if (requestGeneration !== revealGeneration) {
+        return;
+      }
+      revealedToken = result.token;
+      token.textContent = revealedToken;
+      token.setAttribute("aria-label", "API key revealed");
+      copyButton.disabled = false;
+      hideButton.disabled = false;
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(hideToken, 30000);
+    } catch (error) {
+      hideToken();
+      setFeedback(error instanceof Error ? error.message : "The MCP API key could not be revealed.", true);
+    } finally {
+      restorePending(revealButton);
+    }
+  });
+
+  copyButton.addEventListener("click", async () => {
+    if (revealedToken === "") {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(revealedToken);
+      setFeedback("Copied");
+      feedbackTimer = window.setTimeout(() => setFeedback(""), 2000);
+    } catch {
+      setFeedback("The API key could not be copied. Copy it manually.", true);
+    }
+  });
+
+  hideButton.addEventListener("click", hideToken);
+  window.addEventListener("pagehide", hideToken);
 })();
