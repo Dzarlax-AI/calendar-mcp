@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Authentik-safe navigation and action progress</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.55; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; } h1 { margin-bottom: 8px; } h2 { font-size: 19px; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    li + li { margin-top: 7px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .decision { border-left: 4px solid #4f46e5; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Authentik-safe navigation and action progress</h1>
+  <p class="badge">Implemented locally — commit, push, and deployment pending</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Stop HTMX from turning Authentik authentication redirects into cross-origin XHR failures, and give users immediate local feedback after they start a connection or submit another potentially slow action.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior and confirmed cause</h2>
+    <ul>
+      <li><code>internal/web/templates/app.html</code> applies <code>hx-boost="true"</code> to the entire authenticated application.</li>
+      <li>HTMX therefore converts ordinary links and POST forms into XHR requests.</li>
+      <li>When the Authentik session is absent or expired, forward auth redirects that XHR from <code>calendar.dzarlax.dev</code> to <code>auth.dzarlax.dev</code>. The browser blocks the cross-origin XHR and reports a CORS failure.</li>
+      <li>The earlier <code>hx-boost="false"</code> OAuth-link exception protects only two links. Navigation and Apple/rule forms remain affected.</li>
+      <li>No explicit partial-page HTMX operations exist in the application template, so global boosting currently provides no required application behavior.</li>
+    </ul>
+  </section>
+
+  <section class="decision">
+    <h2>Approved UX design</h2>
+    <ul>
+      <li>Use normal browser navigation and form submission throughout the authenticated UI. An Authentik challenge then becomes a top-level redirect instead of a CORS-blocked XHR.</li>
+      <li>Only the activated action control enters a busy state. It shows a compact CSS spinner and contextual text such as <code>Connecting…</code>, <code>Verifying…</code>, <code>Deleting…</code>, <code>Saving…</code>, or <code>Starting…</code>.</li>
+      <li>Disable submitted buttons immediately to prevent duplicate writes. Links use <code>aria-disabled</code> and ignore repeat clicks while navigation begins.</li>
+      <li>Do not show a global overlay or claim success. The busy state means only that the browser started the request; success and errors remain server-rendered after navigation.</li>
+      <li>Use a small first-party JavaScript asset and existing first-party CSS. No runtime CDN or new dependency is introduced.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely file changes</h2>
+    <ul>
+      <li><code>internal/web/templates/app.html</code> — remove the global HTMX boost, load the local progress script, and add contextual pending labels to actionable links and submit buttons.</li>
+      <li><code>internal/web/assets/app.js</code> — add narrowly scoped click and submit handlers for local busy states.</li>
+      <li><code>internal/web/assets/app.css</code> — style the spinner and disabled/busy controls, including reduced-motion behavior.</li>
+      <li><code>internal/web/server_test.go</code> — add regression coverage for normal navigation, embedded first-party assets, and required pending-state hooks.</li>
+      <li>This plan — record the implementation, verification evidence, final deployed image digest, limitations, and follow-ups after completion.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Add a failing regression test that rejects a globally boosted authenticated body and expects the local progress asset.</li>
+      <li>Run the targeted test and confirm it fails against the current template.</li>
+      <li>Remove <code>hx-boost="true"</code> and the unused HTMX script from the authenticated template; retain ordinary links and forms.</li>
+      <li>Add pending labels to OAuth connection links and all mutating form buttons. Hash-only and ordinary read-navigation links remain unchanged.</li>
+      <li>Add the dependency-free progress script. Handle valid form submission through the submit event and link navigation through click; preserve button dimensions, original accessibility text, and normal browser semantics.</li>
+      <li>Add spinner, busy, disabled, and <code>prefers-reduced-motion</code> styles.</li>
+      <li>Run targeted tests, the full race suite, vet, and build.</li>
+      <li>After a separate deployment authorization, push the commit, wait for CI, deploy only <code>calendar-serve</code> by immutable image digest, and verify the real authentication and connection path. Do not change the legacy MCP service or other shared services.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test plan</h2>
+    <ul>
+      <li><code>go test ./internal/web -run 'TestAuthenticatedAppUsesTopLevelNavigation|TestEmbeddedUIHasNoRuntimeCDN|TestActionControlsExposePendingState' -count=1</code></li>
+      <li><code>go test -race -count=1 ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build -o /tmp/calendar-mcp-server ./cmd/server</code></li>
+      <li>Inspect the rendered production HTML to confirm that it contains neither global <code>hx-boost</code> nor the HTMX runtime and that the local progress asset is same-origin.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA checklist</h2>
+    <ul>
+      <li>With a valid Authentik session, click Google/Microsoft Add account and Reconnect: the clicked control immediately shows <code>Connecting…</code>, then OAuth opens as a top-level page.</li>
+      <li>With an expired Authentik session, open an app link and submit a safe test action: the browser reaches Authentik without a CORS error.</li>
+      <li>On a dedicated test calendar/account, submit Apple verification and rule actions: only the submitted button becomes busy and duplicate submission is blocked.</li>
+      <li>Trigger a validation or server error: after navigation, the control is restored by the new page and the existing flash/error state remains visible.</li>
+      <li>Confirm keyboard activation, focus visibility, narrow-screen layout, and reduced-motion behavior.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and edge cases</h2>
+    <ul>
+      <li>A POST interrupted by an expired Authentik session may not preserve entered form values through reauthentication. This change fixes the CORS dead end but does not promise POST replay; replaying mutations automatically would be unsafe.</li>
+      <li>Disabling a submit button too early can omit its name/value from form data. Current submit buttons carry no form values, and the handler will run only after browser validation succeeds.</li>
+      <li>A navigation that is cancelled by the browser can leave a link visually busy on the current page. Restore it on <code>pageshow</code>, including back/forward cache restoration.</li>
+      <li>Real calendar QA must use an empty or dedicated test calendar with invites and notifications disabled.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions and non-goals</h2>
+    <ul>
+      <li>The server-rendered application does not require partial-page HTMX swaps.</li>
+      <li>This change does not alter OAuth scopes, provider credentials, Authentik configuration, API contracts, database schema, or sync behavior.</li>
+      <li>This change does not add progress percentages, background-job polling, optimistic success states, or automatic mutation retries.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <p>Revert the application commit and redeploy the previous immutable <code>calendar-serve</code> image digest. No database or configuration rollback is required. The legacy MCP deployment remains untouched.</p>
+  </section>
+
+  <section class="decision">
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Removed inherited HTMX boosting from the authenticated application so links and forms use top-level browser requests.</li>
+      <li>Removed the unused HTMX asset, fetch script, Docker download step, Makefile asset dependency, and the matching GitHub Actions vendor step.</li>
+      <li>Added the same-origin <code>assets/app.js</code> controller for local pending states, duplicate-submission protection, modified-click preservation, and back/forward-cache restoration.</li>
+      <li>Added contextual pending labels to OAuth, Apple verification, connection deletion, rule creation, manual/dry runs, and rule enablement.</li>
+      <li>Added a compact CSS spinner and reduced-motion fallback.</li>
+      <li>Added regression tests that reject global HTMX navigation, require the local script, verify there are no runtime remote assets, and cover all selected pending labels.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification record</h2>
+    <ul>
+      <li>The targeted regression tests first failed for the expected reasons: missing <code>app.js</code>, inherited <code>hx-boost</code>, and absent pending labels. They passed after implementation.</li>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-test-race go test -race -count=1 ./...</code> — passed for all packages. It required execution outside the filesystem sandbox because Apple provider tests open a loopback <code>httptest</code> listener.</li>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-vet go vet ./...</code> — passed.</li>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-build-final go build -o /tmp/calendar-mcp-server ./cmd/server</code> — passed.</li>
+      <li><code>node --check internal/web/assets/app.js</code> and <code>git diff --check</code> — passed.</li>
+      <li>Repository scan confirmed that no HTMX reference remains in the Dockerfile, Makefile, fetch scripts, authenticated templates, or web assets.</li>
+      <li>The first PR check exposed one remaining call to the deleted fetch script in <code>.github/workflows/ci.yml</code>. After removing it, the exact local equivalents of the workflow's race test, Compose validation, build, and vet steps passed.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Known limitations and follow-up</h2>
+    <ul>
+      <li>Browser-level Authentik and provider QA remains pending until this local change is committed, pushed, built by CI, and separately approved for deployment.</li>
+      <li>An expired Authentik session can still interrupt a POST and require the user to re-enter form values after login. The application deliberately does not replay mutations automatically.</li>
+      <li>No calendar mutation or provider connection was attempted during local verification.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <p>None. The user selected the local per-control progress option. Exact labels will follow each action’s existing semantics.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p>The user approved local implementation. Commit, push, and deployment remain separate consequential actions governed by the repository workflow.</p>
+  </section>
+</main>
+</body>
+</html>

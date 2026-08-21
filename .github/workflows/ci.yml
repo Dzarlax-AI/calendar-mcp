@@ -25,9 +25,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Vendor pinned frontend assets
-        run: ./scripts/fetch-htmx.sh
-
       - name: Test
         run: go test -race -count=1 ./...
 

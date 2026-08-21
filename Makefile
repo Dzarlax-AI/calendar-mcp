@@ -1,11 +1,8 @@
-.PHONY: assets build test test-integration vet html-check image
+.PHONY: build test test-integration vet html-check image
 
 GOCACHE ?= /tmp/calendar-mcp-go-build
 
-assets:
-	./scripts/fetch-htmx.sh
-
-build: assets
+build:
 	GOCACHE=$(GOCACHE) CGO_ENABLED=0 go build -o calendar ./cmd/calendar
 
 test:
