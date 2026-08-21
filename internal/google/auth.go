@@ -12,15 +12,23 @@ import (
 )
 
 const (
-	scopeCalendar = "https://www.googleapis.com/auth/calendar"
+	scopeCalendarListReadOnly = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+	scopeCalendarEvents       = "https://www.googleapis.com/auth/calendar.events"
 )
+
+// OAuthScopes returns the least-privilege scopes required to discover calendars
+// and read or mutate their events. Callers receive a fresh slice so the shared
+// authorization contract cannot be changed by mutation.
+func OAuthScopes() []string {
+	return []string{scopeCalendarListReadOnly, scopeCalendarEvents}
+}
 
 func newOAuthConfig(clientID, clientSecret string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint:     googleOAuth.Endpoint,
-		Scopes:       []string{scopeCalendar},
+		Scopes:       OAuthScopes(),
 	}
 }
 

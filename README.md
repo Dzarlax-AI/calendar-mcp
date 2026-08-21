@@ -205,6 +205,13 @@ Back up the encryption key separately from the database. Losing it requires reco
 
 Apple username and app-specific password are entered through the UI in platform mode.
 
+Google OAuth requests only these application scopes:
+
+- `https://www.googleapis.com/auth/calendar.calendarlist.readonly` to discover calendars available to the connected account;
+- `https://www.googleapis.com/auth/calendar.events` to read and mutate events where that account already has access.
+
+The application does not request the broad `https://www.googleapis.com/auth/calendar` scope or calendar ACL, settings, or calendar-management scopes. After narrowing an existing Google OAuth application, revoke its previous grant and reconnect the account; changing the requested scope list does not reduce permissions already carried by an issued refresh token.
+
 `GOOGLE_REFRESH_TOKEN`, `MS365_REFRESH_TOKEN`, `APPLE_USERNAME`, and `APPLE_APP_PASSWORD` are retained only for standalone compatibility mode.
 
 ### Fan-out filtering

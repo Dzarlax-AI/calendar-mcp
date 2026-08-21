@@ -121,7 +121,7 @@ func Serve(_ context.Context) error {
 		if cfg.GoogleClientID != "" {
 			oauthProviders["google"] = oauthflow.ConfigProvider{Config: &oauth2.Config{
 				ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Endpoint: googleoauth.Endpoint,
-				RedirectURL: publicURL + "/oauth/google/callback", Scopes: []string{"https://www.googleapis.com/auth/calendar"},
+				RedirectURL: publicURL + "/oauth/google/callback", Scopes: google.OAuthScopes(),
 			}}
 		}
 		if cfg.MS365ClientID != "" {

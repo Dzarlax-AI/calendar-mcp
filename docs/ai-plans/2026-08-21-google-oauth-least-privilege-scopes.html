@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Google OAuth Least-Privilege Scopes</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f6f8; --card:#fff; --ink:#17202a; --muted:#5b6775; --line:#dfe4ea; --blue:#175cd3; --amber:#b54708; --red:#b42318; --green:#027a48; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); line-height:1.55; }
+    main { max-width:1040px; margin:0 auto; padding:36px 22px 64px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin:16px 0; }
+    h1,h2,h3 { line-height:1.2; }
+    h1 { margin-bottom:8px; }
+    h2 { margin-top:0; font-size:1.2rem; }
+    code { background:#eef1f4; padding:2px 5px; border-radius:4px; overflow-wrap:anywhere; }
+    li + li { margin-top:7px; }
+    .badge { display:inline-block; padding:5px 10px; border-radius:999px; background:#fff3e8; color:var(--amber); font-size:12px; font-weight:700; }
+    .decision { border-left:4px solid var(--blue); }
+    .risk { border-left:4px solid var(--red); }
+    .approval { border-left:4px solid var(--amber); }
+    .ok { color:var(--green); font-weight:650; }
+    .muted { color:var(--muted); }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; padding:10px; border-bottom:1px solid var(--line); }
+    th { font-size:.86rem; color:var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Google OAuth Least-Privilege Scopes</h1>
+  <p class="badge">Approval required before implementation</p>
+  <p class="muted">Prepared 2026-08-21 for <code>calendar-mcp</code>.</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>Replace the broad Google Calendar OAuth permission with the narrow permissions required to discover calendars and synchronize their events. Keep the hosted web UI, MCP operations, and Google-to/from-any-provider synchronization functional while making the runtime request match the scopes declared in Google Cloud.</p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>Both the legacy environment-driven Google provider and the web connection flow request <code>https://www.googleapis.com/auth/calendar</code>.</li>
+      <li>That scope grants broader calendar administration rights than the product uses, including calendar sharing and calendar deletion.</li>
+      <li>The same literal is duplicated in <code>internal/google/auth.go</code> and <code>internal/runtime/serve.go</code>, allowing the two connection paths to drift.</li>
+      <li>The operator has reported that the Google Cloud consent configuration and production OAuth client credentials are now configured for the narrower scope set.</li>
+    </ul>
+  </section>
+
+  <section class="decision">
+    <h2>Desired Behavior and Scope Decision</h2>
+    <table>
+      <thead><tr><th>Scope</th><th>Product use</th></tr></thead>
+      <tbody>
+        <tr><td><code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code></td><td>List the calendars visible to the connected account and expose them for selection in the UI, MCP, and sync rules.</td></tr>
+        <tr><td><code>https://www.googleapis.com/auth/calendar.events</code></td><td>Read and mutate events on calendars where the connected account already has the corresponding access.</td></tr>
+      </tbody>
+    </table>
+    <p>Do not request full <code>calendar</code>, ACL, settings, calendar-property mutation, or calendar subscription mutation scopes. Do not use <code>calendar.events.owned</code>, because that would prevent supported synchronization involving shared calendars not owned by the connected account.</p>
+  </section>
+
+  <section>
+    <h2>Assumptions and Unknowns</h2>
+    <ul>
+      <li>Google Cloud contains exactly the two desired scopes above; this must be checked manually because repository code cannot inspect the console configuration.</li>
+      <li>The redirect URI remains <code>https://calendar.dzarlax.dev/oauth/google/callback</code>.</li>
+      <li>No active production Google connection needs to be preserved. If one exists, it will not be silently deleted or mutated; the operator must explicitly revoke and reconnect it to obtain a genuinely narrowed grant.</li>
+      <li>Narrowing scopes improves least privilege but does not guarantee that Google will waive scope justification or demo-video review.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files Likely to Change</h2>
+    <ul>
+      <li><code>internal/google/auth.go</code> — define one canonical OAuth scope function and use it in the legacy provider path.</li>
+      <li><code>internal/google/auth_test.go</code> — assert the exact two scopes and explicitly reject the broad scope.</li>
+      <li><code>internal/runtime/serve.go</code> — consume the canonical Google scope function in the web OAuth path instead of maintaining a duplicate literal.</li>
+      <li><code>README.md</code> — document the least-privilege Google scope contract and reconnection requirement.</li>
+      <li>This plan — record actual implementation, verification, deployment, limitations, and follow-ups after approval.</li>
+    </ul>
+    <p class="ok">No database schema or migration is planned.</p>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Add a canonical <code>google.OAuthScopes()</code> helper that returns a fresh slice containing only <code>calendar.calendarlist.readonly</code> and <code>calendar.events</code>.</li>
+      <li>Use that helper in both the legacy token flow and the hosted web OAuth provider configuration.</li>
+      <li>Add regression tests for exact membership, absence of full <code>calendar</code>, and defensive slice copying.</li>
+      <li>Update operator documentation without including client credentials or tokens.</li>
+      <li>Run local verification, commit in English, and publish through CI only after a separate implementation approval.</li>
+      <li>Deploy the CI-built immutable image by recreating only <code>calendar-serve</code>; do not touch legacy <code>calendar-mcp</code>, worker, PostgreSQL, Traefik, or Authentik.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test and Manual QA Plan</h2>
+    <ul>
+      <li><code>go test -race -count=1 ./...</code></li>
+      <li><code>go vet ./...</code></li>
+      <li><code>go build ./cmd/calendar ./cmd/server</code></li>
+      <li>Inspect the generated Google authorization redirect and confirm it contains the two approved scopes and not the broad <code>auth/calendar</code> scope.</li>
+      <li>Connect a dedicated test Google account from the web UI.</li>
+      <li>Verify calendar listing, event read, create, update, delete, and a dry-run synchronization using a dedicated test calendar with notifications and invitations disabled.</li>
+      <li>Confirm persisted connection metadata records the two scopes and that service health/logs remain clean.</li>
+      <li>Only after these checks, record the Google verification video using the deployed flow.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and Edge Cases</h2>
+    <ul>
+      <li>Existing refresh tokens can retain the previously granted broad permission. Changing requested scopes does not revoke old grants.</li>
+      <li>Removing <code>calendar.calendarlist.readonly</code> would break calendar discovery; replacing <code>calendar.events</code> with <code>calendar.events.owned</code> would break shared-calendar destinations and sources.</li>
+      <li>Google Console and runtime scope mismatch can cause verification rejection or consent behavior that differs from the submitted video.</li>
+      <li>A real-calendar test could send invitations or modify production data. QA must use an empty/dedicated calendar and explicitly disabled notifications.</li>
+      <li>Google may still require a justification and unlisted YouTube demo because event access remains sensitive.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <p>Roll production back to the previously recorded immutable image digest and restore the prior server <code>.env</code> backup if deployment configuration changes unexpectedly. Code rollback restores the previous full scope, but doing so would also require restoring the Google Cloud scope declaration and obtaining a new user grant; existing tokens must never be assumed to change scope automatically.</p>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Confirm in Google Cloud that the configured scope list is exactly <code>calendar.calendarlist.readonly</code> plus <code>calendar.events</code>.</li>
+      <li>Confirm whether any Google account is already connected in production. If yes, revoke the old Google grant before reconnecting for the demo.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval Gate</h2>
+    <p>Production code, OAuth grants, and deployment must not be changed until the user explicitly approves this plan. Approval authorizes implementation and verification, but recording or publishing the YouTube video remains a separate user action.</p>
+  </section>
+</main>
+</body>
+</html>
