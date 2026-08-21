@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: React Calendar Client</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --soft: #f8fafc;
+      --line: #dfe5ec;
+      --text: #172033;
+      --muted: #64748b;
+      --accent: #405cf5;
+      --accent-soft: #eef2ff;
+      --warning: #9a3412;
+      --warning-soft: #fff7ed;
+      --danger: #991b1b;
+      --danger-soft: #fef2f2;
+      --success: #166534;
+      --success-soft: #f0fdf4;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px 22px 64px; }
+    header { padding: 28px; border-radius: 18px; color: #fff; background: linear-gradient(135deg, #172033, #26388f); }
+    header p { max-width: 840px; color: #dbe4ff; }
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -.018em; }
+    h1 { margin: 8px 0 12px; font-size: 34px; }
+    h2 { margin: 0 0 13px; font-size: 21px; }
+    h3 { margin: 18px 0 8px; font-size: 16px; }
+    p { margin: 8px 0 12px; }
+    section { margin: 16px 0; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    ul, ol { padding-left: 23px; }
+    li { margin: 6px 0; }
+    code { padding: 2px 5px; border-radius: 5px; background: #edf1f5; color: #26344a; font-size: .92em; }
+    pre { overflow-x: auto; padding: 15px; border-radius: 10px; background: #111827; color: #e5e7eb; font-size: 12.5px; }
+    pre code { padding: 0; background: transparent; color: inherit; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--soft); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .badge { display: inline-block; padding: 5px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 750; }
+    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+    .meta div { padding: 11px; border-radius: 10px; background: rgba(255,255,255,.1); }
+    .meta span { display: block; color: #bdc9f2; font-size: 11px; text-transform: uppercase; }
+    .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); }
+    .safety { border-left: 4px solid #dc2626; background: var(--danger-soft); }
+    .rollback { border-left: 4px solid #0f766e; background: #f0fdfa; }
+    .approval { border: 2px solid #f59e0b; background: var(--warning-soft); }
+    .decision { border-left: 4px solid #16a34a; background: var(--success-soft); }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li::before { content: "☐"; margin-right: 8px; color: var(--accent); }
+    .small { color: var(--muted); font-size: 12px; }
+    @media (max-width: 760px) {
+      main { padding: 16px 11px 48px; }
+      header, section { padding: 18px; }
+      h1 { font-size: 27px; }
+      .meta { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Implemented locally — not committed or deployed</span>
+    <h1>React Calendar Client</h1>
+    <p>Make a unified, interactive calendar the primary Calendar Platform screen, migrate the small authenticated control plane to React, and support safe event viewing, creation, editing, rescheduling, and deletion across connected Google, Microsoft, and Apple calendars.</p>
+    <div class="meta">
+      <div><span>Plan date</span>2026-08-21</div>
+      <div><span>Baseline inspected</span>origin/main @ 2350649</div>
+      <div><span>Status</span>Implementation and local QA complete</div>
+    </div>
+  </header>
+
+  <section class="callout">
+    <h2>Execution Contract</h2>
+    <p>Approval authorizes local source changes, dependency installation, and test execution for this plan. It does not authorize a commit, push, pull request, deployment, production database change, or any calendar write against real user data.</p>
+    <p>The local <code>main</code> is 10 commits behind <code>origin/main</code> and the worktree contains user-owned untracked plans, mockups, <code>AGENTS.md</code>, and <code>.claude/</code>. Before implementation, update the code baseline without overwriting those files. Stop if a path collision or unrelated tracked change appears.</p>
+  </section>
+
+  <section>
+    <h2>1. Current Architecture</h2>
+    <ul>
+      <li><code>calendar serve</code> composes one provider registry and application service for MCP, optional internal REST, OAuth, and the web control plane.</li>
+      <li>The authenticated UI is a small Go-template application in <code>internal/web/</code> with same-origin CSS and a small vanilla JavaScript file. It does not load HTMX; a test explicitly prevents HTMX runtime/boosted navigation because Authentik redirects must remain top-level navigation.</li>
+      <li>Public landing, privacy, terms, and OAuth callback routes are intentionally outside ForwardAuth. Authenticated application routes require the trusted <code>X-authentik-username</code> header, unless the explicit local bypass is enabled.</li>
+      <li>Mutating UI forms already require exact origin plus a double-submit CSRF token. Internal REST uses an API key on a separate listener and must not be exposed to the browser.</li>
+      <li>The typed V2 application layer already supports expanded event reads, get/create/update/delete, recurrence scopes, ETags, provider capability checks, and <code>notification_policy=none</code>. Its external REST exposure is controlled by <code>ENABLE_V2</code>.</li>
+      <li>The current dashboard is operational status, not a calendar. Existing Connections, Sync Rules, Runs, and Settings flows must remain available during the migration.</li>
+    </ul>
+  </section>
+
+  <section class="decision">
+    <h2>2. Decisions and Desired Behavior</h2>
+    <ul>
+      <li><strong>Frontend:</strong> React + TypeScript + Vite. React owns all authenticated screens so the project does not retain two competing authenticated UI stacks.</li>
+      <li><strong>Calendar engine:</strong> FullCalendar React with the Standard day-grid, time-grid, list, and interaction packages. FullCalendar owns date layout, selection, drag, and resize; Calendar Platform owns the toolbar, sidebar, event rendering, drawers, dialogs, colors, and responsive styling.</li>
+      <li><strong>Data fetching:</strong> TanStack Query for server state and mutation invalidation. React Router handles authenticated routes. No Next.js, Redux, runtime CDN, or server-side JavaScript service.</li>
+      <li><strong>Primary route:</strong> <code>/app</code> opens the calendar. Week is the initial desktop view; day is the initial narrow-screen view. Month and list remain available.</li>
+      <li><strong>Unified view:</strong> read events from all selected connected calendars for the visible range; show calendar/provider identity, all-day events, and partial-source failures without hiding successful sources.</li>
+      <li><strong>MVP mutations:</strong> create, open/view, edit title/time/all-day/description/location, drag or resize to reschedule, and delete. Calendar reassignment, attendees, RSVP, reminders, conferencing, attachments, natural-language input, and tasks are deferred.</li>
+      <li><strong>Recurring events:</strong> display expanded occurrences. Before edit/reschedule/delete, ask for only the scopes supported by that calendar: this event, this and following, or entire series. Never guess a recurrence scope.</li>
+      <li><strong>Control-plane parity:</strong> Connections, Sync Rules, Runs, and Settings move into the React shell with the same capabilities. Google/Microsoft connect and reconnect continue through ordinary top-level links, not <code>fetch</code>.</li>
+      <li><strong>Preferences:</strong> selected calendars, current view, sidebar state, and display density may use local storage; provider data and secrets may not.</li>
+    </ul>
+  </section>
+
+  <section class="safety">
+    <h2>3. Calendar Write Safety</h2>
+    <ul>
+      <li>Every create/update/delete request generated by the web UI sets <code>notification_policy</code> to <code>none</code>. The UI does not expose a notification override in this MVP.</li>
+      <li>Create and update payloads omit attendees, conference data, reminders, attachments, and guest permissions. Existing values not edited by the form must not be cleared accidentally.</li>
+      <li>Use ETags for edits, drag/resize, and delete when supplied by the provider. A conflict rolls the optimistic UI back, refetches the event, and asks the user to retry.</li>
+      <li>Drag/resize is optimistic only visually. Any failure restores the original event position and reports the provider-safe error.</li>
+      <li>Delete requires explicit confirmation and has no automatic retry after an ambiguous provider response.</li>
+      <li>Before the first live provider mutation, confirm notification/invitation suppression and use a dedicated empty test calendar with synthetic events. Production/user calendars are outside this plan's automatic verification authority.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Browser API, Auth, and Data Contract</h2>
+    <p>Add a same-origin browser API under <code>/api/ui/</code>. It calls the existing storage, connection, and application services directly; it does not proxy the API-key REST listener and never sends the MCP/API key to normal calendar requests.</p>
+    <pre><code>GET    /api/ui/bootstrap
+GET    /api/ui/events?start=&amp;end=&amp;calendar_id=...
+GET    /api/ui/event?calendar_id=&amp;event_id=
+POST   /api/ui/events
+PATCH  /api/ui/event?calendar_id=&amp;event_id=
+DELETE /api/ui/event?calendar_id=&amp;event_id=
+
+GET    /api/ui/control-plane
+POST   /api/ui/connections/apple
+DELETE /api/ui/connections/{id}
+POST   /api/ui/rules
+POST   /api/ui/rules/{id}/enable
+POST   /api/ui/rules/{id}/run
+POST   /api/ui/settings/mcp-key/reveal</code></pre>
+    <ul>
+      <li><code>bootstrap</code> returns authenticated UI metadata, browser-safe calendar records, capabilities needed for controls, and a CSRF token. It must not contain provider credentials or the MCP key.</li>
+      <li>Event list accepts repeated calendar IDs, drains bounded provider pagination server-side, sorts results, and returns per-source completion/error metadata. A provider failure can produce a partial successful response.</li>
+      <li>Timed events use RFC3339 instants plus explicit IANA timezone. All-day events use date values and an exclusive end date. Display defaults to the browser timezone without rewriting stored event semantics.</li>
+      <li>JSON mutations require ForwardAuth/local bypass, exact public origin, the CSRF cookie, and matching <code>X-CSRF-Token</code>. Keep form-token compatibility only while old handlers exist. The CSRF cookie must be secure for an HTTPS <code>CALENDAR_PUBLIC_URL</code>, including behind TLS termination.</li>
+      <li>Return structured error codes and safe messages from <code>calendar.APIError</code>; do not leak provider payloads, tokens, or raw credentials.</li>
+      <li>The browser API uses the typed application service regardless of whether external V2 MCP/REST catalog exposure is enabled. <code>ENABLE_V2</code> remains an external compatibility switch.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5. Files Likely to Change</h2>
+    <table>
+      <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>frontend/package.json</code>, lockfile, <code>tsconfig*.json</code>, <code>vite.config.ts</code></td><td>Reproducible TypeScript/Vite build and test configuration.</td></tr>
+        <tr><td><code>frontend/src/app/</code>, <code>components/</code>, <code>features/calendar/</code>, <code>features/control-plane/</code>, <code>lib/</code>, <code>styles/</code></td><td>React shell, typed API client, calendar UI, event dialogs/drawer, and migrated operations screens.</td></tr>
+        <tr><td><code>internal/web/server.go</code></td><td>Serve the SPA and public pages, register protected browser API routes, preserve OAuth top-level navigation, and inject application dependencies.</td></tr>
+        <tr><td><code>internal/web/api*.go</code>, tests</td><td>Browser-safe DTOs, event/control-plane handlers, JSON CSRF enforcement, partial results, and error mapping.</td></tr>
+        <tr><td><code>internal/web/templates/app.html</code>, <code>assets/app.js</code>, <code>assets/app.css</code></td><td>Retire only after React route and control-plane parity tests pass; public template/legal assets stay Go-rendered.</td></tr>
+        <tr><td><code>internal/runtime/serve.go</code></td><td>Pass the shared application service/registry to the web layer without creating a second provider registry.</td></tr>
+        <tr><td><code>Makefile</code>, <code>Dockerfile</code>, <code>.gitignore</code>, CI workflow</td><td>Build frontend before Go embedding, cache/install dependencies, and keep generated Vite output out of source edits.</td></tr>
+        <tr><td><code>README.md</code></td><td>Document frontend commands, authenticated routes, browser API boundary, and safe test-calendar procedure.</td></tr>
+      </tbody>
+    </table>
+    <p class="small">Exact file names may be refined after the baseline fast-forward. Generated Vite bundles are build artifacts and are not hand-edited.</p>
+  </section>
+
+  <section>
+    <h2>6. Implementation Steps</h2>
+    <ol>
+      <li><strong>Safe baseline:</strong> fetch and fast-forward local <code>main</code> to the inspected remote baseline only if user-owned untracked files remain collision-free; re-run status and existing Go tests.</li>
+      <li><strong>Frontend toolchain:</strong> add the React/TypeScript/Vite application, pinned lockfile, lint/typecheck/test scripts, and a production build integrated into Make, Docker, and CI. Keep a source-controlled embed placeholder so ordinary Go package compilation fails clearly at runtime rather than at <code>go:embed</code> discovery when the SPA has not been built.</li>
+      <li><strong>Authenticated SPA host:</strong> split public template assets from authenticated assets; serve the SPA for known authenticated routes and return 404 for unknown public paths. Preserve public CSP and add a compatible authenticated CSP with same-origin assets only.</li>
+      <li><strong>Browser API foundation:</strong> add protected bootstrap/control-plane endpoints, JSON CSRF middleware, safe DTOs, and structured errors. Retain top-level OAuth start links and existing callback behavior.</li>
+      <li><strong>Control-plane migration:</strong> reproduce Connections, Rules, Runs, and Settings behavior in React, including pending/error states and the time-limited MCP key reveal. Keep legacy form routes until parity tests pass, then remove the old authenticated template/runtime script.</li>
+      <li><strong>Calendar reads:</strong> implement visible-range fetching, selected-calendar filters, source status, loading/empty/error states, custom FullCalendar event rendering, responsive day/week/month/list views, and event details drawer.</li>
+      <li><strong>Calendar writes:</strong> implement create/edit forms, capability-aware recurrence-scope selection, drag/resize rescheduling with rollback, ETag conflict handling, and confirmed delete. Hardcode safe notification policy and omit deferred fields.</li>
+      <li><strong>Accessibility and polish:</strong> keyboard navigation, focus management, dialog labels, non-color provider cues, compact-event rendering, narrow-screen layout, and reduced-motion behavior.</li>
+      <li><strong>Cutover and documentation:</strong> remove obsolete authenticated template/CSS/JS only after automated parity checks; update README and this plan with actual files, checks, limitations, and follow-ups.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>7. Automated Test Plan</h2>
+    <h3>Frontend</h3>
+    <ul>
+      <li>Typecheck and production build.</li>
+      <li>Unit tests for EventV2-to-FullCalendar mapping, all-day exclusive ends, timezone serialization, recurrence-scope selection, and safe mutation payloads.</li>
+      <li>Component tests for loading/empty/partial-error states, filters, drawer/dialog focus, create/edit/delete validation, drag rollback, ETag conflict, and no notification/attendee controls.</li>
+      <li>Route tests proving calendar is the default and all existing control-plane destinations remain reachable.</li>
+    </ul>
+    <h3>Go</h3>
+    <ul>
+      <li>Handler tests for ForwardAuth/local bypass, JSON CSRF, exact origin, safe bootstrap DTOs, calendar capability filtering, partial provider failures, pagination bounds, mutation scope validation, and API-error mapping.</li>
+      <li>Regression tests that public pages and OAuth callbacks keep their existing auth boundary and OAuth starts remain top-level navigation.</li>
+      <li>Secret-leak tests proving credentials and MCP key are absent from bootstrap/event responses; reveal remains no-store and explicitly invoked.</li>
+    </ul>
+    <pre><code>npm --prefix frontend ci
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+go test -race -count=1 ./...
+go vet ./...
+make build
+make html-check</code></pre>
+  </section>
+
+  <section>
+    <h2>8. Manual QA Checklist</h2>
+    <ul class="checklist">
+      <li>Open public home/privacy/terms without authentication; confirm authenticated routes remain protected by Authentik.</li>
+      <li>Open <code>/app</code> and verify week/day/month/list navigation, today navigation, mini-calendar jump, calendar filters, and partial-source warning behavior.</li>
+      <li>Verify dense short events, overlapping events, long titles, all-day events, DST boundaries, empty ranges, and narrow/mobile layout.</li>
+      <li>Open event details and verify provider/calendar identity, time, description, location, recurrence, and read-only state.</li>
+      <li>On a dedicated empty test calendar only: create, edit, drag, resize, and delete synthetic standalone and recurring events.</li>
+      <li>Confirm no invitation or update email is sent and no attendees/conferencing/reminders are added.</li>
+      <li>Force a stale ETag and provider failure; verify the event rolls back/refetches and the UI does not claim success.</li>
+      <li>Verify Google/Microsoft connect/reconnect still navigate at top level through Authentik and back; verify Apple form, Rules, Runs, Settings, and key reveal parity.</li>
+      <li>Inspect browser console/network: no remote assets, secrets, API key on calendar calls, unexpected redirects, or uncaught errors.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9. Risks, Edge Cases, and Deferred Scope</h2>
+    <ul>
+      <li><strong>Build coupling:</strong> Go embedding needs a deterministic frontend-before-Go production build. Make, Docker, and CI must share the same order, while source-only Go tests remain possible with an explicit placeholder/failure mode.</li>
+      <li><strong>Provider differences:</strong> capabilities and recurrence scopes differ. Controls must be capability-driven, not provider-name guesses.</li>
+      <li><strong>Fan-out cost:</strong> large ranges or many calendars can trigger many paginated provider calls. Fetch only the visible range, cancel stale requests, cap pagination, and surface partial completion.</li>
+      <li><strong>Timezone/DST:</strong> browser display timezone and event timezone can differ; never derive provider payloads from formatted labels.</li>
+      <li><strong>Recurring drag semantics:</strong> a moved occurrence may need <code>scope=single</code> plus original start identity. Require a scope decision before committing the drag.</li>
+      <li><strong>Read-only/special events:</strong> birthdays, working location, provider-locked events, or calendars without write capability must render without edit/delete controls.</li>
+      <li><strong>Cross-calendar move:</strong> deliberately deferred. The existing same-provider move API does not define safe cross-provider move semantics; copy-then-delete would be a separate consequential workflow.</li>
+      <li><strong>Deferred product scope:</strong> attendees/RSVP, notification controls, Meet/Teams, reminders, attachments, tasks, search, natural-language creation, offline/PWA, and cross-calendar moves.</li>
+    </ul>
+  </section>
+
+  <section class="rollback">
+    <h2>10. Rollback</h2>
+    <p>Keep the existing Go-template authenticated UI until React route and functional parity tests pass. During development, switching the route registration back to the template handlers restores the old UI without database migration or provider reauthorization. The browser API is additive and can be removed independently. No schema migration is planned for this MVP.</p>
+    <p>A production rollback, if later authorized, would deploy the previous immutable image; connected accounts and sync data remain compatible because this plan does not change their storage schema.</p>
+  </section>
+
+  <section>
+    <h2>11. Assumptions and Open Questions</h2>
+    <ul>
+      <li><strong>Assumed:</strong> the visual spike is a direction check, not a pixel-perfect specification. Implementation will reuse its information architecture while refining density, typography, spacing, compact events, and narrow-screen behavior.</li>
+      <li><strong>Assumed:</strong> the first release migrates the whole small authenticated control plane to avoid a long-lived mixed frontend; public/legal rendering stays in Go.</li>
+      <li><strong>Assumed:</strong> week/day/month/list plus calendar filtering are enough for initial viewing; global event search is deferred.</li>
+      <li><strong>Assumed:</strong> no schema change is required; connected calendar metadata and the provider registry remain the source of truth.</li>
+      <li><strong>Implementation-time check:</strong> confirm current compatible package versions and licenses before locking dependencies.</li>
+      <li><strong>Post-MVP choice:</strong> whether cross-calendar move should mean provider-native move, copy-delete with confirmation, or remain unsupported.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Implementation Record — 2026-08-21</h2>
+    <p><strong>The user approved this plan and the implementation is complete in the local feature branch <code>feat/react-calendar-client</code>.</strong> No commit, push, pull request, deployment, database change, or real-provider calendar mutation was performed.</p>
+    <ul>
+      <li>Added a React 19 + TypeScript + Vite authenticated application with FullCalendar, TanStack Query, React Router, custom event rendering, responsive day/week/month/list views, filters, event drawer, create/edit dialogs, recurrence-scope selection, and confirmed delete flow.</li>
+      <li>Migrated Connections, Sync Rules, Runs, and Settings into the React shell while preserving ordinary top-level OAuth navigation and existing CSRF-protected form mutations.</li>
+      <li>Added a browser-safe same-origin API with ForwardAuth/local-bypass protection, JSON CSRF enforcement, safe DTOs, capability-driven controls, partial-source status, ETag propagation, and forced <code>notification_policy=none</code>. The single-event route uses query parameters because Apple CalDAV identifiers may contain slashes.</li>
+      <li>Integrated deterministic frontend builds into Make, Docker, and CI, with generated assets excluded from source control and a source-controlled embed placeholder.</li>
+      <li>Updated README development and safety documentation. The original Go authenticated templates remain as a no-bundle development fallback; production builds serve the React client.</li>
+    </ul>
+    <h3>Verification completed</h3>
+    <ul>
+      <li><code>npm --prefix frontend test -- --run</code>: 6 tests passed.</li>
+      <li><code>npm --prefix frontend run typecheck</code>: passed.</li>
+      <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build make build</code>: passed, including the production Vite build and embedded Go binary.</li>
+      <li><code>go test -race -count=1 ./...</code> and <code>go vet ./...</code>: passed outside the sandbox because existing provider tests open loopback listeners.</li>
+      <li>In-app browser QA at 1536×1024 and 390×844 used an in-memory synthetic API only. Calendar views, filters, event drawer, create, recurring edit scope, delete scope/cancel, control-plane routes, and mobile event form worked; console warnings/errors were empty.</li>
+    </ul>
+    <h3>Known limitations and follow-ups</h3>
+    <ul>
+      <li>No live-provider write verification was authorized. Notification suppression is enforced and covered by handler tests, but the first real mutation still requires a dedicated empty calendar and explicit confirmation.</li>
+      <li>Automated frontend coverage currently focuses on data contracts and safe payload mapping; broader component-level drag rollback, focus, and stale-ETag interaction tests remain valuable follow-up hardening.</li>
+      <li>Docker image execution was not tested because no Docker daemon was available in the development environment; the Dockerfile build order is covered structurally by the same successful frontend and Go build commands.</li>
+      <li>Attendees, RSVP, reminders, conferencing, attachments, search, natural-language creation, offline/PWA, and cross-calendar moves remain deferred by design.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

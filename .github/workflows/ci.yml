@@ -25,6 +25,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Frontend typecheck
+        run: npm --prefix frontend run typecheck
+
+      - name: Frontend tests
+        run: npm --prefix frontend test
+
+      - name: Frontend production build
+        run: npm --prefix frontend run build
+
+      - name: Stage embedded frontend bundle
+        run: |
+          mkdir -p internal/web/spa/dist
+          cp -R frontend/dist/. internal/web/spa/dist/
+
       - name: Test
         run: go test -race -count=1 ./...
 

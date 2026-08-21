@@ -42,7 +42,7 @@ func newTestHandlerWithConfig(t *testing.T, cfg Config) http.Handler {
 	return server.Handler()
 }
 
-func TestSettingsShowsMCPAccessWithoutRenderingKeys(t *testing.T) {
+func TestSettingsSPAAndBootstrapExposeStatusWithoutRenderingKeys(t *testing.T) {
 	handler := newTestHandlerWithConfig(t, Config{
 		PublicURL:              "https://calendar.example",
 		AllowUnauthenticated:   true,
@@ -63,9 +63,24 @@ func TestSettingsShowsMCPAccessWithoutRenderingKeys(t *testing.T) {
 			t.Fatalf("Settings HTML contains secret %q", secret)
 		}
 	}
-	for _, expected := range []string{"https://calendar.example/mcp", "API_KEY_LEGACY status only", ">Configured</span>"} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("Settings HTML does not contain %q", expected)
+	if !strings.Contains(body, `<div id="root"></div>`) {
+		t.Fatalf("Settings does not serve the React shell: %s", body)
+	}
+
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "https://calendar.example/api/ui/control-plane", nil)
+	bootstrapRes := httptest.NewRecorder()
+	handler.ServeHTTP(bootstrapRes, bootstrapReq)
+	if bootstrapRes.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, body = %s", bootstrapRes.Code, bootstrapRes.Body.String())
+	}
+	for _, secret := range []string{"primary-secret", "legacy-secret"} {
+		if strings.Contains(bootstrapRes.Body.String(), secret) {
+			t.Fatalf("Bootstrap contains secret %q", secret)
+		}
+	}
+	for _, expected := range []string{`"mcp_endpoint":"https://calendar.example/mcp"`, `"legacy_api_key_configured":true`} {
+		if !strings.Contains(bootstrapRes.Body.String(), expected) {
+			t.Fatalf("Bootstrap does not contain %q: %s", expected, bootstrapRes.Body.String())
 		}
 	}
 }

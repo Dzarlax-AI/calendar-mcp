@@ -137,6 +137,7 @@ func Serve(_ context.Context) error {
 			PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated,
 			MCPAPIKey: cfg.APIKey, LegacyAPIKeyConfigured: cfg.LegacyAPIKey != "",
 			GoogleConfigured: cfg.GoogleClientID != "", MicrosoftConfigured: cfg.MS365ClientID != "", AppleCalDAVURL: cfg.AppleCalDAVURL,
+			ApplicationService: appService,
 			OnProvidersChanged: reg.ReplaceProviders,
 		})
 		if err != nil {

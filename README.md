@@ -99,9 +99,8 @@ Google targets receive private rule/source markers. Before a create, the engine 
 
 Platform mode exposes a public product landing page at `/`, plus the repository-maintained [Privacy Policy](internal/web/legal/privacy.md) at `/privacy` and [Terms of Service](internal/web/legal/terms.md) at `/terms`. These routes contain no connection or calendar state. They can be routed publicly for OAuth application verification while the control plane stays authenticated.
 
-The authenticated control plane starts at `/app` and adds these pages:
+The authenticated React application starts at `/app`. Its primary screen is a unified calendar with day, week, month, and list views, connected-calendar filters, event details, and capability-aware create/edit/reschedule/delete actions. The remaining control-plane pages are:
 
-- Dashboard — connection, rule, run, and attention summaries;
 - Connections — add, reconnect, verify, discover, and safely remove accounts;
 - Sync Rules — create directed routes and run dry runs or manual jobs;
 - Runs — sanitized outcomes and mutation counters;
@@ -110,6 +109,22 @@ The authenticated control plane starts at `/app` and adds these pages:
 Google and Microsoft use OAuth 2.0 with expiring single-use state and PKCE. Apple uses an app-specific password. Provider credentials are encrypted with AES-256-GCM before database storage.
 
 Production UI access is designed for Authentik ForwardAuth. With `UI_TRUST_FORWARD_AUTH=true`, `/app` and all connection, rule, run, settings, and OAuth-start routes require the `X-authentik-username` header. The service must not be directly reachable around the trusted reverse proxy: the proxy must discard any client-supplied identity header and set the authenticated value itself. The public landing/policy routes and OAuth callbacks remain outside ForwardAuth; callbacks are protected by their state/PKCE flow. Mutating UI requests additionally require an exact public origin and a same-site CSRF token.
+
+The browser uses a same-origin JSON API under `/api/ui/`. This is intentionally narrower than MCP and REST: bootstrap and event responses omit credentials, attendees, reminders, conferencing, attachments, and API keys; mutations force provider notifications to `none`. Event identity is passed through query parameters on `/api/ui/event` so Apple CalDAV identifiers containing `/` remain intact. The browser API calls the shared typed application service directly and does not expose the API-key-protected REST listener.
+
+### Frontend development
+
+The authenticated client lives in `frontend/` and is built before the Go binary is embedded:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+make build
+```
+
+`make build`, the Dockerfile, and CI all stage `frontend/dist/` into the Go embed directory before compiling. Generated bundles are ignored; only the source-controlled placeholder is retained. Automated and visual QA must use fake providers or synthetic data. Before any later live mutation, use a dedicated empty calendar and separately confirm invitation and notification suppression.
 
 The Settings page shows the MCP endpoint and can reveal the primary `API_KEY` only after an explicit authenticated, same-origin, CSRF-protected action. The key is absent from the initial HTML and is removed from the page after 30 seconds, when hidden, or when the page exits. Copying uses the browser Clipboard API; the application does not automatically clear the OS clipboard because doing so could overwrite newer clipboard contents. `API_KEY_LEGACY` is never revealed and appears only as a configured/not-configured status.
 
