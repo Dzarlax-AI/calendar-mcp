@@ -124,7 +124,7 @@
     <h2>Implementation record</h2>
     <ul>
       <li>Removed inherited HTMX boosting from the authenticated application so links and forms use top-level browser requests.</li>
-      <li>Removed the unused HTMX asset, fetch script, Docker download step, and Makefile asset dependency.</li>
+      <li>Removed the unused HTMX asset, fetch script, Docker download step, Makefile asset dependency, and the matching GitHub Actions vendor step.</li>
       <li>Added the same-origin <code>assets/app.js</code> controller for local pending states, duplicate-submission protection, modified-click preservation, and back/forward-cache restoration.</li>
       <li>Added contextual pending labels to OAuth, Apple verification, connection deletion, rule creation, manual/dry runs, and rule enablement.</li>
       <li>Added a compact CSS spinner and reduced-motion fallback.</li>
@@ -141,6 +141,7 @@
       <li><code>GOCACHE=/tmp/calendar-mcp-go-build-final go build -o /tmp/calendar-mcp-server ./cmd/server</code> — passed.</li>
       <li><code>node --check internal/web/assets/app.js</code> and <code>git diff --check</code> — passed.</li>
       <li>Repository scan confirmed that no HTMX reference remains in the Dockerfile, Makefile, fetch scripts, authenticated templates, or web assets.</li>
+      <li>The first PR check exposed one remaining call to the deleted fetch script in <code>.github/workflows/ci.yml</code>. After removing it, the exact local equivalents of the workflow's race test, Compose validation, build, and vet steps passed.</li>
     </ul>
   </section>
 
