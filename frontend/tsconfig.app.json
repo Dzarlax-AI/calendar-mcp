@@ -14,7 +14,10 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true,
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.tmp/app-types",
     "jsx": "react-jsx",
     "types": ["vite/client", "vitest/globals"]
   },

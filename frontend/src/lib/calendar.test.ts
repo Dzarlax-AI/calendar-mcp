@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canWriteEvent, selectedReadableCalendarIds, sortCalendarIds, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, withMutationScope } from "./calendar";
+import { canWriteEvent, formatEventDate, selectedReadableCalendarIds, sortCalendarIds, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -67,6 +67,17 @@ describe("calendar mapping", () => {
     const payload = withTimezone("Europe/Belgrade", () => toReschedulePayload(allDay, new Date("2026-09-14T22:00:00Z"), new Date("2026-09-15T22:00:00Z")));
     expect(payload.start).toEqual({ date: "2026-09-15" });
     expect(payload.end).toEqual({ date: "2026-09-16" });
+  });
+
+  it("keeps all-day display dates stable west of UTC", () => {
+    const allDay: EventRecord = { ...event, allDay: true, start: "2026-09-15", end: "2026-09-16" };
+    expect(withTimezone("America/Los_Angeles", () => formatEventDate(allDay, "en-US"))).toContain("September 15, 2026");
+  });
+
+  it("converts visible form values when all-day mode changes", () => {
+    const allDay = toggleAllDayDraft(draft, true);
+    expect(allDay).toMatchObject({ allDay: true, start: "2026-09-15", end: "2026-09-16" });
+    expect(toggleAllDayDraft(allDay, false)).toMatchObject({ allDay: false, start: "2026-09-15T00:00", end: "2026-09-16T00:00" });
   });
 
   it("filters persisted selections to readable calendars", () => {

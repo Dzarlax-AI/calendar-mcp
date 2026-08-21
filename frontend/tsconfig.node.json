@@ -10,7 +10,10 @@
     "moduleDetection": "force",
     "skipLibCheck": true,
     "strict": true,
-    "noEmit": true
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.tmp/node-types"
   },
   "include": ["vite.config.ts"]
 }

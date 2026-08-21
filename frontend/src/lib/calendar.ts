@@ -123,12 +123,34 @@ export function withMutationScope(event: EventRecord, payload: EventUpdateReques
   };
 }
 
-export function formatEventTime(event: EventRecord, locale = undefined): string {
+export function toggleAllDayDraft(draft: EventDraft, allDay: boolean): EventDraft {
+  if (draft.allDay === allDay) return draft;
+  if (!allDay) {
+    return { ...draft, allDay, start: draft.start ? `${draft.start.slice(0, 10)}T00:00` : "", end: draft.end ? `${draft.end.slice(0, 10)}T00:00` : "" };
+  }
+  const start = draft.start.slice(0, 10);
+  let end = draft.end.slice(0, 10);
+  if (start && (!end || end <= start)) {
+    const next = new Date(`${start}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    end = next.toISOString().slice(0, 10);
+  }
+  return { ...draft, allDay, start, end };
+}
+
+export function formatEventTime(event: EventRecord, locale?: Intl.LocalesArgument): string {
   if (event.allDay) return "All day";
   const formatter = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" });
   return `${formatter.format(new Date(event.start))} – ${formatter.format(new Date(event.end))}`;
 }
 
-export function formatEventDate(event: EventRecord, locale = undefined): string {
-  return new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date(event.start));
+export function formatEventDate(event: EventRecord, locale?: Intl.LocalesArgument): string {
+  let value: Date;
+  if (event.allDay && /^\d{4}-\d{2}-\d{2}$/.test(event.start)) {
+    const [year, month, day] = event.start.split("-").map(Number);
+    value = new Date(year, month - 1, day);
+  } else {
+    value = new Date(event.start);
+  }
+  return new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(value);
 }
