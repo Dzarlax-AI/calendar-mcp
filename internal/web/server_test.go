@@ -159,7 +159,7 @@ func TestCreateRuleRejectsMalformedNumericFields(t *testing.T) {
 }
 
 func TestEmbeddedUIHasNoRuntimeCDN(t *testing.T) {
-	for _, path := range []string{"templates/app.html", "assets/app.css", "assets/htmx.min.js"} {
+	for _, path := range []string{"templates/app.html", "assets/app.css", "assets/app.js"} {
 		data, err := fs.ReadFile(content, path)
 		if err != nil {
 			t.Fatal(err)
@@ -171,18 +171,33 @@ func TestEmbeddedUIHasNoRuntimeCDN(t *testing.T) {
 	}
 }
 
-func TestOAuthLinksUseTopLevelNavigation(t *testing.T) {
+func TestAuthenticatedAppUsesTopLevelNavigation(t *testing.T) {
 	data, err := fs.ReadFile(content, "templates/app.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	templateText := string(data)
-	for _, link := range []string{
-		`<a class="btn small" hx-boost="false" href="/oauth/{{.Provider}}/start?return=/connections">Add account</a>`,
-		`<a class="btn secondary small" hx-boost="false" href="/connections/{{.ID}}/oauth/{{.Provider}}/start?return=/connections">Reconnect</a>`,
-	} {
-		if !strings.Contains(templateText, link) {
-			t.Fatalf("OAuth link must opt out of inherited HTMX boost: %s", link)
+	if strings.Contains(templateText, "hx-boost") {
+		t.Fatal("authenticated app must not use HTMX-boosted navigation behind forward auth")
+	}
+	if strings.Contains(templateText, "htmx.min.js") {
+		t.Fatal("authenticated app must not load the unused HTMX runtime")
+	}
+	if !strings.Contains(templateText, `<script defer src="/assets/app.js"></script>`) {
+		t.Fatal("authenticated app must load the same-origin action progress script")
+	}
+}
+
+func TestActionControlsExposePendingState(t *testing.T) {
+	data, err := fs.ReadFile(content, "templates/app.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateText := string(data)
+	for _, label := range []string{"Connecting…", "Verifying…", "Deleting…", "Saving…", "Starting…", "Updating…"} {
+		marker := `data-pending-label="` + label + `"`
+		if !strings.Contains(templateText, marker) {
+			t.Fatalf("authenticated app is missing pending state %q", label)
 		}
 	}
 }

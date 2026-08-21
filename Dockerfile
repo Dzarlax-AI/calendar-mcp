@@ -1,10 +1,8 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
-RUN apk add --no-cache curl
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN ./scripts/fetch-htmx.sh
 RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /app/calendar ./cmd/calendar
 
 FROM alpine:latest
