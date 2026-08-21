@@ -29,7 +29,7 @@
 <body>
 <main>
   <h1>Google OAuth Least-Privilege Scopes</h1>
-  <p class="badge">Approval required before implementation</p>
+  <p class="badge">Implemented and deployed</p>
   <p class="muted">Prepared 2026-08-21 for <code>calendar-mcp</code>.</p>
 
   <section>
@@ -133,7 +133,43 @@
 
   <section class="approval">
     <h2>Approval Gate</h2>
-    <p>Production code, OAuth grants, and deployment must not be changed until the user explicitly approves this plan. Approval authorizes implementation and verification, but recording or publishing the YouTube video remains a separate user action.</p>
+    <p>The user approved this plan on 2026-08-21. Implementation and the scoped deployment are complete. Recording or publishing the YouTube verification video remains a separate user action.</p>
+  </section>
+
+  <section class="decision">
+    <h2>Implementation Record</h2>
+    <ul>
+      <li>Commit <code>aa6cfe634e77bc6d775bd43ea79c6a74c33db0cd</code> added the canonical <code>google.OAuthScopes()</code> contract and used it in both standalone and platform OAuth flows.</li>
+      <li>Regression tests assert the exact scope list, absence of the broad scope, defensive copying, and legacy OAuth-config integration.</li>
+      <li>The README now documents the two scopes and the need to revoke old grants before reconnecting.</li>
+      <li>No database schema, stored connection, provider credential, or sync rule was changed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification and Deployment Record</h2>
+    <ul>
+      <li><code>go test -race -count=1 ./...</code> — passed.</li>
+      <li><code>go vet ./...</code> — passed.</li>
+      <li><code>go build ./cmd/calendar ./cmd/server</code> — passed.</li>
+      <li>GitHub Actions run <code>32472246637</code> — Build &amp; Vet and Docker Build &amp; Push passed.</li>
+      <li>Deployed only <code>calendar-serve</code> from <code>ghcr.io/dzarlax-ai/calendar-mcp@sha256:99f330aa256495a1e0f335aacfcc1522870cb3f10d79149de6278310864adff3</code>.</li>
+      <li>Post-deploy state: healthy, zero restarts, internal health <code>ok</code>, zero recent panic/fatal/error matches.</li>
+      <li>Legacy <code>calendar-mcp</code> remained on revision <code>285c038535182cddcdd8931bea0ff6e9555cac51</code>; worker remained absent.</li>
+      <li>Production preflight confirmed both Google OAuth credential variables are non-empty without exposing their values, and found zero existing Google connections.</li>
+      <li>The live authorization redirect used <code>accounts.google.com</code>, the exact two approved scopes, no broad scope, callback <code>https://calendar.dzarlax.dev/oauth/google/callback</code>, offline access, state, and PKCE S256.</li>
+      <li>Server environment backup: <code>/root/calendar-mcp/.env.pre-google-scope-narrowing-20260821T1025Z</code>.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Known Limitations and Follow-up</h2>
+    <ul>
+      <li>The Google login and callback cannot be completed without the operator authenticating the dedicated test account in the browser.</li>
+      <li>Calendar listing and event CRUD must be manually exercised after that account is connected, using a dedicated empty calendar with invitations and notifications disabled.</li>
+      <li>The Google Cloud consent-screen scope list must still be visually confirmed to match the runtime redirect.</li>
+      <li>Google can still require scope justification and an unlisted YouTube demo because event access remains sensitive.</li>
+    </ul>
   </section>
 </main>
 </body>
