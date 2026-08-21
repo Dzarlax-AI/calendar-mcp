@@ -170,3 +170,19 @@ func TestEmbeddedUIHasNoRuntimeCDN(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthLinksUseTopLevelNavigation(t *testing.T) {
+	data, err := fs.ReadFile(content, "templates/app.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateText := string(data)
+	for _, link := range []string{
+		`<a class="btn small" hx-boost="false" href="/oauth/{{.Provider}}/start?return=/connections">Add account</a>`,
+		`<a class="btn secondary small" hx-boost="false" href="/connections/{{.ID}}/oauth/{{.Provider}}/start?return=/connections">Reconnect</a>`,
+	} {
+		if !strings.Contains(templateText, link) {
+			t.Fatalf("OAuth link must opt out of inherited HTMX boost: %s", link)
+		}
+	}
+}
