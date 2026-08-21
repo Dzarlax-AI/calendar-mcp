@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
@@ -11,7 +12,7 @@ import { AlignLeft, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
 import { APIError, createEvent, deleteEvent, getEvents, updateEvent } from "../../lib/api";
-import { calendarEventKey, formatEventDate, formatEventTime, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload } from "../../lib/calendar";
+import { calendarEventKey, canWriteEvent, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 
@@ -36,9 +37,11 @@ export default function CalendarPage() {
   const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("calendar:selected") ?? "null");
-      if (Array.isArray(saved)) return saved;
+      const selected = selectedReadableCalendarIds(calendars, saved);
+      if (Array.isArray(saved)) localStorage.setItem("calendar:selected", JSON.stringify(selected));
+      return selected;
     } catch { /* use all calendars */ }
-    return calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id);
+    return selectedReadableCalendarIds(calendars, null);
   });
   const [selectedEvent, setSelectedEvent] = useState<EventRecord | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
@@ -46,10 +49,11 @@ export default function CalendarPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia?.("(max-width: 820px)").matches);
   const [deleteConfirm, setDeleteConfirm] = useState<EventRecord | null>(null);
+  const sortedSelectedCalendarIds = useMemo(() => sortCalendarIds(selectedCalendarIds), [selectedCalendarIds]);
 
   const eventsQuery = useQuery({
-    queryKey: ["events", range?.start, range?.end, selectedCalendarIds],
-    queryFn: () => getEvents(range!.start, range!.end, selectedCalendarIds),
+    queryKey: ["events", range?.start, range?.end, sortedSelectedCalendarIds],
+    queryFn: () => getEvents(range!.start, range!.end, sortedSelectedCalendarIds),
     enabled: Boolean(range),
     placeholderData: (previous) => previous,
   });
@@ -94,7 +98,7 @@ export default function CalendarPage() {
   }
   function openCreate(preset?: Partial<EventDraft>) { setModal({ mode: "create", preset }); }
   function openEdit(event: EventRecord) {
-    if (event.readOnly || !calendarById.get(event.calendarId)?.capability.write) return;
+    if (!canWriteEvent(event, calendarById.get(event.calendarId))) return;
     setModal({ mode: "edit", event });
   }
   function handleSelect(selection: DateSelectArg) {
@@ -108,7 +112,7 @@ export default function CalendarPage() {
   }
   function handleMove(info: EventDropArg | EventResizeDoneArg) {
     const event = eventsById.get(info.event.id) ?? info.event.extendedProps.event as EventRecord | undefined;
-    if (!event || !info.event.start || !info.event.end) { info.revert(); return; }
+    if (!event || !canWriteEvent(event, calendarById.get(event.calendarId)) || !info.event.start || !info.event.end) { info.revert(); return; }
     const payload = toReschedulePayload(event, info.event.start, info.event.end);
     if (event.recurrence?.isRecurring) {
       setPendingScope({ event, action: "reschedule", revert: info.revert, payload });
@@ -121,7 +125,7 @@ export default function CalendarPage() {
     const { event, action, revert, payload } = pendingScope;
     setPendingScope(null);
     if (action === "delete") deleteMutation.mutate({ event, scope });
-    else if ((action === "reschedule" || action === "edit") && payload) updateMutation.mutate({ event, payload: { ...payload, scope }, revert });
+    else if ((action === "reschedule" || action === "edit") && payload) updateMutation.mutate({ event, payload: withMutationScope(event, payload, scope), revert });
   }
   function askDelete(event: EventRecord) {
     if (event.recurrence?.isRecurring) setPendingScope({ event, action: "delete" });
@@ -188,6 +192,54 @@ function EventDrawer({ event, calendar, onClose, onEdit, onDelete }: { event: Ev
   return <aside className="event-drawer" aria-label="Event details"><div className="drawer-header"><span>Event details</span><button className="icon-button" onClick={onClose} aria-label="Close event details"><X size={20} /></button></div><div className="drawer-content"><div className="drawer-title-row"><h2>{event.title || "Untitled event"}</h2></div><div className="event-source"><span className="source-swatch" style={{ backgroundColor: calendar?.color }} /><span>{calendar?.name ?? event.calendarId}</span><span className="source-provider">{providerLabel(calendar?.provider ?? event.source ?? "calendar")}</span>{event.readOnly && <span className="readonly-label">Read only</span>}</div><div className="drawer-divider" /><div className="detail-row"><Clock3 className="detail-icon" size={18} /><div><strong>{formatEventDate(event)}</strong><span>{formatEventTime(event)}</span>{event.recurrence?.isRecurring && <span>Repeats</span>}</div></div>{event.location && <div className="detail-row"><MapPin className="detail-icon" size={18} /><div><strong>Location</strong><span>{event.location}</span></div></div>}{event.description && <div className="detail-row"><AlignLeft className="detail-icon" size={18} /><div><strong>Description</strong><span className="description-text">{event.description}</span></div></div>}<div className="drawer-meta"><span>Calendar</span><strong>{calendar?.name ?? event.calendarId}</strong></div></div><div className="drawer-actions"><button className="button button-outline" disabled={!editable} onClick={onEdit}>Edit</button><button className="button button-danger" disabled={!editable || !calendar?.capability.delete} onClick={onDelete}>Delete</button></div></aside>;
 }
 
+function Dialog({ children, onClose, labelledBy, role = "dialog", className = "" }: { children: ReactNode; onClose: () => void; labelledBy: string; role?: "dialog" | "alertdialog"; className?: string }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const dialogElement: HTMLElement = dialog;
+    const focusable = () => Array.from(dialogElement.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+    const first = focusable()[0];
+    (first ?? dialogElement).focus();
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (!elements.length) {
+        event.preventDefault();
+        dialogElement.focus();
+        return;
+      }
+      const current = document.activeElement;
+      const firstElement = elements[0];
+      const lastElement = elements[elements.length - 1];
+      if (event.shiftKey && current === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && current === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    }
+    dialogElement.addEventListener("keydown", handleKeyDown);
+    return () => {
+      dialogElement.removeEventListener("keydown", handleKeyDown);
+      if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
+    };
+  }, []);
+
+  return <div className="modal-backdrop" role="presentation"><section ref={dialogRef} className={`modal ${className}`} role={role} aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>{children}</section></div>;
+}
+
 function EventModal({ mode, event, preset, calendars, onClose, onSave, busy }: { mode: "create" | "edit"; event?: EventRecord; preset?: Partial<EventDraft>; calendars: CalendarRecord[]; onClose: () => void; onSave: (draft: EventDraft, calendarId: string) => void; busy: boolean }) {
   const initial = { ...toEventDraft(event), ...preset };
   const [draft, setDraft] = useState<EventDraft>(initial);
@@ -195,15 +247,15 @@ function EventModal({ mode, event, preset, calendars, onClose, onSave, busy }: {
   const writableCalendars = calendars.filter((calendar) => (event ? calendar.capability.write : calendar.capability.create) && !calendar.readOnly);
   function update<K extends keyof EventDraft>(key: K, value: EventDraft[K]) { setDraft((current) => ({ ...current, [key]: value })); }
   const valid = draft.title.trim().length > 0 && draft.start && draft.end && new Date(draft.end).getTime() > new Date(draft.start).getTime();
-  return <div className="modal-backdrop" role="presentation"><section className="modal event-modal" role="dialog" aria-modal="true" aria-labelledby="event-modal-title"><div className="modal-header"><h2 id="event-modal-title">{mode === "create" ? "New event" : "Edit event"}</h2><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={20} /></button></div><form onSubmit={(e) => { e.preventDefault(); if (valid && calendarId) onSave(draft, calendarId); }}><label className="field"><span>Title</span><input autoFocus value={draft.title} onChange={(e) => update("title", e.target.value)} placeholder="Add a title" /></label><label className="field"><span>Calendar</span><select value={calendarId} onChange={(e) => setCalendarId(e.target.value)} disabled={mode === "edit"}>{writableCalendars.length ? writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name} ({providerLabel(calendar.provider)})</option>) : <option value="">No writable calendars</option>}</select></label><label className="toggle-field"><span>All day</span><input type="checkbox" checked={draft.allDay} onChange={(e) => update("allDay", e.target.checked)} /><span className="toggle" /></label><div className="field-row"><label className="field"><span>Starts</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.start} onChange={(e) => update("start", e.target.value)} /></label><label className="field"><span>Ends</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.end} onChange={(e) => update("end", e.target.value)} /></label></div><label className="field"><span>Location <em>Optional</em></span><input value={draft.location} onChange={(e) => update("location", e.target.value)} placeholder="Add a location" /></label><label className="field"><span>Description <em>Optional</em></span><textarea value={draft.description} onChange={(e) => update("description", e.target.value)} placeholder="Add a description" rows={4} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={!valid || !calendarId || busy}>{busy ? "Saving…" : mode === "create" ? "Create event" : "Save changes"}</button></div></form></section></div>;
+  return <Dialog onClose={onClose} labelledBy="event-modal-title" className="event-modal"><div className="modal-header"><h2 id="event-modal-title">{mode === "create" ? "New event" : "Edit event"}</h2><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={20} /></button></div><form onSubmit={(e) => { e.preventDefault(); if (valid && calendarId) onSave(draft, calendarId); }}><label className="field"><span>Title</span><input value={draft.title} onChange={(e) => update("title", e.target.value)} placeholder="Add a title" /></label><label className="field"><span>Calendar</span><select value={calendarId} onChange={(e) => setCalendarId(e.target.value)} disabled={mode === "edit"}>{writableCalendars.length ? writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name} ({providerLabel(calendar.provider)})</option>) : <option value="">No writable calendars</option>}</select></label><label className="toggle-field"><span>All day</span><input type="checkbox" checked={draft.allDay} onChange={(e) => update("allDay", e.target.checked)} /><span className="toggle" /></label><div className="field-row"><label className="field"><span>Starts</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.start} onChange={(e) => update("start", e.target.value)} /></label><label className="field"><span>Ends</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.end} onChange={(e) => update("end", e.target.value)} /></label></div><label className="field"><span>Location <em>Optional</em></span><input value={draft.location} onChange={(e) => update("location", e.target.value)} placeholder="Add a location" /></label><label className="field"><span>Description <em>Optional</em></span><textarea value={draft.description} onChange={(e) => update("description", e.target.value)} placeholder="Add a description" rows={4} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={!valid || !calendarId || busy}>{busy ? "Saving…" : mode === "create" ? "Create event" : "Save changes"}</button></div></form></Dialog>;
 }
 
 function ScopeDialog({ event, action, scopes: supportedScopes, onCancel, onConfirm }: { event: EventRecord; action: "reschedule" | "edit" | "delete"; scopes?: Array<"single" | "following" | "series">; onCancel: () => void; onConfirm: (scope: "single" | "following" | "series") => void }) {
   const scopes = supportedScopes?.length ? supportedScopes : event.recurrence?.scopes ?? ["single", "following", "series"];
   const labels = { single: "This event", following: "This and following", series: "Entire series" };
-  return <div className="modal-backdrop" role="presentation"><section className="modal scope-modal" role="dialog" aria-modal="true" aria-labelledby="scope-title"><div className="modal-header"><h2 id="scope-title">Choose what to {action === "delete" ? "delete" : "change"}</h2><button className="icon-button" onClick={onCancel} aria-label="Close dialog"><X size={20} /></button></div><p className="modal-intro">“{event.title}” repeats. Select the occurrences this action should apply to.</p><div className="scope-options">{scopes.map((scope) => <button key={scope} className="scope-option" onClick={() => onConfirm(scope)}><span>{labels[scope]}</span><ChevronRight size={17} /></button>)}</div><button className="button button-secondary full-width" onClick={onCancel}>Cancel</button></section></div>;
+  return <Dialog onClose={onCancel} labelledBy="scope-title" className="scope-modal"><div className="modal-header"><h2 id="scope-title">Choose what to {action === "delete" ? "delete" : "change"}</h2><button className="icon-button" onClick={onCancel} aria-label="Close dialog"><X size={20} /></button></div><p className="modal-intro">“{event.title}” repeats. Select the occurrences this action should apply to.</p><div className="scope-options">{scopes.map((scope) => <button key={scope} className="scope-option" onClick={() => onConfirm(scope)}><span>{labels[scope]}</span><ChevronRight size={17} /></button>)}</div><button className="button button-secondary full-width" onClick={onCancel}>Cancel</button></Dialog>;
 }
 
 function ConfirmDialog({ event, busy, onCancel, onConfirm }: { event: EventRecord; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="modal-backdrop" role="presentation"><section className="modal scope-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><div className="modal-header"><h2 id="delete-title">Delete event?</h2><button className="icon-button" onClick={onCancel} aria-label="Close dialog"><X size={20} /></button></div><p className="modal-intro">This will permanently remove “{event.title}” from {event.calendarId}. This action cannot be undone.</p><div className="modal-actions"><button className="button button-secondary" onClick={onCancel}>Cancel</button><button className="button button-danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting…" : "Delete event"}</button></div></section></div>;
+  return <Dialog onClose={onCancel} labelledBy="delete-title" role="alertdialog" className="scope-modal"><div className="modal-header"><h2 id="delete-title">Delete event?</h2><button className="icon-button" onClick={onCancel} aria-label="Close dialog"><X size={20} /></button></div><p className="modal-intro">This will permanently remove “{event.title}” from {event.calendarId}. This action cannot be undone.</p><div className="modal-actions"><button className="button button-secondary" onClick={onCancel}>Cancel</button><button className="button button-danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting…" : "Delete event"}</button></div></Dialog>;
 }

@@ -20,6 +20,24 @@ export function calendarEventKey(event: Pick<EventRecord, "calendarId" | "id">):
   return `${event.calendarId}\u0000${event.id}`;
 }
 
+export function sortCalendarIds(calendarIds: string[]): string[] {
+  return [...calendarIds].sort();
+}
+
+export function selectedReadableCalendarIds(calendars: CalendarRecord[], saved: unknown): string[] {
+  const readable = new Set(calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id));
+  const allReadable = [...readable];
+  if (Array.isArray(saved)) {
+    const valid = saved.filter((id): id is string => typeof id === "string" && readable.has(id));
+    return valid.length ? valid : allReadable;
+  }
+  return allReadable;
+}
+
+export function canWriteEvent(event: Pick<EventRecord, "readOnly">, calendar?: Pick<CalendarRecord, "capability">): boolean {
+  return !event.readOnly && Boolean(calendar?.capability.write);
+}
+
 export function toLocalInputValue(value: string, allDay = false): string {
   if (allDay) return value.slice(0, 10);
   const date = new Date(value);
@@ -57,6 +75,11 @@ function toEventTime(value: string, allDay: boolean, timezone?: string): EventTi
   return { date_time: new Date(value).toISOString(), time_zone: timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 
+function toLocalDateValue(value: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}
+
 export function toCreatePayload(calendarId: string, draft: EventDraft): EventCreateRequest {
   const event: EventCreateRequest = {
     calendar_id: calendarId,
@@ -82,12 +105,21 @@ export function toUpdatePayload(event: EventRecord, draft: EventDraft): EventUpd
 }
 
 export function toReschedulePayload(event: EventRecord, start: Date, end: Date): EventUpdateRequest {
+  const startValue = event.allDay ? toLocalDateValue(start) : toLocalInputValue(start.toISOString());
+  const endValue = event.allDay ? toLocalDateValue(end) : toLocalInputValue(end.toISOString());
   return {
-    start: toEventTime(toLocalInputValue(start.toISOString(), event.allDay), event.allDay, event.timezone),
-    end: toEventTime(toLocalInputValue(end.toISOString(), event.allDay), event.allDay, event.timezone),
+    start: toEventTime(startValue, event.allDay, event.timezone),
+    end: toEventTime(endValue, event.allDay, event.timezone),
     scope: "single",
     ...(event.etag ? { expected_etag: event.etag } : {}),
-    ...(event.originalStart ? { effective_from: event.originalStart } : {}),
+  };
+}
+
+export function withMutationScope(event: EventRecord, payload: EventUpdateRequest, scope: "single" | "following" | "series"): EventUpdateRequest {
+  return {
+    ...payload,
+    scope,
+    ...(scope === "following" && event.originalStart ? { effective_from: event.originalStart } : {}),
   };
 }
 

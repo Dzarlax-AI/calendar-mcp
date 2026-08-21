@@ -68,6 +68,7 @@ export type Settings = {
 
 export type Bootstrap = {
   csrf_token: string;
+  username?: string;
   calendars: CalendarRecord[];
   connections: Connection[];
   rules: SyncRule[];

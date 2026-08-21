@@ -562,7 +562,7 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) protected(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated) {
+		if s.unauthenticated(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -572,12 +572,16 @@ func (s *Server) protected(next http.Handler) http.Handler {
 
 func (s *Server) uiProtected(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated) {
+		if s.unauthenticated(r) {
 			writeUIError(w, http.StatusUnauthorized, calendar.NewAPIError(calendar.ErrorPermissionDenied, "authentication is required"))
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) unauthenticated(r *http.Request) bool {
+	return (s.config.TrustForwardAuth && r.Header.Get("X-authentik-username") == "") || (!s.config.TrustForwardAuth && !s.config.AllowUnauthenticated)
 }
 
 func (s *Server) mutating(next http.Handler) http.Handler {
@@ -637,6 +641,6 @@ func pageTitle(page string) string {
 	return titles[page]
 }
 func flashMessage(code string) string {
-	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
+	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "connection_failed": "The connection could not be saved.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "oauth_start_failed": "Authorization could not be started. Try again.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
 	return messages[code]
 }

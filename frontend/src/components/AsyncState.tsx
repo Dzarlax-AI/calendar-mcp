@@ -2,7 +2,7 @@ import { AlertCircle, CalendarDays, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 
 export function LoadingState({ label = "Loading" }: { label?: string }) {
-  return <div className="state-panel"><LoaderCircle className="spin state-icon" size={24} /><span>{label}</span></div>;
+  return <div className="state-panel" role="status" aria-live="polite"><LoaderCircle className="spin state-icon" size={24} aria-hidden="true" /><span>{label}</span></div>;
 }
 
 export function EmptyState({ title, message, action }: { title: string; message: string; action?: ReactNode }) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -19,7 +20,12 @@ import (
 // The browser API is deliberately a narrower contract than the external V2
 // API. In particular, it never serializes attendee, conferencing, reminder,
 // attachment, credential, or MCP key data.
-const maxUIEventPages = 100
+const (
+	maxUIEventPages       = 100
+	maxUIRequestBodyBytes = 64 << 10
+	maxUIEventRange       = 93 * 24 * time.Hour
+	uiEventSourceTimeout  = 20 * time.Second
+)
 
 type uiError struct {
 	Code       calendar.ErrorCode `json:"code"`
@@ -256,21 +262,21 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 	calendarIDs := uniqueStrings(r.URL.Query()["calendar_id"])
 	response := uiEventsResponse{Items: []uiEvent{}, Complete: true, Sources: []uiSourceStatus{}}
 	if len(calendarIDs) == 0 {
-		page, err := s.app.ListEvents(r.Context(), calendar.ListEventsRequestV2{Start: start, End: end, View: calendar.RecurrenceExpanded})
-		if err != nil {
-			writeUIAPIError(w, err)
-			return
-		}
+		page, err := s.listUIDrainedEvents(r, "", start, end)
 		response.appendPage(page)
+		if err != nil {
+			response.Complete = false
+			response.Sources = append(response.Sources, failedUISource("", "", err))
+		}
 	} else {
 		for _, calendarID := range calendarIDs {
 			page, err := s.listUIDrainedEvents(r, calendarID, start, end)
+			response.appendPage(page)
 			if err != nil {
 				response.Complete = false
 				response.Sources = append(response.Sources, failedUISource("", calendarID, err))
 				continue
 			}
-			response.appendPage(page)
 		}
 	}
 	response.sort()
@@ -278,11 +284,16 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listUIDrainedEvents(r *http.Request, calendarID string, start, end time.Time) (calendar.Page[calendar.EventV2], error) {
+	ctx, cancel := context.WithTimeout(r.Context(), uiEventSourceTimeout)
+	defer cancel()
+	return drainUIEventPages(ctx, calendar.ListEventsRequestV2{CalendarID: calendarID, Start: start, End: end, View: calendar.RecurrenceExpanded}, s.app.ListEvents)
+}
+
+func drainUIEventPages(ctx context.Context, request calendar.ListEventsRequestV2, fetch func(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error)) (calendar.Page[calendar.EventV2], error) {
 	result := calendar.Page[calendar.EventV2]{Complete: true}
 	seen := map[string]struct{}{}
-	request := calendar.ListEventsRequestV2{CalendarID: calendarID, Start: start, End: end, View: calendar.RecurrenceExpanded}
 	for pageNumber := 0; pageNumber < maxUIEventPages; pageNumber++ {
-		page, err := s.app.ListEvents(r.Context(), request)
+		page, err := fetch(ctx, request)
 		if err != nil {
 			return result, err
 		}
@@ -325,7 +336,7 @@ func (s *Server) createUIEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input uiCreateEventInput
-	if err := decodeUIInput(r, &input); err != nil {
+	if err := decodeUIInput(w, r, &input); err != nil {
 		writeUIAPIError(w, err)
 		return
 	}
@@ -351,7 +362,7 @@ func (s *Server) updateUIEvent(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, err)
 		return
 	}
-	input, err := decodeUIPatchInput(r)
+	input, err := decodeUIPatchInput(w, r)
 	if err != nil {
 		writeUIAPIError(w, err)
 		return
@@ -374,7 +385,7 @@ func (s *Server) deleteUIEvent(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, err)
 		return
 	}
-	input, err := decodeUIDeleteInput(r)
+	input, err := decodeUIDeleteInput(w, r)
 	if err != nil {
 		writeUIAPIError(w, err)
 		return
@@ -415,15 +426,27 @@ type uiDeleteInput struct {
 	operationID   string
 }
 
-func decodeUIPatchInput(r *http.Request) (uiPatchInput, error) {
-	values, err := decodeUIRawObject(r)
+func decodeUIPatchInput(w http.ResponseWriter, r *http.Request) (uiPatchInput, error) {
+	values, err := decodeUIRawObject(w, r)
 	if err != nil {
 		return uiPatchInput{}, err
 	}
 	if err := validateUIFields(values, "scope", "effective_from", "expected_etag", "operation_id", "title", "description", "location", "start", "end", "visibility", "transparency", "color_id"); err != nil {
 		return uiPatchInput{}, err
 	}
-	result := uiPatchInput{scope: calendar.MutationScope(readOptionalString(values, "scope")), expectedETag: readOptionalString(values, "expected_etag"), operationID: readOptionalString(values, "operation_id")}
+	scope, err := readOptionalString(values, "scope")
+	if err != nil {
+		return uiPatchInput{}, err
+	}
+	expectedETag, err := readOptionalString(values, "expected_etag")
+	if err != nil {
+		return uiPatchInput{}, err
+	}
+	operationID, err := readOptionalString(values, "operation_id")
+	if err != nil {
+		return uiPatchInput{}, err
+	}
+	result := uiPatchInput{scope: calendar.MutationScope(scope), expectedETag: expectedETag, operationID: operationID}
 	if raw, ok := values["effective_from"]; ok {
 		var value calendar.EventTime
 		if err := json.Unmarshal(raw, &value); err != nil {
@@ -458,15 +481,27 @@ func decodeUIPatchInput(r *http.Request) (uiPatchInput, error) {
 	return result, nil
 }
 
-func decodeUIDeleteInput(r *http.Request) (uiDeleteInput, error) {
-	values, err := decodeUIRawObject(r)
+func decodeUIDeleteInput(w http.ResponseWriter, r *http.Request) (uiDeleteInput, error) {
+	values, err := decodeUIRawObject(w, r)
 	if err != nil {
 		return uiDeleteInput{}, err
 	}
 	if err := validateUIFields(values, "scope", "effective_from", "expected_etag", "operation_id"); err != nil {
 		return uiDeleteInput{}, err
 	}
-	result := uiDeleteInput{scope: calendar.MutationScope(readOptionalString(values, "scope")), expectedETag: readOptionalString(values, "expected_etag"), operationID: readOptionalString(values, "operation_id")}
+	scope, err := readOptionalString(values, "scope")
+	if err != nil {
+		return uiDeleteInput{}, err
+	}
+	expectedETag, err := readOptionalString(values, "expected_etag")
+	if err != nil {
+		return uiDeleteInput{}, err
+	}
+	operationID, err := readOptionalString(values, "operation_id")
+	if err != nil {
+		return uiDeleteInput{}, err
+	}
+	result := uiDeleteInput{scope: calendar.MutationScope(scope), expectedETag: expectedETag, operationID: operationID}
 	if raw, ok := values["effective_from"]; ok {
 		var value calendar.EventTime
 		if err := json.Unmarshal(raw, &value); err != nil {
@@ -477,8 +512,8 @@ func decodeUIDeleteInput(r *http.Request) (uiDeleteInput, error) {
 	return result, nil
 }
 
-func decodeUIInput(r *http.Request, target *uiCreateEventInput) error {
-	values, err := decodeUIRawObject(r)
+func decodeUIInput(w http.ResponseWriter, r *http.Request, target *uiCreateEventInput) error {
+	values, err := decodeUIRawObject(w, r)
 	if err != nil {
 		return err
 	}
@@ -497,8 +532,8 @@ func decodeUIInput(r *http.Request, target *uiCreateEventInput) error {
 	return nil
 }
 
-func decodeUIRawObject(r *http.Request) (map[string]json.RawMessage, error) {
-	decoder := json.NewDecoder(r.Body)
+func decodeUIRawObject(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUIRequestBodyBytes))
 	decoder.DisallowUnknownFields()
 	values := map[string]json.RawMessage{}
 	if err := decoder.Decode(&values); err != nil {
@@ -536,14 +571,19 @@ func isUnsafeUIField(field string) bool {
 	}
 }
 
-func readOptionalString(values map[string]json.RawMessage, key string) string {
+func readOptionalString(values map[string]json.RawMessage, key string) (string, error) {
 	raw, ok := values[key]
 	if !ok {
-		return ""
+		return "", nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", nil
 	}
 	var result string
-	_ = json.Unmarshal(raw, &result)
-	return result
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", calendar.NewAPIError(calendar.ErrorInvalidArgument, key+" must be a string or null")
+	}
+	return result, nil
 }
 
 func stringPatch(values map[string]json.RawMessage, key string) (calendar.PatchField[string], error) {
@@ -589,6 +629,9 @@ func parseUIEventRange(r *http.Request) (time.Time, time.Time, error) {
 	if !end.After(start) {
 		return time.Time{}, time.Time{}, calendar.NewAPIError(calendar.ErrorInvalidArgument, "end must be after start")
 	}
+	if end.Sub(start) > maxUIEventRange {
+		return time.Time{}, time.Time{}, calendar.NewAPIError(calendar.ErrorInvalidArgument, "requested calendar range is too large")
+	}
 	return start, end, nil
 }
 
@@ -620,9 +663,23 @@ func (response *uiEventsResponse) appendPage(page calendar.Page[calendar.EventV2
 func (response *uiEventsResponse) sort() {
 	sort.SliceStable(response.Items, func(i, j int) bool {
 		left, right := response.Items[i], response.Items[j]
-		leftStart, rightStart := left.Start.Date+left.Start.DateTime, right.Start.Date+right.Start.DateTime
-		if leftStart != rightStart {
-			return leftStart < rightStart
+		leftStart, leftOK := left.Start.Instant()
+		rightStart, rightOK := right.Start.Instant()
+		if leftOK == nil && rightOK == nil && !leftStart.Equal(rightStart) {
+			return leftStart.Before(rightStart)
+		}
+		if leftOK == nil && rightOK == nil && left.Start.IsAllDay() != right.Start.IsAllDay() {
+			return left.Start.IsAllDay()
+		}
+		if leftOK == nil && rightOK != nil {
+			return true
+		}
+		if leftOK != nil && rightOK == nil {
+			return false
+		}
+		leftValue, rightValue := left.Start.Date+left.Start.DateTime, right.Start.Date+right.Start.DateTime
+		if leftValue != rightValue {
+			return leftValue < rightValue
 		}
 		if left.CalendarID != right.CalendarID {
 			return left.CalendarID < right.CalendarID
@@ -657,20 +714,29 @@ func toUISource(source calendar.SourceStatus) uiSourceStatus {
 	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Complete: source.Complete}
 	if source.Error != nil {
 		converted := safeUIError(source.Error)
+		converted.Provider = source.Provider
+		converted.CalendarID = source.CalendarID
 		result.Error = &converted
 	}
 	return result
 }
 
 func failedUISource(provider, calendarID string, err error) uiSourceStatus {
+	if provider == "" {
+		provider = uiCalendarProvider(calendarID)
+	}
 	converted := safeUIError(err)
-	if converted.Provider == "" {
-		converted.Provider = provider
-	}
-	if converted.CalendarID == "" {
-		converted.CalendarID = calendarID
-	}
+	converted.Provider = provider
+	converted.CalendarID = calendarID
 	return uiSourceStatus{Provider: converted.Provider, CalendarID: calendarID, Complete: false, Error: &converted}
+}
+
+func uiCalendarProvider(calendarID string) string {
+	provider, _, found := strings.Cut(calendarID, ":")
+	if !found {
+		return ""
+	}
+	return provider
 }
 
 func safeUIError(err error) uiError {
@@ -678,8 +744,16 @@ func safeUIError(err error) uiError {
 	if !errors.As(err, &apiErr) {
 		return uiError{Code: calendar.ErrorProviderUnavailable, Message: "Calendar provider is temporarily unavailable", Retryable: true}
 	}
-	message := apiErr.Message
+	message := "Calendar operation could not be completed"
 	switch apiErr.Code {
+	case calendar.ErrorInvalidArgument:
+		message = "The calendar request is invalid"
+	case calendar.ErrorInvalidRecurrence:
+		message = "The event recurrence is invalid"
+	case calendar.ErrorUnsupportedCapability:
+		message = "This calendar operation is not supported"
+	case calendar.ErrorConflict:
+		message = "The event changed elsewhere; refresh and try again"
 	case calendar.ErrorProviderUnavailable:
 		message = "Calendar provider is temporarily unavailable"
 	case calendar.ErrorPermissionDenied:
@@ -688,8 +762,10 @@ func safeUIError(err error) uiError {
 		message = "The requested calendar event was not found"
 	case calendar.ErrorRateLimited:
 		message = "The calendar provider rate limited this operation"
+	case calendar.ErrorPartialFailure:
+		message = "Some calendar sources could not be loaded"
 	}
-	return uiError{Code: apiErr.Code, Message: message, Provider: apiErr.Provider, CalendarID: apiErr.CalendarID, EventID: apiErr.EventID, Retryable: apiErr.Retryable}
+	return uiError{Code: apiErr.Code, Message: message, Retryable: apiErr.Retryable}
 }
 
 func writeUIAPIError(w http.ResponseWriter, err error) {
@@ -719,7 +795,9 @@ func writeUIError(w http.ResponseWriter, status int, err error) {
 func writeUIJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Printf("calendar UI JSON response: %v", err)
+	}
 }
 
 func uniqueStrings(values []string) []string {

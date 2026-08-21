@@ -65,13 +65,13 @@
 <body>
 <main>
   <header>
-    <span class="badge">Implemented locally — not committed or deployed</span>
+    <span class="badge">PR #7 open — review fixes verified; not deployed</span>
     <h1>React Calendar Client</h1>
     <p>Make a unified, interactive calendar the primary Calendar Platform screen, migrate the small authenticated control plane to React, and support safe event viewing, creation, editing, rescheduling, and deletion across connected Google, Microsoft, and Apple calendars.</p>
     <div class="meta">
       <div><span>Plan date</span>2026-08-21</div>
       <div><span>Baseline inspected</span>origin/main @ 2350649</div>
-      <div><span>Status</span>Implementation and local QA complete</div>
+      <div><span>Status</span>PR #7 review fixes verified locally</div>
     </div>
   </header>
 
@@ -254,7 +254,7 @@ make html-check</code></pre>
 
   <section class="approval">
     <h2>Implementation Record — 2026-08-21</h2>
-    <p><strong>The user approved this plan and the implementation is complete in the local feature branch <code>feat/react-calendar-client</code>.</strong> No commit, push, pull request, deployment, database change, or real-provider calendar mutation was performed.</p>
+    <p><strong>The user approved this plan; the implementation was committed and pushed to <code>feat/react-calendar-client</code> and is under review in PR #7.</strong> CodeRabbit review fixes were implemented and verified locally. No deployment, production database change, or real-provider calendar mutation was performed.</p>
     <ul>
       <li>Added a React 19 + TypeScript + Vite authenticated application with FullCalendar, TanStack Query, React Router, custom event rendering, responsive day/week/month/list views, filters, event drawer, create/edit dialogs, recurrence-scope selection, and confirmed delete flow.</li>
       <li>Migrated Connections, Sync Rules, Runs, and Settings into the React shell while preserving ordinary top-level OAuth navigation and existing CSRF-protected form mutations.</li>
@@ -264,17 +264,18 @@ make html-check</code></pre>
     </ul>
     <h3>Verification completed</h3>
     <ul>
-      <li><code>npm --prefix frontend test -- --run</code>: 6 tests passed.</li>
+      <li><code>npm --prefix frontend test -- --run</code>: 11 tests passed.</li>
       <li><code>npm --prefix frontend run typecheck</code>: passed.</li>
       <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build make build</code>: passed, including the production Vite build and embedded Go binary.</li>
       <li><code>go test -race -count=1 ./...</code> and <code>go vet ./...</code>: passed outside the sandbox because existing provider tests open loopback listeners.</li>
-      <li>In-app browser QA at 1536×1024 and 390×844 used an in-memory synthetic API only. Calendar views, filters, event drawer, create, recurring edit scope, delete scope/cancel, control-plane routes, and mobile event form worked; console warnings/errors were empty.</li>
+      <li><code>docker build --file Dockerfile --tag calendar-mcp:pr7-review .</code>: passed using the same multi-stage frontend and Go build path added to pull-request CI.</li>
+      <li>In-app browser QA at desktop and 390×844 used a local empty SQLite platform instance only. The calendar shell, responsive layout, create dialog, Escape dismissal, focus restoration, and control-plane redirect status message worked; console warnings/errors were empty.</li>
     </ul>
     <h3>Known limitations and follow-ups</h3>
     <ul>
       <li>No live-provider write verification was authorized. Notification suppression is enforced and covered by handler tests, but the first real mutation still requires a dedicated empty calendar and explicit confirmation.</li>
       <li>Automated frontend coverage currently focuses on data contracts and safe payload mapping; broader component-level drag rollback, focus, and stale-ETag interaction tests remain valuable follow-up hardening.</li>
-      <li>Docker image execution was not tested because no Docker daemon was available in the development environment; the Dockerfile build order is covered structurally by the same successful frontend and Go build commands.</li>
+      <li>The Docker image was built but not run. The browser smoke test used the freshly built local binary and embedded frontend bundle.</li>
       <li>Attendees, RSVP, reminders, conferencing, attachments, search, natural-language creation, offline/PWA, and cross-calendar moves remain deferred by design.</li>
     </ul>
   </section>

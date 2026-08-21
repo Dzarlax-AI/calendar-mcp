@@ -48,6 +48,9 @@ jobs:
           mkdir -p internal/web/spa/dist
           cp -R frontend/dist/. internal/web/spa/dist/
 
+      - name: Verify Docker image build
+        run: docker build --file Dockerfile --tag calendar-mcp:ci .
+
       - name: Test
         run: go test -race -count=1 ./...
 
@@ -96,7 +99,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/calendar-mcp
+          images: ghcr.io/dzarlax-ai/calendar-mcp
           tags: |
             type=raw,value=latest
             type=sha,prefix=,format=short

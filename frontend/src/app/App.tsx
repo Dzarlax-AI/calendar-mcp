@@ -23,10 +23,11 @@ const navItems = [
 ];
 
 function SuspendedRoute() {
-  return <div className="route-loading"><LoaderCircle className="spin" size={22} /><span>Loading view</span></div>;
+  return <div className="route-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={22} aria-hidden="true" /><span>Loading view</span></div>;
 }
 
-function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+function Sidebar({ open, onClose, username }: { open: boolean; onClose: () => void; username?: string }) {
+  const accountLabel = username?.trim() || "Calendar account";
   return <aside className={`app-sidebar ${open ? "is-open" : ""}`} aria-label="Primary navigation">
     <div className="brand-row">
       <CalendarDays size={25} strokeWidth={2.2} />
@@ -40,7 +41,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     </nav>
     <div className="sidebar-bottom">
       <div className="sidebar-note"><span className="status-dot" /> <span>Synced calendars stay in one view.</span></div>
-      <div className="user-chip"><div className="avatar">{initials("Calendar")}</div><div className="user-copy"><strong>Calendar account</strong><span>Control plane</span></div><span className="user-caret">⌄</span></div>
+      <div className="user-chip"><div className="avatar">{initials(accountLabel)}</div><div className="user-copy"><strong>{accountLabel}</strong><span>Control plane</span></div><span className="user-caret">⌄</span></div>
     </div>
   </aside>;
 }
@@ -58,7 +59,7 @@ function Header({ onMenu }: { onMenu: () => void }) {
 
 function BootstrapGate() {
   const bootstrap = useBootstrap();
-  if (bootstrap.isPending) return <div className="app-gate"><LoaderCircle className="spin" size={26} /><p>Loading your calendar</p></div>;
+  if (bootstrap.isPending) return <div className="app-gate" role="status" aria-live="polite"><LoaderCircle className="spin" size={26} aria-hidden="true" /><p>Loading your calendar</p></div>;
   if (bootstrap.isError) return <div className="app-gate"><div className="empty-illustration"><CalendarDays size={30} /></div><h1>Calendar is unavailable</h1><p>We couldn't load the authenticated calendar workspace. Try refreshing the page.</p><button className="button button-primary" onClick={() => void bootstrap.refetch()}>Try again</button></div>;
   return <Workspace bootstrap={bootstrap.data} />;
 }
@@ -68,7 +69,7 @@ function Workspace({ bootstrap }: { bootstrap: Bootstrap }) {
   const location = useLocation();
   const calendarRoute = location.pathname === "/app";
   return <div className="app-frame">
-    {!calendarRoute && <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />}
+    {!calendarRoute && <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} username={bootstrap.username} />}
     {!calendarRoute && sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
     <div className="app-content">{!calendarRoute && <Header onMenu={() => setSidebarOpen(true)} />}<BootstrapContext.Provider value={bootstrap}><Suspense fallback={<SuspendedRoute />}><Outlet /></Suspense></BootstrapContext.Provider></div>
   </div>;

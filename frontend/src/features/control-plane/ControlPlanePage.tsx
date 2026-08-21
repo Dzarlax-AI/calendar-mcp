@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, ChevronRight, CircleAlert, ExternalLink, KeyRound, Link2, ListChecks, PlayCircle, Plus, RefreshCw, Settings2, ShieldCheck } from "lucide-react";
 import { useBootstrapData } from "../../app/App";
 import { EmptyState } from "../../components/AsyncState";
@@ -7,10 +7,33 @@ import type { CalendarRecord } from "../../lib/types";
 
 export type ControlPlaneSection = "connections" | "rules" | "rule-new" | "runs" | "settings";
 
+const flashMessages: Record<string, string> = {
+  connected: "Connection verified and calendars discovered.",
+  connection_deleted: "Connection deleted.",
+  connection_in_use: "This connection is used by a sync rule and cannot be deleted.",
+  connection_delete_failed: "The connection could not be deleted.",
+  connection_failed: "The connection could not be saved.",
+  rule_created: "Rule saved paused and a dry run was queued.",
+  rule_enabled: "Rule enabled.",
+  run_queued: "Run queued.",
+  dry_run_required: "A successful dry run is required before enablement.",
+  oauth_start_failed: "Authorization could not be started. Try again.",
+  oauth_rejected: "The provider rejected the authorization request.",
+  oauth_failed: "Authorization could not be completed. Start the connection again.",
+  verification_failed: "Credentials were accepted but calendar access could not be verified.",
+  invalid_rule: "The sync rule settings are invalid.",
+  queue_failed: "The rule was saved, but its dry run could not be queued.",
+};
+
+const successStatuses = new Set(["connected", "connection_deleted", "rule_created", "rule_enabled", "run_queued"]);
+
 export default function ControlPlanePage({ section }: { section: ControlPlaneSection }) {
   const bootstrap = useBootstrapData();
+  const [searchParams] = useSearchParams();
+  const status = searchParams.get("status") ?? "";
+  const flash = flashMessages[status];
   const titles: Record<ControlPlaneSection, string> = { connections: "Connections", rules: "Sync Rules", "rule-new": "New sync rule", runs: "Runs", settings: "Settings" };
-  return <main className="control-plane-page"><div className="page-heading"><div><h1>{titles[section]}</h1><p>{section === "connections" ? "Manage the calendars that feed your unified view." : section === "rules" || section === "rule-new" ? "Control the one-way sync rules between connected calendars." : section === "runs" ? "Review recent sync activity and provider outcomes." : "Review the browser connection and MCP endpoint settings."}</p></div>{section === "rules" && <Link className="button button-primary" to="/rules/new"><Plus size={17} /> New rule</Link>}</div>{section === "connections" && <Connections calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "rules" && <Rules calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "rule-new" && <RuleForm calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "runs" && <Runs />}{section === "settings" && <Settings csrfToken={bootstrap.csrf_token} />}</main>;
+  return <main className="control-plane-page"><div className="page-heading"><div><h1>{titles[section]}</h1><p>{section === "connections" ? "Manage the calendars that feed your unified view." : section === "rules" || section === "rule-new" ? "Control the one-way sync rules between connected calendars." : section === "runs" ? "Review recent sync activity and provider outcomes." : "Review the browser connection and MCP endpoint settings."}</p></div>{section === "rules" && <Link className="button button-primary" to="/rules/new"><Plus size={17} /> New rule</Link>}</div>{flash && <div className={`flash-message ${successStatuses.has(status) ? "success" : "error"}`} role={successStatuses.has(status) ? "status" : "alert"}>{successStatuses.has(status) ? <CheckCircle2 size={17} aria-hidden="true" /> : <CircleAlert size={17} aria-hidden="true" />}<span>{flash}</span></div>}{section === "connections" && <Connections calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "rules" && <Rules calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "rule-new" && <RuleForm calendars={bootstrap.calendars} csrfToken={bootstrap.csrf_token} />}{section === "runs" && <Runs />}{section === "settings" && <Settings csrfToken={bootstrap.csrf_token} />}</main>;
 }
 
 function Connections({ calendars, csrfToken }: { calendars: CalendarRecord[]; csrfToken: string }) {
