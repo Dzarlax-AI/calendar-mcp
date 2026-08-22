@@ -1,6 +1,7 @@
 import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncRule } from "./types";
 
 const API_ROOT = "/api/ui";
+const MAX_BROWSER_WARNINGS = 3;
 
 export class APIError extends Error {
   readonly status: number;
@@ -80,11 +81,11 @@ export function updateEvent(csrfToken: string, calendarId: string, eventId: stri
 
 export function deleteEvent(csrfToken: string, calendarId: string, eventId: string, payload: Pick<EventUpdateRequest, "scope" | "expected_etag" | "effective_from"> = {}): Promise<{ warnings?: string[] }> {
   const params = new URLSearchParams({ calendar_id: calendarId, event_id: eventId });
-  return request<{ warnings?: string[] }>(`/event?${params.toString()}`, {
+  return request<{ warnings?: unknown }>(`/event?${params.toString()}`, {
     method: "DELETE",
     headers: csrfHeaders(csrfToken),
     body: JSON.stringify(payload),
-  });
+  }).then((result) => ({ warnings: safeWarnings(result.warnings) }));
 }
 
 type RawCalendar = { id: string; name: string; provider?: string; connection_name?: string; time_zone?: string; timezone?: string; can_read?: boolean; can_write?: boolean; supports_recurrence?: boolean; color?: string };
@@ -131,7 +132,7 @@ function normalizeEvent(raw: RawEvent | RawOperationResult): EventRecord {
 
 function safeWarnings(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const warnings = value.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 200);
+  const warnings = value.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 200).slice(0, MAX_BROWSER_WARNINGS);
   return warnings.length ? warnings : undefined;
 }
 function normalizeEventList(raw: RawEventListResponse): EventListResponse {

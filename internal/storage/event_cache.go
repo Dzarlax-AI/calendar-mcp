@@ -523,12 +523,20 @@ func (s *Store) UpsertCachedEvent(ctx context.Context, event calendar.EventV2, s
 	if event.CalendarID == "" {
 		return errors.New("cached event calendar ID is required")
 	}
-	generation, err := s.calendarSyncGeneration(ctx, event.CalendarID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert cached event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	state, err := selectCalendarSyncStateForUpdate(ctx, s, tx, event.CalendarID)
 	if err != nil {
 		return err
 	}
-	if err := upsertCachedEvent(ctx, s, s.db, event, event.ID, generation, syncedAt); err != nil {
+	if err := upsertCachedEvent(ctx, s, tx, event, event.ID, state.Generation, syncedAt); err != nil {
 		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert cached event: %w", err)
 	}
 	return nil
 }
@@ -537,27 +545,26 @@ func (s *Store) DeleteCachedEvent(ctx context.Context, ref calendar.EventRef, sy
 	if ref.CalendarID == "" || ref.EventID == "" {
 		return errors.New("cached event reference requires calendar and event IDs")
 	}
-	generation, err := s.calendarSyncGeneration(ctx, ref.CalendarID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete cached event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	state, err := selectCalendarSyncStateForUpdate(ctx, s, tx, ref.CalendarID)
 	if err != nil {
 		return err
 	}
-	return tombstoneCachedEvent(ctx, s, s.db, ref, generation, syncedAt)
+	if err := tombstoneCachedEvent(ctx, s, tx, ref, state.Generation, syncedAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete cached event: %w", err)
+	}
+	return nil
 }
 
 type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}
-
-func (s *Store) calendarSyncGeneration(ctx context.Context, calendarID string) (int64, error) {
-	var generation int64
-	err := s.db.QueryRowContext(ctx, s.query(`SELECT generation FROM calendar_sync_state WHERE calendar_id=?`), calendarID).Scan(&generation)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read calendar sync generation: %w", err)
-	}
-	return generation, nil
 }
 
 func upsertCachedEvent(ctx context.Context, s *Store, db execer, event calendar.EventV2, sourceObjectID string, generation int64, syncedAt time.Time) error {
@@ -592,7 +599,7 @@ func upsertCachedEvent(ctx context.Context, s *Store, db execer, event calendar.
 		payload_json=excluded.payload_json, start_at=excluded.start_at, end_at=excluded.end_at, start_date=excluded.start_date,
 		end_date=excluded.end_date, deleted=excluded.deleted, sync_generation=excluded.sync_generation,
 		provider_updated_at=excluded.provider_updated_at, synced_at=excluded.synced_at`
-	if _, err := db.ExecContext(ctx, s.query(q), event.CalendarID, event.ID, sourceObjectID, event.ETag, string(payload), startAt, endAt,
+	if _, err := db.ExecContext(ctx, s.query(q), event.CalendarID, event.ID, sourceObjectID, event.ETag, payload, startAt, endAt,
 		startDate, endDate, false, generation, event.Updated, syncedAt); err != nil {
 		return fmt.Errorf("upsert cached event: %w", err)
 	}

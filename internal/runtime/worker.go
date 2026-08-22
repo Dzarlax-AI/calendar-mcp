@@ -225,8 +225,10 @@ func maintainCalendarSyncLease(ctx context.Context, ticks <-chan time.Time, rene
 				return nil
 			}
 			if err := renew(at); err != nil {
-				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-					return nil
+				if ctx.Err() != nil {
+					// Work completion can race the final lease release; once the
+					// heartbeat is stopped, that renewal result is not a failure.
+					return nil //nolint:nilerr
 				}
 				cancelWork()
 				return fmt.Errorf("renew calendar sync lease: %w", err)

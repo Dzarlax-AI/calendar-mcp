@@ -77,15 +77,15 @@ Small-model agents must stop and report when the frozen interface is insufficien
 - `internal/storage/event_cache_test.go` — dialect-neutral storage behavior tests.
 - `internal/eventsync/service.go` — provider-agnostic initial/incremental sync coordinator.
 - `internal/eventsync/service_test.go` — replay, cursor, generation sweep, and failure tests.
-- `internal/google/sync.go` and `internal/google/sync_test.go` — Google `syncToken` adapter.
-- `internal/microsoft/sync.go` and `internal/microsoft/sync_test.go` — Graph `calendarView/delta` adapter.
+- `internal/google/event_sync.go` and `internal/google/event_sync_test.go` — Google `syncToken` adapter.
+- `internal/microsoft/event_sync.go` and `internal/microsoft/event_sync_test.go` — Graph `calendarView/delta` adapter.
 - `internal/apple/event_sync.go` and `internal/apple/event_sync_test.go` — WebDAV sync-collection and cursorless replacement fallback adapter.
 
 **Modify**
 
 - `internal/storage/store.go` — sequential migrations through schema version 2.
 - `internal/storage/models.go` — cached event and calendar sync-state models.
-- `internal/calendar/provider.go` — opaque incremental-sync capability contract.
+- `internal/calendar/event_sync.go` — opaque incremental-sync capability contract.
 - `internal/config/config.go` — feature flag, cache window, and provider polling intervals.
 - `internal/runtime/worker.go` — claim and execute due calendar syncs alongside existing rule jobs.
 - `internal/runtime/serve.go` — construct/inject the read model without starting background work in the web process.
@@ -94,8 +94,8 @@ Small-model agents must stop and report when the frozen interface is insufficien
 - `internal/web/server.go` — route registration and no-store response policy.
 - `frontend/src/lib/types.ts` and `frontend/src/lib/api.ts` — sync status response types and refresh request.
 - `frontend/src/features/calendar/CalendarPage.tsx` — stale/syncing/failed source status and refresh affordance.
-- `/Users/dzarlax/Projects/Code/Personal/personal_ai_stack/deploy/calendar-mcp/docker-compose.yml` — enable the existing worker only after a production preflight.
-- `/Users/dzarlax/Projects/Code/Personal/personal_ai_stack/deploy/calendar-mcp/.env.example` — document non-secret read-model settings.
+- `personal_ai_stack/deploy/calendar-mcp/docker-compose.yml` — enable the existing worker only after a production preflight.
+- `personal_ai_stack/deploy/calendar-mcp/.env.example` — document non-secret read-model settings.
 
 ### Task 1: Add schema version 2 and migration sequencing
 
@@ -261,7 +261,7 @@ Expected: FAIL because the coordinator is absent.
 
 - [x] **Step 3: Implement the coordinator**
 
-`eventsync.Service.RunOne` builds the routed provider, drains pages, applies each idempotently, advances the cursor only on the final page, performs full-sync sweep only after success, and schedules the next attempt. Authentication/schema errors move the source to `error`; transient provider errors use bounded exponential backoff capped at the provider polling interval.
+`eventsync.Service.RunOne` builds the routed provider, drains pages, applies each idempotently, advances the cursor only on the final page, performs full-sync sweep only after success, and schedules the next attempt. Authentication/schema errors park the source; transient provider errors use the configured bounded retry delay, capped at the provider polling interval unless the provider supplies `Retry-After`.
 
 - [x] **Step 4: Verify coordinator behavior**
 
@@ -386,7 +386,9 @@ Review corrections recorded here: Google initial bounds were removed for token c
 
 Post-PR automated review corrections: cached series masters are retained for reconciliation but excluded from the recurrence-expanded browser response; Apple resources containing multiple master VEVENTs are exposed read-only until member-addressed provider mutations exist; and recurrence-scoped deletes immediately reconcile every visible cached occurrence while preserving returned following-scope events.
 
-Final local checks passed: `GOCACHE=/private/tmp/calendar-mcp-go-race go test -race -count=1 ./...`; `go vet ./...`; server build; frontend Vitest 19/19, typecheck, and production build; `git diff --check`; an independent Terra-high cumulative review (approved); and a final Sol cumulative review with the corrections above.
+CodeRabbit follow-up corrections: write-through generation reads and writes are now one row-locked transaction; Graph invalidates replacement continuation state through the bounded reset path; page/reset capacity limits retry instead of parking; heartbeat shutdown cannot turn a successful final commit into a lease-loss failure; Google requests the supported 2500-item page size; browser polling and warning bounds reset safely; and an opt-in `TEST_POSTGRES_URL` integration path covers production JSONB/timestamp bindings when a test database is available.
+
+Final local checks passed: `GOCACHE=/private/tmp/calendar-mcp-rabbit-race go test -race -count=1 ./...`; `go vet ./...`; server build; frontend Vitest 20/20, typecheck, and production build; `git diff --check`; an independent Terra-high cumulative review (approved); final Sol cumulative review; GitHub Codex review; and CodeRabbit review with the corrections above.
 
 Limitations: this session did not validate a live PostgreSQL `TEST_POSTGRES_URL`, run migration/worker/flag deployment, verify production providers or data, or perform the Task 8 comparisons. Apple fallback refetches all current ICS resources, and a daily Google replacement seed can be expensive. Rollback remains `EVENT_READ_MODEL_ENABLED=false`; schema changes are additive and inert. Terra/Luna executed the primary implementation lanes and reviews; Sol coordinated, performed the cumulative review and narrow corrections, and ran final verification. Git/PR preparation was separately authorized after the implementation gate; no production mutation was authorized or performed.
 

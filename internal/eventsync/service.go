@@ -95,7 +95,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			return err
 		}
 		if pages >= policy.MaxPages {
-			return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrPageLimit)
+			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrPageLimit)
 		}
 		page, callErr := syncer.SyncEvents(ctx, calendar.EventSyncRequest{
 			CalendarID: providerCalendarID,
@@ -118,7 +118,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		if page.ResetRequired {
 			resets++
 			if resets > policy.MaxResets {
-				return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrResetLimit)
+				return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrResetLimit)
 			}
 			reset, resetErr := s.Store.ResetCalendarSync(ctx, state, s.now())
 			if err := ctx.Err(); err != nil {

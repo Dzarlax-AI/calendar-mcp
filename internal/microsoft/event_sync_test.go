@@ -25,13 +25,16 @@ func TestMicrosoftEventSyncReplacementStartsDeltaWithFrozenWindow(t *testing.T) 
 	window := syncWindow()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/me/calendars/team/calendarView/delta" {
-			t.Fatalf("path = %q", r.URL.Path)
+			t.Errorf("path = %q", r.URL.Path)
+			return
 		}
 		if got := r.URL.Query().Get("startDateTime"); got != window.Start.Format(time.RFC3339) {
-			t.Fatalf("startDateTime = %q", got)
+			t.Errorf("startDateTime = %q", got)
+			return
 		}
 		if got := r.URL.Query().Get("endDateTime"); got != window.End.Format(time.RFC3339) {
-			t.Fatalf("endDateTime = %q", got)
+			t.Errorf("endDateTime = %q", got)
+			return
 		}
 		_, _ = io.WriteString(w, `{"value":[],"@odata.deltaLink":"`+serverURL(r)+`/delta?token=opaque"}`)
 	}))
@@ -44,13 +47,13 @@ func TestMicrosoftEventSyncReplacementStartsDeltaWithFrozenWindow(t *testing.T) 
 }
 
 func TestMicrosoftEventSyncDrainsNextLinkAndReturnsDeltaLink(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		baseURL := serverURL(r)
 		switch r.URL.Path {
 		case "/me/calendars/team/calendarView/delta":
-			_, _ = fmt.Fprintf(w, `{"value":[%s],"@odata.nextLink":%q}`, syncEventJSON("one", "2026-08-22T10:00:00", "2026-08-22T11:00:00"), server.URL+"/page-two?opaque=next")
+			_, _ = fmt.Fprintf(w, `{"value":[%s],"@odata.nextLink":%q}`, syncEventJSON("one", "2026-08-22T10:00:00", "2026-08-22T11:00:00"), baseURL+"/page-two?opaque=next")
 		case "/page-two":
-			_, _ = fmt.Fprintf(w, `{"value":[%s],"@odata.deltaLink":%q}`, syncEventJSON("two", "2026-08-22T12:00:00", "2026-08-22T13:00:00"), server.URL+"/delta?opaque=cursor")
+			_, _ = fmt.Fprintf(w, `{"value":[%s],"@odata.deltaLink":%q}`, syncEventJSON("two", "2026-08-22T12:00:00", "2026-08-22T13:00:00"), baseURL+"/delta?opaque=cursor")
 		default:
 			http.NotFound(w, r)
 		}
@@ -68,9 +71,8 @@ func TestMicrosoftEventSyncDrainsNextLinkAndReturnsDeltaLink(t *testing.T) {
 }
 
 func TestMicrosoftEventSyncDeletesRemovedAndMovedOutsideWindow(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprintf(w, `{"value":[{"id":"removed","@removed":{"reason":"deleted"}},%s],"@odata.deltaLink":%q}`, syncEventJSON("moved", "2026-08-22T18:00:00", "2026-08-22T19:00:00"), server.URL+"/delta?opaque=cursor")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"value":[{"id":"removed","@removed":{"reason":"deleted"}},%s],"@odata.deltaLink":%q}`, syncEventJSON("moved", "2026-08-22T18:00:00", "2026-08-22T19:00:00"), serverURL(r)+"/delta?opaque=cursor")
 	}))
 	defer server.Close()
 	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "team", Window: syncWindow(), Mode: calendar.EventSyncReplacement})
@@ -112,9 +114,8 @@ func TestMicrosoftEventSyncWindowUsesHalfOpenOverlap(t *testing.T) {
 }
 
 func TestMicrosoftEventSyncMalformedTimesAreProtocolErrors(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprintf(w, `{"value":[{"id":"invalid","start":{"dateTime":"not-a-time","timeZone":"UTC"},"end":{"dateTime":"2026-08-22T10:00:00","timeZone":"UTC"}}],"@odata.deltaLink":%q}`, server.URL+"/delta?opaque=cursor")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"value":[{"id":"invalid","start":{"dateTime":"not-a-time","timeZone":"UTC"},"end":{"dateTime":"2026-08-22T10:00:00","timeZone":"UTC"}}],"@odata.deltaLink":%q}`, serverURL(r)+"/delta?opaque=cursor")
 	}))
 	defer server.Close()
 	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "team", Window: syncWindow(), Mode: calendar.EventSyncReplacement})
@@ -143,6 +144,10 @@ func TestMicrosoftEventSyncInvalidDeltaResetsWithoutMutations(t *testing.T) {
 	page, err := (&Provider{client: server.Client(), baseURL: server.URL}).SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "team", Window: syncWindow(), Mode: calendar.EventSyncIncremental, Cursor: calendar.EventSyncCursor(server.URL + "/delta?opaque=cursor")})
 	if err != nil || !page.ResetRequired || len(page.Upserts) != 0 || page.NextCursor != "" || page.NextPageToken != "" {
 		t.Fatalf("page=%#v err=%v", page, err)
+	}
+	page, err = (&Provider{client: server.Client(), baseURL: server.URL}).SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "team", Window: syncWindow(), Mode: calendar.EventSyncReplacement, PageToken: calendar.EventSyncPageToken(server.URL + "/page-two?opaque=next")})
+	if err != nil || !page.ResetRequired || len(page.Upserts) != 0 {
+		t.Fatalf("replacement continuation page=%#v err=%v", page, err)
 	}
 }
 

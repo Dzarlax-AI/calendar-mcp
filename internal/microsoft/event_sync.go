@@ -40,7 +40,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 
 	var response graphDeltaPage
 	if err := p.getDeltaPage(ctx, next, &response); err != nil {
-		if request.Mode == calendar.EventSyncIncremental && isInvalidDeltaState(err) {
+		if isInvalidDeltaState(err) {
 			return calendar.EventSyncPage{ResetRequired: true}, nil
 		}
 		return calendar.EventSyncPage{}, syncErrorForDelta(err)
@@ -149,7 +149,7 @@ func (p *Provider) getDeltaPage(ctx context.Context, rawURL string, out *graphDe
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode >= http.StatusBadRequest {
 		var graphErr struct {
 			Error struct {

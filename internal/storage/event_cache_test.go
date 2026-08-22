@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -46,6 +48,46 @@ func TestMigrateFreshAndIdempotentEventReadModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSchemaVersion(t, store, 2)
+}
+
+func TestPostgresEventReadModelIntegration(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not configured")
+	}
+	store, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	connectionID := "event-read-model-test-" + suffix
+	calendarID := "event-read-model-calendar-" + suffix
+	now := time.Now().UTC()
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), connectionID)
+	})
+	if err := store.CreateConnection(t.Context(), Connection{ID: connectionID, Provider: "google", DisplayName: "Integration", Status: "connected", EncryptedCredentials: []byte("test"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertCalendar(t.Context(), Calendar{ID: calendarID, ConnectionID: connectionID, ProviderCalendarID: "primary", Name: "Integration", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	window := SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, window); err != nil {
+		t.Fatal(err)
+	}
+	event := calendar.EventV2{ID: "event", CalendarID: calendarID, Provider: "google", Start: calendar.EventTime{DateTime: now.Format(time.RFC3339), TimeZone: "UTC"}, End: calendar.EventTime{DateTime: now.Add(30 * time.Minute).Format(time.RFC3339), TimeZone: "UTC"}}
+	if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := store.ListCachedEvents(t.Context(), []string{calendarID}, window.Start, window.End)
+	if err != nil || len(events) != 1 || events[0].ID != event.ID {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
 }
 
 func TestCachedEventsOverlapReplayAndTombstones(t *testing.T) {

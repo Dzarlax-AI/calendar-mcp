@@ -145,6 +145,27 @@ func TestAppleEventSyncFallsBackToCursorlessReplacementWithInventoryETags(t *tes
 	}
 }
 
+func TestAppleEventSyncFallbackCanonicalizesObjectMissingDuringFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case "PROPFIND":
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(inventoryResponse(changedObject("/calendar//gone.ics", `"etag"`))))
+		case http.MethodGet:
+			http.NotFound(w, r)
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
+	if err != nil || !page.Complete || len(page.DeletedObjectIDs) != 1 || page.DeletedObjectIDs[0] != "/calendar/gone.ics" {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
 func TestAppleEventSyncFamilySharingReportFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

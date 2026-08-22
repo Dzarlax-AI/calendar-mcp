@@ -73,6 +73,11 @@ export default function CalendarPage() {
   const calendarEvents = useMemo(() => events.map((event) => toCalendarEvent(event, calendarById.get(event.calendarId))), [events, calendarById]);
 
   const invalidateEvents = () => void queryClient.invalidateQueries({ queryKey: ["events"] });
+  useEffect(() => {
+    setPollingAttempts(0);
+    setPollingCapped(false);
+    lastPolledDataUpdatedAtRef.current = 0;
+  }, [range?.start, range?.end, sortedSelectedCalendarIds]);
   const refreshMutation = useMutation({
     mutationFn: (calendarIds: string[]) => Promise.all(calendarIds.map((calendarId) => refreshCalendar(csrfToken, calendarId))),
     onSuccess: () => setNotice("Calendar refresh queued"),

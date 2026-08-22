@@ -362,6 +362,33 @@ func TestRunOneParksNonRetryableAndRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+func TestRunOneRetriesCapacityLimitsInsteadOfParking(t *testing.T) {
+	t.Run("page limit", func(t *testing.T) {
+		store := &fakeStore{}
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{NextPageToken: "next"}}}
+		service := newService(store, provider)
+		service.PolicyFor = func(calendar.Provider) calendar.EventSyncPolicy {
+			return calendar.EventSyncPolicy{PollInterval: time.Minute, RetryBase: time.Second, RetryMax: time.Minute, MaxPages: 1, MaxResets: 1}
+		}
+		err := service.RunOne(t.Context(), testState("cursor"))
+		if !errors.Is(err, ErrPageLimit) || len(store.fails) != 1 || store.fails[0] != string(calendar.EventSyncTransient) || len(store.parks) != 0 {
+			t.Fatalf("error=%v fails=%#v parks=%#v", err, store.fails, store.parks)
+		}
+	})
+	t.Run("reset limit", func(t *testing.T) {
+		store := &fakeStore{}
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{ResetRequired: true}, {ResetRequired: true}}}
+		service := newService(store, provider)
+		service.PolicyFor = func(calendar.Provider) calendar.EventSyncPolicy {
+			return calendar.EventSyncPolicy{PollInterval: time.Minute, RetryBase: time.Second, RetryMax: time.Minute, MaxPages: 3, MaxResets: 1}
+		}
+		err := service.RunOne(t.Context(), testState("cursor"))
+		if !errors.Is(err, ErrResetLimit) || len(store.fails) != 1 || store.fails[0] != string(calendar.EventSyncTransient) || len(store.parks) != 0 {
+			t.Fatalf("error=%v fails=%#v parks=%#v", err, store.fails, store.parks)
+		}
+	})
+}
+
 func TestRunOneCancellationDoesNotFail(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

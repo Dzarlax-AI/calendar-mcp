@@ -109,7 +109,7 @@ func (p *Provider) syncCollection(ctx context.Context, calendarID string, token 
 	if err != nil {
 		return appleSyncChanges{}, false, false, appleEventSyncError(calendar.EventSyncTransient)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusMultiStatus {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
@@ -228,11 +228,14 @@ func xmlEscape(value string) string {
 }
 
 func retryAfter(header http.Header) time.Duration {
-	seconds, err := strconv.Atoi(header.Get("Retry-After"))
-	if err != nil || seconds <= 0 {
-		return 0
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
-	return time.Duration(seconds) * time.Second
+	if when, err := http.ParseTime(value); err == nil {
+		return max(0, time.Until(when))
+	}
+	return 0
 }
 
 func (p *Provider) pageFromChanges(ctx context.Context, request calendar.EventSyncRequest, changes appleSyncChanges) (calendar.EventSyncPage, error) {
@@ -403,9 +406,9 @@ func (p *Provider) replacementFromInventory(ctx context.Context, request calenda
 		return calendar.EventSyncPage{}, err
 	}
 	page := calendar.EventSyncPage{Complete: true}
-	for i, item := range fetched {
+	for _, item := range fetched {
 		if item.deleted {
-			page.DeletedObjectIDs = append(page.DeletedObjectIDs, inventory[i].path)
+			page.DeletedObjectIDs = append(page.DeletedObjectIDs, item.source.path)
 			continue
 		}
 		members, err := appleSyncMembers(item.object, request)
@@ -442,7 +445,7 @@ func (p *Provider) propfindEventSyncInventory(ctx context.Context, calendarID st
 	if err != nil {
 		return nil, appleEventSyncError(calendar.EventSyncTransient)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, appleEventSyncError(calendar.EventSyncAuth)
 	}

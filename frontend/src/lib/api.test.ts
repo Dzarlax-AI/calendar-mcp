@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEvent, getBootstrap, getEvents, refreshCalendar } from "./api";
+import { createEvent, deleteEvent, getBootstrap, getEvents, refreshCalendar } from "./api";
 
 describe("browser API client", () => {
   it("normalizes the flat bootstrap contract", async () => {
@@ -29,6 +29,14 @@ describe("browser API client", () => {
     vi.stubGlobal("fetch", fetchMock);
     const created = await createEvent("csrf-token", { calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } });
     expect(created.warnings).toEqual(["Calendar data will refresh shortly."]);
+    vi.unstubAllGlobals();
+  });
+
+  it("bounds and normalizes delete reconciliation warnings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ warnings: ["one", "two", "three", "four", 5, "x".repeat(201)] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await deleteEvent("csrf-token", "c1", "e1");
+    expect(result.warnings).toEqual(["one", "two", "three"]);
     vi.unstubAllGlobals();
   });
 

@@ -285,3 +285,17 @@ func TestMaintainCalendarSyncLeaseRenewsUntilStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMaintainCalendarSyncLeaseIgnoresRenewalRaceAfterStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	workCancelled := false
+	err := maintainCalendarSyncLease(ctx, ticks, func(time.Time) error {
+		cancel()
+		return storage.ErrCalendarSyncLeaseLost
+	}, func() { workCancelled = true })
+	if err != nil || workCancelled {
+		t.Fatalf("error=%v workCancelled=%v", err, workCancelled)
+	}
+}

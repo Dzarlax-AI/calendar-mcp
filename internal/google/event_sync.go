@@ -32,7 +32,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		return calendar.EventSyncPage{}, syncProtocolError(nil)
 	}
 
-	call := p.svc.Events.List(request.CalendarID).ShowDeleted(true).SingleEvents(true)
+	call := p.svc.Events.List(request.CalendarID).ShowDeleted(true).SingleEvents(true).MaxResults(2500)
 	switch request.Mode {
 	case calendar.EventSyncReplacement:
 		if request.Window.Start.IsZero() || request.Window.End.IsZero() || !request.Window.End.After(request.Window.Start) {

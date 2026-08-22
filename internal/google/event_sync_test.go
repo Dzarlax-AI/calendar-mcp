@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,10 +23,13 @@ func syncWindow() calendar.EventSyncWindow {
 
 func TestSyncEventsReplacementUsesCompatibleParametersAndLocalProjection(t *testing.T) {
 	window := syncWindow()
-	requests := 0
+	var requests atomic.Int32
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		q := r.URL.Query()
+		if q.Get("maxResults") != "2500" {
+			t.Errorf("maxResults = %q, want 2500", q.Get("maxResults"))
+		}
 		if q.Get("timeMin") != "" || q.Get("timeMax") != "" {
 			t.Errorf("replacement included incompatible window bounds: %q", r.URL.RawQuery)
 		}
@@ -58,8 +62,8 @@ func TestSyncEventsReplacementUsesCompatibleParametersAndLocalProjection(t *test
 	if !second.Complete || second.NextPageToken != "" || second.NextCursor != "durable" || len(second.Upserts) != 1 || second.Upserts[0].Object.ObjectID != "second" {
 		t.Fatalf("second page = %#v", second)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", requests.Load())
 	}
 }
 
