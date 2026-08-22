@@ -50,6 +50,10 @@ func inventoryResponse(entries string) string {
 	return `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">` + entries + `</D:multistatus>`
 }
 
+func queryResponse(path, etag, data string) string {
+	return `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>` + path + `</D:href><D:propstat><D:prop><D:getetag>` + etag + `</D:getetag><C:calendar-data>` + data + `</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>`
+}
+
 func eventObject(uid string) string {
 	return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:" + uid + "\r\nSUMMARY:" + uid + "\r\nDTSTART:20260820T090000Z\r\nDTEND:20260820T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 }
@@ -147,20 +151,16 @@ func TestAppleEventSyncFallsBackToCursorlessReplacementWithInventoryETags(t *tes
 
 func TestAppleEventSyncInitialReplacementInventoriesWhenEmptyTokenReportHasNoChanges(t *testing.T) {
 	var reports atomic.Int32
-	var propfinds atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "REPORT":
-			reports.Add(1)
+			if reports.Add(1) == 1 {
+				w.WriteHeader(http.StatusMultiStatus)
+				_, _ = w.Write([]byte(syncResponse("current-token", false, "")))
+				return
+			}
 			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(syncResponse("current-token", false, "")))
-		case "PROPFIND":
-			propfinds.Add(1)
-			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(inventoryResponse(changedObject("/calendar/seed.ics", `"seed-etag"`))))
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "text/calendar")
-			_, _ = w.Write([]byte(eventObject("seed")))
+			_, _ = w.Write([]byte(queryResponse("/calendar/seed.ics", `"seed-etag"`, eventObject("seed"))))
 		default:
 			http.Error(w, "unexpected method", http.StatusBadRequest)
 		}
@@ -171,8 +171,8 @@ func TestAppleEventSyncInitialReplacementInventoriesWhenEmptyTokenReportHasNoCha
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if reports.Load() != 1 || propfinds.Load() != 1 || !page.Complete || page.NextCursor != "current-token" || len(page.Upserts) != 1 || len(page.Inventory) != 1 {
-		t.Fatalf("initial replacement page=%#v reports=%d propfinds=%d", page, reports.Load(), propfinds.Load())
+	if reports.Load() != 2 || !page.Complete || page.NextCursor != "current-token" || len(page.Upserts) != 1 || len(page.Inventory) != 1 {
+		t.Fatalf("initial replacement page=%#v reports=%d", page, reports.Load())
 	}
 }
 

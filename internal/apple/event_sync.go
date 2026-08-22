@@ -68,7 +68,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		// only the current token, not a complete collection snapshot. Seed the
 		// projection from an authoritative inventory and retain the token only
 		// for subsequent incremental runs.
-		page, err := p.replacementFromInventory(ctx, request)
+		page, err := p.replacementFromCalendarQuery(ctx, request)
 		if err != nil {
 			return calendar.EventSyncPage{}, err
 		}
@@ -89,6 +89,22 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 	page.Complete = true
 	page.NextCursor = calendar.EventSyncCursor(changes.syncToken)
 	return page, nil
+}
+
+func (p *Provider) replacementFromCalendarQuery(ctx context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
+	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Window.Start, End: request.Window.End}}}}
+	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
+	if err != nil {
+		return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
+	}
+	fetched := make([]appleFetchedObject, 0, len(objects))
+	for i := range objects {
+		fetched = append(fetched, appleFetchedObject{
+			source: appleSyncObject{path: objects[i].Path, etag: objects[i].ETag},
+			object: objects[i],
+		})
+	}
+	return appleReplacementPage(request, fetched)
 }
 
 func appleEventSyncError(class calendar.EventSyncErrorClass) error {
@@ -419,6 +435,10 @@ func (p *Provider) replacementFromInventory(ctx context.Context, request calenda
 	if err != nil {
 		return calendar.EventSyncPage{}, err
 	}
+	return appleReplacementPage(request, fetched)
+}
+
+func appleReplacementPage(request calendar.EventSyncRequest, fetched []appleFetchedObject) (calendar.EventSyncPage, error) {
 	page := calendar.EventSyncPage{Complete: true}
 	for _, item := range fetched {
 		if item.deleted {
