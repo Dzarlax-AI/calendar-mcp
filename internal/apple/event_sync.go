@@ -95,8 +95,15 @@ func (p *Provider) replacementFromCalendarQuery(ctx context.Context, request cal
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Window.Start, End: request.Window.End}}}}
 	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
 	if err != nil {
-		return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
+		if !strings.Contains(err.Error(), "XML syntax error") && !strings.Contains(err.Error(), "unexpected EOF") {
+			return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
+		}
+		return p.replacementFromInventory(ctx, request)
 	}
+	return appleReplacementFromObjects(request, objects)
+}
+
+func appleReplacementFromObjects(request calendar.EventSyncRequest, objects []caldav.CalendarObject) (calendar.EventSyncPage, error) {
 	fetched := make([]appleFetchedObject, 0, len(objects))
 	for i := range objects {
 		fetched = append(fetched, appleFetchedObject{
@@ -322,7 +329,10 @@ func (p *Provider) fetchSyncObjects(ctx context.Context, calendarID string, inve
 				failures.Unlock()
 				return
 			}
-			object.Path, object.ETag = path, etag
+			object.Path = path
+			if etag != "" {
+				object.ETag = etag
+			}
 			results[i].object = *object
 		}(i, path, item.etag)
 	}
@@ -501,9 +511,13 @@ func (p *Provider) propfindEventSyncInventory(ctx context.Context, calendarID st
 	for _, response := range parsed.Responses {
 		item, ok := response.syncObject()
 		if !ok {
-			if strings.HasSuffix(strings.ToLower(strings.TrimSpace(response.Href)), ".ics") {
-				return nil, appleEventSyncError(calendar.EventSyncProtocol)
+			href := strings.TrimSpace(response.Href)
+			if strings.HasSuffix(strings.ToLower(href), ".ics") {
+				item = appleSyncObject{path: href}
+				ok = true
 			}
+		}
+		if !ok {
 			continue
 		}
 		if item.deleted || !strings.HasSuffix(strings.ToLower(item.path), ".ics") {
@@ -513,6 +527,18 @@ func (p *Provider) propfindEventSyncInventory(ctx context.Context, calendarID st
 			return nil, appleEventSyncError(calendar.EventSyncProtocol)
 		}
 		inventory = append(inventory, item)
+	}
+	if len(inventory) == 0 {
+		paths, pathErr := p.propfindCalendarObjects(ctx, calendarID)
+		if pathErr != nil {
+			return nil, appleEventSyncError(calendar.EventSyncTransient)
+		}
+		for _, path := range paths {
+			if _, err := appleObjectPath(calendarID, path); err != nil {
+				return nil, appleEventSyncError(calendar.EventSyncProtocol)
+			}
+			inventory = append(inventory, appleSyncObject{path: path})
+		}
 	}
 	return inventory, nil
 }
