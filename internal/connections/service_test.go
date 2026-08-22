@@ -72,6 +72,28 @@ func TestOAuthConnectionEncryptsAndRefreshesToken(t *testing.T) {
 	}
 }
 
+func TestOAuthTokenRefreshPreservesVerifiedConnection(t *testing.T) {
+	ctx := context.Background()
+	service, store := newTestService(t)
+	verifiedAt := time.Now().UTC().Add(-time.Minute)
+	if err := service.CreateOAuth(ctx, "google-verified", "google", "Verified Google", &oauth2.Token{RefreshToken: "refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionVerification(ctx, "google-verified", "connected", "", verifiedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.OAuthTokenStore("google-verified", "google").Save(&oauth2.Token{AccessToken: "refreshed", RefreshToken: "refresh"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.ConnectionByID(ctx, "google-verified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "connected" || record.LastErrorCode != "" || record.LastVerifiedAt == nil || !record.LastVerifiedAt.Equal(verifiedAt) {
+		t.Fatalf("refreshed connection = %#v", record)
+	}
+}
+
 func TestReconnectOAuthPreservesExistingRefreshToken(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestService(t)

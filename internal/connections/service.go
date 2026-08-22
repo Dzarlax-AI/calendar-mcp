@@ -268,5 +268,5 @@ func (s *databaseTokenStore) Save(value *oauth2.Token) error {
 	if err != nil {
 		return err
 	}
-	return s.service.store.UpdateConnectionCredentials(context.Background(), s.connectionID, encrypted, credentialVersion, s.service.now())
+	return s.service.store.PersistConnectionCredentials(context.Background(), s.connectionID, encrypted, credentialVersion, s.service.now())
 }

@@ -212,6 +212,20 @@ func (s *Store) UpdateConnectionCredentials(ctx context.Context, id string, encr
 	return nil
 }
 
+// PersistConnectionCredentials stores a refreshed provider token without
+// changing the connection's verification status or error metadata.
+func (s *Store) PersistConnectionCredentials(ctx context.Context, id string, encrypted []byte, version int, updatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, s.query(`UPDATE connections SET encrypted_credentials=?, credential_version=?, updated_at=? WHERE id=?`), encrypted, version, updatedAt, id)
+	if err != nil {
+		return fmt.Errorf("persist connection credentials: %w", err)
+	}
+	changed, _ := res.RowsAffected()
+	if changed != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateConnectionVerification(ctx context.Context, id, status, errorCode string, verifiedAt time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
