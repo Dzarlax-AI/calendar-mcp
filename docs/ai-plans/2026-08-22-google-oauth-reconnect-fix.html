@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Google OAuth reconnect fix</title>
+  <style>
+    body { max-width: 820px; margin: 40px auto; padding: 0 20px; font: 16px/1.5 system-ui, sans-serif; color: #172033; }
+    h1, h2 { line-height: 1.2; }
+    code { background: #eef1f6; padding: 2px 5px; border-radius: 4px; }
+    .approved { color: #176b3a; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Google OAuth reconnect fix</h1>
+  <p class="approved">Approval: approved by the user on 2026-08-22.</p>
+  <h2>Scope and current behavior</h2>
+  <p>Fix Google reconnect when the OAuth exchange returns a new access token without a new refresh token. Production currently saves that response over the previous credentials, then ignores the saved token during provider construction and fails verification.</p>
+  <h2>Desired behavior and assumptions</h2>
+  <p>Preserve the previous refresh token when the provider omits a replacement, and use any successfully loaded saved OAuth token. Existing encrypted credential storage and provider routing remain unchanged.</p>
+  <h2>Likely files and steps</h2>
+  <ol>
+    <li>Add regression coverage in <code>internal/connections/service_test.go</code> and <code>internal/google/auth_test.go</code>.</li>
+    <li>Merge the prior refresh token during reconnect and stop rejecting access-only saved tokens.</li>
+    <li>Run focused tests, race tests, vet, and build.</li>
+  </ol>
+  <h2>QA, risks, and rollback</h2>
+  <p>QA covers both credential merge and provider HTTP authorization. Main risk is retaining a stale refresh token when Google intentionally omits it; OAuth semantics make preservation the expected behavior. Rollback is reverting the two source changes. No production mutation is part of this approved implementation step.</p>
+  <h2>Open questions and approval gate</h2>
+  <p>No open implementation questions. Commit and deployment require separate explicit approval after local verification.</p>
+  <h2>Implementation record</h2>
+  <p>Implemented on 2026-08-22. Reconnect now retains an existing refresh token when Google omits a replacement; provider construction accepts a saved access token without requiring a refresh token; Google authorization requests explicit consent so an already-damaged production connection can obtain a new refresh token.</p>
+  <p>Verification: the three focused regression tests passed; <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, and the server build all exited successfully. Production remains unchanged and still requires a deployment followed by one interactive Google reconnect.</p>
+</body>
+</html>

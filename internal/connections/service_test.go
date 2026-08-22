@@ -72,6 +72,31 @@ func TestOAuthConnectionEncryptsAndRefreshesToken(t *testing.T) {
 	}
 }
 
+func TestReconnectOAuthPreservesExistingRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	expiry := time.Now().UTC().Add(time.Hour)
+	if err := service.CreateOAuth(ctx, "google-1", "google", "Personal Google", &oauth2.Token{
+		AccessToken: "old-access", RefreshToken: "existing-refresh",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.ReconnectOAuth(ctx, "google-1", "google", &oauth2.Token{
+		AccessToken: "new-access", Expiry: expiry,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := service.OAuthTokenStore("google-1", "google").Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "existing-refresh" || !loaded.Expiry.Equal(expiry) {
+		t.Fatalf("reconnected token = %#v", loaded)
+	}
+}
+
 func TestAppleConnectionRoundTrip(t *testing.T) {
 	service, store := newTestService(t)
 	ctx := context.Background()

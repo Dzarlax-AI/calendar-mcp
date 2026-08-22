@@ -33,7 +33,7 @@ func newOAuthConfig(clientID, clientSecret string) *oauth2.Config {
 }
 
 func newHTTPClient(store token.Store, cfg *oauth2.Config, initial *oauth2.Token) *http.Client {
-	if saved, err := store.Load(); err == nil && saved.RefreshToken != "" {
+	if saved, err := store.Load(); err == nil && (saved.AccessToken != "" || saved.RefreshToken != "") {
 		initial = saved
 	}
 	ts := token.TokenSource(store, cfg, initial)

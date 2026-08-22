@@ -122,7 +122,7 @@ func Serve(_ context.Context) error {
 			oauthProviders["google"] = oauthflow.ConfigProvider{Config: &oauth2.Config{
 				ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Endpoint: googleoauth.Endpoint,
 				RedirectURL: publicURL + "/oauth/google/callback", Scopes: google.OAuthScopes(),
-			}}
+			}, AuthorizationOptions: []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("prompt", "consent")}}
 		}
 		if cfg.MS365ClientID != "" {
 			base := "https://login.microsoftonline.com/" + cfg.MS365TenantID + "/oauth2/v2.0"

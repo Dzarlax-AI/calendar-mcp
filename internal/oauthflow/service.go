@@ -24,10 +24,15 @@ type Provider interface {
 	Exchange(context.Context, string, string) (*oauth2.Token, error)
 }
 
-type ConfigProvider struct{ Config *oauth2.Config }
+type ConfigProvider struct {
+	Config               *oauth2.Config
+	AuthorizationOptions []oauth2.AuthCodeOption
+}
 
 func (p ConfigProvider) AuthorizationURL(state, challenge string) string {
-	return p.Config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("code_challenge", challenge), oauth2.SetAuthURLParam("code_challenge_method", "S256"))
+	options := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("code_challenge", challenge), oauth2.SetAuthURLParam("code_challenge_method", "S256")}
+	options = append(options, p.AuthorizationOptions...)
+	return p.Config.AuthCodeURL(state, options...)
 }
 
 func (p ConfigProvider) Exchange(ctx context.Context, code, verifier string) (*oauth2.Token, error) {

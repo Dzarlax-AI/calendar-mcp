@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +120,22 @@ func TestOAuthReconnectCarriesExactConnectionTarget(t *testing.T) {
 	}
 	if completion.Mode != "reconnect" || completion.ConnectionID != "google-account-2" || completion.ReturnPath != "/connections" {
 		t.Fatalf("completion = %#v", completion)
+	}
+}
+
+func TestConfigProviderIncludesAuthorizationOptions(t *testing.T) {
+	provider := ConfigProvider{
+		Config: &oauth2.Config{Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.example/authorize"}},
+		AuthorizationOptions: []oauth2.AuthCodeOption{
+			oauth2.SetAuthURLParam("prompt", "consent"),
+		},
+	}
+	authorizationURL := provider.AuthorizationURL("state", "challenge")
+	parsed, err := url.Parse(authorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("prompt"); got != "consent" {
+		t.Fatalf("prompt = %q", got)
 	}
 }

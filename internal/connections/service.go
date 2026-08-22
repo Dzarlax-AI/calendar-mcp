@@ -52,6 +52,9 @@ func (s *Service) ConnectOAuth(ctx context.Context, provider, displayName string
 }
 
 func (s *Service) ReconnectOAuth(ctx context.Context, id, provider string, oauthToken *oauth2.Token) error {
+	if oauthToken == nil {
+		return errors.New("OAuth token is required")
+	}
 	record, err := s.store.ConnectionByID(ctx, id)
 	if err != nil {
 		return err
@@ -59,7 +62,16 @@ func (s *Service) ReconnectOAuth(ctx context.Context, id, provider string, oauth
 	if record.Provider != provider {
 		return errors.New("connection provider mismatch")
 	}
-	if err := s.OAuthTokenStore(id, provider).Save(oauthToken); err != nil {
+	tokenStore := s.OAuthTokenStore(id, provider)
+	replacement := *oauthToken
+	if replacement.RefreshToken == "" {
+		previous, loadErr := tokenStore.Load()
+		if loadErr != nil {
+			return loadErr
+		}
+		replacement.RefreshToken = previous.RefreshToken
+	}
+	if err := tokenStore.Save(&replacement); err != nil {
 		return err
 	}
 	return s.store.UpdateConnectionVerification(ctx, id, "connected", "", s.now())
