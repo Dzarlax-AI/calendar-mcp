@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Calendar Event Read Model</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#637083; --line:#dfe4ec; --panel:#fff; --bg:#f4f6f9; --blue:#405eea; --green:#18794e; --amber:#a15c00; --red:#b42318; }
+    * { box-sizing:border-box; } body { margin:0; font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+    main { max-width:1080px; margin:auto; padding:36px 24px 64px; } h1 { margin:8px 0; font-size:34px; letter-spacing:-.03em; } h2 { margin:0 0 12px; font-size:20px; } h3 { margin:18px 0 6px; font-size:16px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; margin:16px 0; } p { margin:8px 0; } ul,ol { margin:8px 0; padding-left:22px; } li+li { margin-top:6px; }
+    code { background:#eef1f6; border-radius:5px; padding:2px 5px; } .badge { display:inline-block; color:var(--amber); background:#fff3d6; border:1px solid #f2d08a; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:700; }
+    .summary { color:var(--muted); max-width:820px; font-size:17px; } .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; } .card { border:1px solid var(--line); border-radius:10px; padding:15px; background:#fbfcfe; } .card strong { display:block; margin-bottom:5px; }
+    .flow { display:grid; grid-template-columns:1fr auto 1fr auto 1fr; gap:12px; align-items:center; text-align:center; } .node { border:1px solid #cfd7ff; background:#f2f4ff; border-radius:10px; padding:14px; font-weight:700; } .arrow { color:var(--blue); font-size:22px; }
+    .decision { border-left:4px solid var(--blue); } .risk { border-left:4px solid var(--red); } .approval { border-left:4px solid var(--amber); } .good { color:var(--green); font-weight:700; } .muted { color:var(--muted); }
+    table { width:100%; border-collapse:collapse; } th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } th { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+    a { color:var(--blue); } @media (max-width:760px) { .grid { grid-template-columns:1fr; } .flow { grid-template-columns:1fr; } .arrow { transform:rotate(90deg); } main { padding:24px 14px 48px; } }
+  </style>
+</head>
+<body><main>
+  <span class="badge">Implementation complete locally · production approval required</span>
+  <h1>Calendar Event Read Model</h1>
+  <p class="summary">Replace repeated provider reads on every calendar navigation with a durable Postgres projection maintained by incremental background synchronization.</p>
+
+  <section><h2>Task summary</h2>
+    <div class="flow"><div class="node">Google · Microsoft · Apple</div><div class="arrow">→</div><div class="node">Incremental worker + Postgres</div><div class="arrow">→</div><div class="node">Fast browser calendar</div></div>
+    <p>The providers remain authoritative. The UI reads locally and shows source freshness; writes still go to the provider first and then update/reconcile the projection.</p>
+  </section>
+
+  <section><h2>Current architecture</h2>
+    <ul><li>Every <code>/api/ui/events</code> request fans out to selected providers and drains their pagination.</li><li>React Query retains range results in memory for 15 seconds, but the backend has no event cache.</li><li>Calendar metadata is stored in Postgres; events are not. Apple Family Sharing may require hundreds of GETs through the existing fallback.</li><li>An existing worker processes rule jobs, but production compose keeps it behind the optional <code>worker</code> profile.</li></ul>
+  </section>
+
+  <section class="decision"><h2>Recommended decisions</h2>
+    <div class="grid"><div class="card"><strong>Postgres, not Redis</strong>Durable events, cursors, leases, source freshness, and replay safety live together.</div><div class="card"><strong>UI-only cutover first</strong>MCP and REST continue direct reads until the browser path is proven.</div><div class="card"><strong>Polling before webhooks</strong>Incremental polling is the correctness mechanism; webhooks later reduce latency.</div></div>
+    <p><strong>Default window:</strong> 365 days back / 730 days forward. <strong>Freshness:</strong> 60 seconds for Google/Microsoft and 5 minutes for Apple. All values are configurable.</p>
+  </section>
+
+  <section><h2>Model-led execution</h2>
+    <p><strong>Hard constraint:</strong> Terra and Luna perform at least 90% of delegable implementation and verification work. Sol owns no implementation lane and is reserved for named high-risk gates and separately authorized production actions. The percentage is an allocation target rather than a billing guarantee.</p>
+    <p><code>gpt-5.6-sol</code> high coordinates; <code>gpt-5.6-terra</code> medium/high implements Go lanes; <code>gpt-5.6-luna</code> medium/high handles fixtures and the bounded React lane. Two unsuccessful correction turns trigger Sol reassessment instead of unlimited small-model retries.</p>
+    <table><thead><tr><th>Area</th><th>Primary model</th><th>Sol gate</th></tr></thead><tbody>
+      <tr><td>Schema, projection storage, leases</td><td>Terra · high</td><td>Migration and transaction review</td></tr>
+      <tr><td>Sync coordinator</td><td>Terra · high</td><td>Terra high freezes the shared contract; Sol is reserved for unresolved high-risk gates</td></tr>
+      <tr><td>Google / Microsoft / Apple adapters</td><td>Three parallel Terra lanes</td><td>Independent provider reviews before integration</td></tr>
+      <tr><td>Fixture-heavy edge tests</td><td>Luna · medium</td><td>Coverage check against frozen contract</td></tr>
+      <tr><td>Worker and browser API</td><td>Two Terra lanes</td><td>Lease, compatibility, and ambiguous-write review</td></tr>
+      <tr><td>React freshness UX</td><td>Luna · high</td><td>Type and rendered-state review</td></tr>
+      <tr><td>Integration and full verification</td><td>Terra · high</td><td>Sol only for unresolved high-risk findings</td></tr>
+      <tr><td>Git mutation, migration, deploy</td><td>Sol only</td><td>Consequential-action exception; explicit permission required</td></tr>
+    </tbody></table>
+    <h3>Waves</h3><ol><li><strong>Terra high:</strong> freeze interfaces, invariants, and exclusive file lists; escalate only unresolved cross-cutting risks.</li><li><strong>Terra:</strong> schema/storage lane; a separate Terra-high review freezes it.</li><li><strong>Parallel Terra:</strong> one isolated provider package per agent; Luna follows with fixtures only.</li><li><strong>Parallel:</strong> Terra coordinator/worker, Terra web API, Luna frontend from one reviewed SHA.</li><li><strong>Terra high:</strong> inspect actual diffs, resolve integration, rerun all verification, and update the execution record.</li><li><strong>Sol only:</strong> commit/push/deploy after explicit permission.</li></ol>
+    <p class="muted">Each delegated task receives a self-contained <code>fork_turns="none"</code> brief with an exact base SHA, allowed files, commands, and forbidden actions. Agents may not broaden shared interfaces, commit, push, deploy, access secrets, or spawn more agents.</p>
+  </section>
+
+  <section><h2>Provider strategy</h2><table><thead><tr><th>Provider</th><th>Incremental mechanism</th><th>Recovery</th></tr></thead><tbody>
+    <tr><td>Google</td><td>Token-compatible unbounded initial feed, locally projected to a daily UTC-anchored 365/730-day window; then opaque <code>syncToken</code>.</td><td>HTTP 410 triggers replacement full sync for only that calendar.</td></tr>
+    <tr><td>Microsoft</td><td>Range-bound <code>calendarView/delta</code>; persist validated <code>deltaLink</code>.</td><td>Rebase when the rolling window or delta cursor becomes invalid.</td></tr>
+    <tr><td>Apple</td><td>RFC 6578 <code>sync-collection</code> where supported.</td><td>For broken Family calendars, use a safe cursorless replacement fallback; the contract has no previous inventory for an ETag delta optimization.</td></tr>
+  </tbody></table>
+    <p class="muted">References: <a href="https://developers.google.com/workspace/calendar/api/guides/sync">Google incremental sync</a>, <a href="https://learn.microsoft.com/en-us/graph/delta-query-events">Microsoft calendarView delta</a>, <a href="https://www.rfc-editor.org/info/rfc6578">WebDAV collection sync</a>.</p>
+  </section>
+
+  <section><h2>Data and migration impact</h2>
+    <ul><li>Schema version 2 adds <code>cached_events</code>, <code>calendar_sync_state</code>, and <code>calendar_sync_objects</code>.</li><li>Event payloads remain normalized <code>EventV2</code> JSON with indexed timed/all-day range columns.</li><li>Opaque provider cursors never enter logs or frontend responses.</li><li>Full sync uses generations: old rows are swept only after the replacement sync finishes successfully.</li><li>The migration is additive. Rollback disables reads/worker and leaves tables intact; no destructive downgrade.</li></ul>
+  </section>
+
+  <section><h2>Implementation sequence</h2><ol>
+    <li>Add sequential migration support and schema version 2.</li><li>Build transactional projection/query, leases, and replay-safe cursor storage.</li><li>Define and test the provider-neutral incremental sync coordinator.</li><li>Implement Google, Microsoft, and Apple adapters independently.</li><li>Run due calendar syncs in the existing worker with provider-specific intervals.</li><li>Feature-flag only the browser event list; make mutations write-through and enqueue reconciliation.</li><li>Add source freshness and manual refresh UX.</li><li>Deploy dark, warm all calendars, compare cached/direct samples, then enable the UI read path.</li>
+  </ol><p>Executable file-by-file tasks and test snippets are in <code>docs/superpowers/plans/2026-08-22-calendar-event-read-model.md</code>.</p></section>
+
+  <section><h2>Test and QA plan</h2>
+    <ul><li>Red/green unit tests for migrations, range queries, cursors, pagination, deletions, lease recovery, and provider reset semantics.</li><li>Provider <code>httptest</code> suites for Google 410, Graph delta links, and Apple sync-token/cursorless replacement fallback.</li><li>Frontend tests, typecheck, and production build.</li><li>Full <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, and server build.</li><li>Production dark launch: initial sync counts and recurrence samples compared with direct provider reads before cutover.</li><li>Acceptance: warm UI p95 below 300 ms and zero provider list calls during ordinary navigation.</li></ul>
+  </section>
+
+  <section class="risk"><h2>Risks and edge cases</h2>
+    <ul><li>Recurring masters, exceptions, moved instances, cancellations, and all-day boundaries must preserve provider IDs and time zones.</li><li>A crash during pagination must replay safely without advancing the cursor or sweeping good rows.</li><li>Apple Family collections may never support reliable REPORT responses; the safe cursorless replacement fallback remains a first-class strategy.</li><li>Starting the existing worker can also execute enabled rule jobs. Production preflight must confirm rules are paused or intended.</li><li>Provider writes can succeed while the local projection update fails. Return the confirmed provider result and reconcile; never retry the mutation blindly.</li></ul>
+  </section>
+
+  <section><h2>Rollback</h2><ol><li>Set <code>EVENT_READ_MODEL_ENABLED=false</code> and restart only <code>calendar-serve</code>.</li><li>Stop <code>calendar-worker</code> if provider load is abnormal.</li><li>Keep additive schema and cached rows for diagnosis; do not drop tables.</li><li>Redeploy the prior immutable image only with explicit approval.</li></ol></section>
+
+  <section><h2>Open questions</h2><p>No blocking questions. The proposed retention and intervals are defaults and remain configurable. Webhooks, MCP/REST cutover, Redis, offline browser storage, and full-text search are explicitly outside this implementation.</p></section>
+
+  <section class="decision"><h2>Execution status · 2026-08-22</h2>
+    <p><strong class="good">Tasks 1–7 implemented locally.</strong> Schema v2, lease/CAS/replacement storage, optional provider contract/core, Google token-compatible local projection, Microsoft delta, Apple sync-collection plus cursorless replacement fallback, parked nonretryable state/reactivation, one claim per worker cycle with renewable 15-minute lease, UI-only cached service clone, write-through/reconciliation warnings, and bounded freshness polling are implemented.</p>
+    <p>Google initial bounds were removed for token compatibility; the window rebases to UTC days rather than per-tick rolling timestamps; and the UI clone preserves MCP/REST direct behavior. Final Sol review also canonicalized deleted CalDAV object identities, treated Google 403 quota reasons as retryable rate limits, and surfaced bounded reconciliation warnings after confirmed provider writes.</p>
+    <p>Post-PR review also kept series masters out of the recurrence-expanded browser response, marked multi-master Apple resources read-only until member-addressed writes are supported, and made scoped deletes reconcile all visible cached occurrences plus returned following-scope events.</p>
+    <p>CodeRabbit follow-up made write-through generation atomic, recovered invalid Graph replacement continuations, retried capacity limits, removed the heartbeat completion race, increased Google page size, bounded browser polling/warnings, and added an opt-in PostgreSQL integration path.</p>
+    <p><strong>Checks passed:</strong> Go race suite, <code>go vet</code>, server build, frontend Vitest 20/20, typecheck, production build, <code>git diff --check</code>, independent Terra-high review (approved), final Sol cumulative review, GitHub Codex review, and CodeRabbit review.</p>
+    <p class="muted">Not executed: live PostgreSQL <code>TEST_POSTGRES_URL</code> validation, migration/worker/flag deployment, production provider/data verification, and cached/direct comparison. Apple fallback refetches all current ICS resources; daily Google replacement seed can be expensive. Rollback remains <code>EVENT_READ_MODEL_ENABLED=false</code>; schema is additive and inert. Terra/Luna owned the primary lanes; Sol coordinated, made narrow review corrections, and verified. Git/PR preparation was separately authorized; no production mutation was performed.</p>
+  </section>
+
+  <section class="approval"><h2>Approval gate</h2><p><strong>Task 8 remains unchecked and was not executed.</strong> Warm-up, production deployment, provider/data comparison, feature-flag cutover, and any commit/deployment require separate explicit permission. Keep <code>EVENT_READ_MODEL_ENABLED=false</code> until the production gate is approved and completed.</p></section>
+</main></body></html>

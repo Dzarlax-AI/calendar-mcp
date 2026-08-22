@@ -1,0 +1,419 @@
+package eventsync
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/storage"
+)
+
+type fakeResolver struct {
+	provider calendar.Provider
+	rawID    string
+	err      error
+}
+
+func (r fakeResolver) Resolve(string) (calendar.Provider, string, error) {
+	return r.provider, r.rawID, r.err
+}
+
+type fakeProvider struct {
+	calendar.Provider
+	pages    []calendar.EventSyncPage
+	errs     []error
+	requests []calendar.EventSyncRequest
+}
+
+func (p *fakeProvider) Name() string { return "fake" }
+
+func (p *fakeProvider) SyncEvents(_ context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
+	p.requests = append(p.requests, request)
+	i := len(p.requests) - 1
+	if i < len(p.errs) && p.errs[i] != nil {
+		return calendar.EventSyncPage{}, p.errs[i]
+	}
+	if i >= len(p.pages) {
+		return calendar.EventSyncPage{}, &calendar.EventSyncError{Class: calendar.EventSyncProtocol}
+	}
+	return p.pages[i], nil
+}
+
+type legacyProvider struct{ calendar.Provider }
+
+func (legacyProvider) Name() string { return "legacy" }
+
+type policyProvider struct {
+	*fakeProvider
+	policy      calendar.EventSyncPolicy
+	policyCalls int
+}
+
+func (p *policyProvider) EventSyncPolicy() calendar.EventSyncPolicy {
+	p.policyCalls++
+	return p.policy
+}
+
+type appliedPage struct {
+	state storage.CalendarSyncState
+	batch storage.EventSyncBatch
+	final bool
+}
+
+type fakeStore struct {
+	applied    []appliedPage
+	fails      []string
+	failAt     []time.Time
+	parks      []string
+	resets     int
+	applyErrAt int
+	applyErr   error
+	resetErr   error
+}
+
+func (s *fakeStore) ApplyEventSyncPage(_ context.Context, state storage.CalendarSyncState, batch storage.EventSyncBatch, final bool, _ time.Time) error {
+	s.applied = append(s.applied, appliedPage{state: state, batch: batch, final: final})
+	if s.applyErr != nil && len(s.applied) == s.applyErrAt {
+		return s.applyErr
+	}
+	return nil
+}
+
+func (s *fakeStore) FailCalendarSync(_ context.Context, _ storage.CalendarSyncState, code string, _, next time.Time) error {
+	s.fails = append(s.fails, code)
+	s.failAt = append(s.failAt, next)
+	return nil
+}
+
+func (s *fakeStore) ParkCalendarSync(_ context.Context, _ storage.CalendarSyncState, code string, _ time.Time) error {
+	s.parks = append(s.parks, code)
+	return nil
+}
+
+func (s *fakeStore) ResetCalendarSync(_ context.Context, state storage.CalendarSyncState, _ time.Time) (*storage.CalendarSyncState, error) {
+	s.resets++
+	if s.resetErr != nil {
+		return nil, s.resetErr
+	}
+	state.Cursor = ""
+	state.Generation++
+	return &state, nil
+}
+
+func testState(cursor string) storage.CalendarSyncState {
+	return storage.CalendarSyncState{CalendarID: "fake:calendar", Cursor: cursor, Generation: 4, LeaseOwner: "worker", WindowStart: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC), WindowEnd: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)}
+}
+
+func newService(store *fakeStore, provider calendar.Provider) *Service {
+	return &Service{
+		Store:    store,
+		Resolver: fakeResolver{provider: provider, rawID: "provider-calendar"},
+		Now:      func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) },
+		PolicyFor: func(calendar.Provider) calendar.EventSyncPolicy {
+			return calendar.EventSyncPolicy{PollInterval: 10 * time.Minute, RetryBase: time.Minute, RetryMax: 5 * time.Minute, MaxPages: 10, MaxResets: 1}
+		},
+	}
+}
+
+func terminal(cursor string, ids ...string) calendar.EventSyncPage {
+	page := calendar.EventSyncPage{Complete: true, NextCursor: calendar.EventSyncCursor(cursor)}
+	for _, id := range ids {
+		page.Upserts = append(page.Upserts, calendar.EventSyncUpsert{Event: calendar.EventV2{ID: id}})
+	}
+	return page
+}
+
+func TestEventSyncCapabilityKeepsLegacyProvidersCompatible(t *testing.T) {
+	if _, ok := calendar.EventSyncCapability(legacyProvider{}); ok {
+		t.Fatal("legacy provider unexpectedly has event sync capability")
+	}
+	store := &fakeStore{}
+	err := newService(store, legacyProvider{}).RunOne(context.Background(), testState(""))
+	if !errors.Is(err, ErrCapabilityUnavailable) {
+		t.Fatalf("RunOne() error = %v, want capability unavailable", err)
+	}
+	if got := store.parks; len(got) != 1 || got[0] != string(calendar.EventSyncUnsupported) || len(store.fails) != 0 {
+		t.Fatalf("parked=%#v failures=%#v", got, store.fails)
+	}
+}
+
+func TestRunOneDiscoversProviderEventSyncPolicy(t *testing.T) {
+	provider := &policyProvider{
+		fakeProvider: &fakeProvider{pages: []calendar.EventSyncPage{terminal("next")}},
+		policy: calendar.EventSyncPolicy{
+			PollInterval: 2 * time.Minute,
+			RetryBase:    2 * time.Second,
+			RetryMax:     30 * time.Second,
+			MaxPages:     12,
+			MaxResets:    3,
+		},
+	}
+	store := &fakeStore{}
+	service := &Service{
+		Store:    store,
+		Resolver: fakeResolver{provider: provider, rawID: "provider-calendar"},
+		Now:      func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) },
+	}
+	if err := service.RunOne(context.Background(), testState("saved")); err != nil {
+		t.Fatal(err)
+	}
+	if provider.policyCalls != 1 {
+		t.Fatalf("EventSyncPolicy() calls = %d, want 1", provider.policyCalls)
+	}
+	if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 2, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("next sync = %s, want %s", got, want)
+	}
+}
+
+func TestPolicyForOverridesProviderPolicyAndNormalizesValues(t *testing.T) {
+	provider := &policyProvider{
+		fakeProvider: &fakeProvider{},
+		policy: calendar.EventSyncPolicy{
+			PollInterval: time.Minute,
+			RetryBase:    time.Second,
+			RetryMax:     2 * time.Second,
+			MaxPages:     1,
+			MaxResets:    1,
+		},
+	}
+	service := &Service{PolicyFor: func(calendar.Provider) calendar.EventSyncPolicy {
+		return calendar.EventSyncPolicy{
+			PollInterval: 7 * time.Minute,
+			RetryBase:    10 * time.Minute,
+			RetryMax:     5 * time.Minute,
+			MaxPages:     0,
+			MaxResets:    -1,
+		}
+	}}
+	got := service.policy(provider)
+	want := calendar.EventSyncPolicy{
+		PollInterval: 7 * time.Minute,
+		RetryBase:    10 * time.Minute,
+		RetryMax:     10 * time.Minute,
+		MaxPages:     defaultMaxPages,
+		MaxResets:    defaultMaxResets,
+	}
+	if got != want {
+		t.Fatalf("policy = %#v, want %#v", got, want)
+	}
+	if provider.policyCalls != 0 {
+		t.Fatalf("EventSyncPolicy() calls = %d, want 0 when PolicyFor is set", provider.policyCalls)
+	}
+}
+
+func TestLegacyProviderPolicyUsesConservativeDefaults(t *testing.T) {
+	got := (&Service{}).policy(legacyProvider{})
+	want := calendar.EventSyncPolicy{
+		PollInterval: defaultPollInterval,
+		RetryBase:    defaultRetryBase,
+		RetryMax:     defaultRetryMax,
+		MaxPages:     defaultMaxPages,
+		MaxResets:    defaultMaxResets,
+	}
+	if got != want {
+		t.Fatalf("policy = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunOneInitialAndMultipageIncremental(t *testing.T) {
+	t.Run("replacement", func(t *testing.T) {
+		// Inventory-only adapters such as Apple can complete a replacement
+		// snapshot without an incremental cursor. Persisting the empty cursor
+		// deliberately makes the next claim another replacement sync.
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{terminal("", "first")}}
+		store := &fakeStore{}
+		if err := newService(store, provider).RunOne(context.Background(), testState("")); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.applied) != 1 || !store.applied[0].final || !store.applied[0].batch.FullSync || store.applied[0].batch.NextCursor != "" {
+			t.Fatalf("applied page = %#v", store.applied)
+		}
+		if got := provider.requests[0]; got.Mode != calendar.EventSyncReplacement || got.CalendarID != "provider-calendar" || got.Window.Start != testState("").WindowStart {
+			t.Fatalf("request = %#v", got)
+		}
+	})
+	t.Run("incremental pages", func(t *testing.T) {
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{
+			{Upserts: []calendar.EventSyncUpsert{{Event: calendar.EventV2{ID: "one"}}}, NextPageToken: "next"},
+			terminal("advanced", "two"),
+		}}
+		store := &fakeStore{}
+		if err := newService(store, provider).RunOne(context.Background(), testState("saved")); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.applied) != 2 || store.applied[0].final || !store.applied[1].final || store.applied[0].batch.FullSync || store.applied[1].batch.NextCursor != "advanced" {
+			t.Fatalf("applied pages = %#v", store.applied)
+		}
+		if provider.requests[1].PageToken != "next" || provider.requests[1].Cursor != "saved" || provider.requests[0].Mode != calendar.EventSyncIncremental {
+			t.Fatalf("requests = %#v", provider.requests)
+		}
+	})
+}
+
+func TestRunOneFailureReplaysCursorAndSchedulesBoundedRateLimit(t *testing.T) {
+	provider := &fakeProvider{pages: []calendar.EventSyncPage{{Upserts: []calendar.EventSyncUpsert{{Event: calendar.EventV2{ID: "first"}}}, NextPageToken: "page-two"}}, errs: []error{nil, &calendar.EventSyncError{Class: calendar.EventSyncRateLimited, RetryAfter: 20 * time.Minute}}}
+	store := &fakeStore{}
+	err := newService(store, provider).RunOne(context.Background(), testState("authoritative"))
+	if !errors.Is(err, ErrProviderFailure) {
+		t.Fatalf("RunOne() error = %v", err)
+	}
+	if len(store.applied) != 1 || store.applied[0].final || len(store.fails) != 1 || store.fails[0] != string(calendar.EventSyncRateLimited) {
+		t.Fatalf("store state = %#v failures=%#v", store.applied, store.fails)
+	}
+	if got, want := store.failAt[0], time.Date(2026, 8, 22, 12, 20, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("retry at = %s, want %s", got, want)
+	}
+	// The authoritative cursor was never advanced by the intermediate page, so
+	// a later claim safely asks the provider to replay from the original cursor.
+	replay := &fakeProvider{pages: []calendar.EventSyncPage{terminal("advanced", "first")}}
+	if err := newService(&fakeStore{}, replay).RunOne(context.Background(), testState("authoritative")); err != nil {
+		t.Fatal(err)
+	}
+	if replay.requests[0].Cursor != "authoritative" {
+		t.Fatalf("replay cursor = %q, want original cursor", replay.requests[0].Cursor)
+	}
+}
+
+func TestRunOneResetThenReplacementAndObjectReplacementMapping(t *testing.T) {
+	provider := &fakeProvider{pages: []calendar.EventSyncPage{
+		{ResetRequired: true},
+		{Complete: true, NextCursor: "replacement-cursor", Upserts: []calendar.EventSyncUpsert{{Object: calendar.SyncObject{ObjectID: "resource.ics", ETag: "etag"}, Event: calendar.EventV2{ID: "member"}}}, ReplacedObjectIDs: []string{"resource.ics"}, Inventory: []calendar.SyncObject{{ObjectID: "resource.ics", ETag: "etag"}}},
+	}}
+	store := &fakeStore{}
+	if err := newService(store, provider).RunOne(context.Background(), testState("expired")); err != nil {
+		t.Fatal(err)
+	}
+	if store.resets != 1 || len(store.applied) != 1 || !store.applied[0].batch.FullSync || store.applied[0].batch.ReplacedObjectIDs[0] != "resource.ics" || store.applied[0].state.Generation != 5 {
+		t.Fatalf("reset/applied state = resets=%d pages=%#v", store.resets, store.applied)
+	}
+	if provider.requests[1].Mode != calendar.EventSyncReplacement || provider.requests[1].Cursor != "" || provider.requests[1].Generation != 5 {
+		t.Fatalf("replacement request = %#v", provider.requests[1])
+	}
+}
+
+func TestInvalidPagesRepeatedTokensAndLeaseLossDoNotLeakOpaqueValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		pages []calendar.EventSyncPage
+		want  error
+	}{
+		{"terminal continuation", []calendar.EventSyncPage{{Complete: true, NextCursor: "secret-cursor", NextPageToken: "secret-page"}}, ErrInvalidPage},
+		{"incremental terminal without cursor", []calendar.EventSyncPage{{Complete: true}}, ErrInvalidPage},
+		{"replacement without membership", []calendar.EventSyncPage{{Complete: true, NextCursor: "secret-cursor", ReplacedObjectIDs: []string{"object"}}}, ErrInvalidPage},
+		{"repeated token", []calendar.EventSyncPage{{NextPageToken: "secret-page"}, {NextPageToken: "secret-page"}}, ErrRepeatedPage},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			err := newService(store, &fakeProvider{pages: tc.pages}).RunOne(context.Background(), testState("existing-secret"))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("RunOne() error = %v, want %v", err, tc.want)
+			}
+			if len(store.parks) != 1 || len(store.fails) != 0 {
+				t.Fatalf("invalid protocol page parked=%#v failures=%#v", store.parks, store.fails)
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Fatalf("opaque value leaked in error %q", err)
+			}
+		})
+	}
+	t.Run("lease loss", func(t *testing.T) {
+		store := &fakeStore{applyErrAt: 1, applyErr: storage.ErrCalendarSyncLeaseLost}
+		err := newService(store, &fakeProvider{pages: []calendar.EventSyncPage{terminal("safe")}}).RunOne(context.Background(), testState("existing"))
+		if !errors.Is(err, storage.ErrCalendarSyncLeaseLost) || len(store.fails) != 0 {
+			t.Fatalf("error=%v failures=%#v", err, store.fails)
+		}
+	})
+}
+
+func TestRunOneParksNonRetryableAndRetriesTransientFailures(t *testing.T) {
+	parkCases := []struct {
+		name  string
+		err   error
+		class calendar.EventSyncErrorClass
+	}{
+		{"auth", &calendar.EventSyncError{Class: calendar.EventSyncAuth}, calendar.EventSyncAuth},
+		{"permission", &calendar.EventSyncError{Class: calendar.EventSyncPermission}, calendar.EventSyncPermission},
+		{"unsupported", &calendar.EventSyncError{Class: calendar.EventSyncUnsupported}, calendar.EventSyncUnsupported},
+		{"protocol", &calendar.EventSyncError{Class: calendar.EventSyncProtocol}, calendar.EventSyncProtocol},
+	}
+	for _, tc := range parkCases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			provider := &fakeProvider{errs: []error{tc.err}}
+			err := newService(store, provider).RunOne(context.Background(), testState("cursor"))
+			if !errors.Is(err, ErrProviderFailure) || len(store.parks) != 1 || store.parks[0] != string(tc.class) || len(store.fails) != 0 {
+				t.Fatalf("error=%v parks=%#v fails=%#v", err, store.parks, store.fails)
+			}
+		})
+	}
+	for _, class := range []calendar.EventSyncErrorClass{calendar.EventSyncTransient, calendar.EventSyncRateLimited} {
+		t.Run(string(class), func(t *testing.T) {
+			store := &fakeStore{}
+			provider := &fakeProvider{errs: []error{&calendar.EventSyncError{Class: class}}}
+			err := newService(store, provider).RunOne(context.Background(), testState("cursor"))
+			if !errors.Is(err, ErrProviderFailure) || len(store.fails) != 1 || store.fails[0] != string(class) || len(store.parks) != 0 {
+				t.Fatalf("error=%v parks=%#v fails=%#v", err, store.parks, store.fails)
+			}
+		})
+	}
+}
+
+func TestRunOneRetriesCapacityLimitsInsteadOfParking(t *testing.T) {
+	t.Run("page limit", func(t *testing.T) {
+		store := &fakeStore{}
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{NextPageToken: "next"}}}
+		service := newService(store, provider)
+		service.PolicyFor = func(calendar.Provider) calendar.EventSyncPolicy {
+			return calendar.EventSyncPolicy{PollInterval: time.Minute, RetryBase: time.Second, RetryMax: time.Minute, MaxPages: 1, MaxResets: 1}
+		}
+		err := service.RunOne(t.Context(), testState("cursor"))
+		if !errors.Is(err, ErrPageLimit) || len(store.fails) != 1 || store.fails[0] != string(calendar.EventSyncTransient) || len(store.parks) != 0 {
+			t.Fatalf("error=%v fails=%#v parks=%#v", err, store.fails, store.parks)
+		}
+	})
+	t.Run("reset limit", func(t *testing.T) {
+		store := &fakeStore{}
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{ResetRequired: true}, {ResetRequired: true}}}
+		service := newService(store, provider)
+		service.PolicyFor = func(calendar.Provider) calendar.EventSyncPolicy {
+			return calendar.EventSyncPolicy{PollInterval: time.Minute, RetryBase: time.Second, RetryMax: time.Minute, MaxPages: 3, MaxResets: 1}
+		}
+		err := service.RunOne(t.Context(), testState("cursor"))
+		if !errors.Is(err, ErrResetLimit) || len(store.fails) != 1 || store.fails[0] != string(calendar.EventSyncTransient) || len(store.parks) != 0 {
+			t.Fatalf("error=%v fails=%#v parks=%#v", err, store.fails, store.parks)
+		}
+	})
+}
+
+func TestRunOneCancellationDoesNotFail(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	store := &fakeStore{}
+	err := newService(store, &fakeProvider{}).RunOne(ctx, testState("cursor"))
+	if !errors.Is(err, context.Canceled) || len(store.fails) != 0 {
+		t.Fatalf("error=%v failures=%#v", err, store.fails)
+	}
+}
+
+func TestClassifyProviderFailures(t *testing.T) {
+	cases := []struct {
+		err  error
+		want calendar.EventSyncErrorClass
+	}{
+		{&calendar.EventSyncError{Class: calendar.EventSyncAuth}, calendar.EventSyncAuth},
+		{&calendar.EventSyncError{Class: calendar.EventSyncPermission}, calendar.EventSyncPermission},
+		{calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "not available"), calendar.EventSyncUnsupported},
+		{calendar.NewAPIError(calendar.ErrorInvalidArgument, "bad request"), calendar.EventSyncProtocol},
+		{calendar.NewAPIError(calendar.ErrorProviderUnavailable, "offline"), calendar.EventSyncTransient},
+	}
+	for _, tc := range cases {
+		got, _ := classify(tc.err)
+		if got != tc.want {
+			t.Fatalf("classify(%T) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}

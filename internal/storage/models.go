@@ -1,8 +1,12 @@
 package storage
 
-import "time"
+import (
+	"time"
 
-const SchemaVersion = 1
+	"calendar-mcp/internal/calendar"
+)
+
+const SchemaVersion = 2
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -61,4 +65,61 @@ type OAuthAttempt struct {
 	EncryptedVerifier                                   []byte
 	ExpiresAt                                           time.Time
 	ConsumedAt                                          *time.Time
+}
+
+// SyncWindow bounds the provider-authoritative event projection.
+type SyncWindow struct {
+	Start time.Time
+	End   time.Time
+}
+
+// CalendarSyncState is the durable cursor and worker lease for one readable
+// calendar. Cursor values are opaque provider data and must not be exposed.
+type CalendarSyncState struct {
+	CalendarID, Strategy, Cursor, Status string
+	WindowStart, WindowEnd               time.Time
+	Generation                           int64
+	NextSyncAt                           time.Time
+	LastStartedAt, LastSuccessAt         *time.Time
+	LastErrorCode, LeaseOwner            string
+	LeaseUntil                           *time.Time
+}
+
+// SyncObject records provider objects (for example CalDAV resources) used by
+// inventory-based synchronization strategies.
+type SyncObject struct {
+	ObjectID string
+	ETag     string
+}
+
+// CachedEventUpsert associates a projected event with the provider object
+// that owns it. An explicitly empty SourceObjectID is only for providers
+// without object inventory and falls back to Event.ID.
+type CachedEventUpsert struct {
+	SourceObjectID string
+	Event          calendar.EventV2
+}
+
+// EventSyncBatch is a provider-neutral page of projection changes. FullSync
+// declares that the page belongs to a replacement snapshot; only a successful
+// final page sweeps older generations.
+type EventSyncBatch struct {
+	Upserts          []CachedEventUpsert
+	DeletedEventIDs  []string
+	DeletedObjectIDs []string
+	// ReplacedObjectIDs identifies objects for which this batch contains the
+	// complete current membership. Empty objects must use DeletedObjectIDs.
+	ReplacedObjectIDs []string
+	Objects           []SyncObject
+	NextCursor        string
+	NextSyncAt        *time.Time
+	FullSync          bool
+}
+
+// CachedSourceStatus keeps the read model's freshness outcome separate from
+// the provider-facing calendar.SourceStatus contract.
+type CachedSourceStatus struct {
+	Provider, CalendarID, Status, ErrorCode string
+	LastSuccessAt                           *time.Time
+	Stale                                   bool
 }

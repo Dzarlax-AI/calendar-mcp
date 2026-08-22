@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canWriteEvent, formatEventDate, selectedReadableCalendarIds, sortCalendarIds, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
+import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, eventStatusPollInterval, formatEventDate, formatRelativeTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -93,5 +93,33 @@ describe("calendar mapping", () => {
     expect(canWriteEvent(event, calendar)).toBe(true);
     expect(canWriteEvent({ ...event, readOnly: true }, calendar)).toBe(false);
     expect(canWriteEvent(event, { capability: { ...calendar.capability, write: false } })).toBe(false);
+  });
+
+  it("prioritizes failed, stale, syncing, then updated source status", () => {
+    const now = new Date("2026-09-15T12:00:00Z");
+    const base = { provider: "google", calendar_id: "c1", complete: true, status: "ready" as const, last_success_at: "2026-09-15T11:00:00Z" };
+    expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing" }, { ...base, stale: true }] }, now).kind).toBe("stale");
+    expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing", complete: false }] }, now).label).toBe("Syncing");
+    expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "failed" }, { ...base, stale: true }] }, now).label).toBe("1 calendar failed");
+    expect(summarizeEventSources({ complete: true, sources: [base] }, now).label).toBe("Updated 1 hr ago");
+    expect(summarizeEventSources({ complete: true, sources: [{ ...base, last_success_at: "2026-09-15T11:30:00Z" }, { ...base, last_success_at: "2026-09-15T10:45:00+02:00" }] }, now).label).toBe("Updated 30 min ago");
+  });
+
+  it("formats relative freshness times", () => {
+    const now = new Date("2026-09-15T12:00:00Z");
+    expect(formatRelativeTime("2026-09-15T11:59:40Z", now)).toBe("just now");
+    expect(formatRelativeTime("2026-09-15T11:42:00Z", now)).toBe("18 min ago");
+    expect(formatRelativeTime("2026-09-14T12:00:00Z", now)).toBe("1 day ago");
+  });
+
+  it("bounds status polling and allows a manual refresh reset", () => {
+    const syncing = [{ provider: "google", calendar_id: "c1", complete: false, status: "syncing" as const }];
+    const pendingAndStale = [{ ...syncing[0], status: "pending" as const, stale: true }];
+    expect(eventStatusPollInterval(syncing, 0)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval(syncing, EVENT_STATUS_POLL_MAX_ATTEMPTS)).toBe(false);
+    expect(eventStatusPollInterval(syncing, 0)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS - 1)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS)).toBe(false);
+    expect(eventStatusPollInterval([{ ...syncing[0], status: "ready" as const }], 0)).toBe(false);
   });
 });

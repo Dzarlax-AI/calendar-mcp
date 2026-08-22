@@ -5,6 +5,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	defaultEventCacheLookbackDays  = 365
+	defaultEventCacheLookaheadDays = 730
+	maxEventCacheDays              = 10 * 366
 )
 
 type Config struct {
@@ -21,6 +28,17 @@ type Config struct {
 	PublicURL              string
 	TrustForwardAuth       bool
 	UIAllowUnauthenticated bool
+
+	// Event read model is deliberately opt-in. It only reads provider event
+	// data; event mutations continue to use the existing notification-safe
+	// application path.
+	EventReadModelEnabled      bool
+	EventCacheLookbackDays     int
+	EventCacheLookaheadDays    int
+	EventSyncGoogleInterval    time.Duration
+	EventSyncMicrosoftInterval time.Duration
+	EventSyncAppleInterval     time.Duration
+	eventReadModelConfigErr    error
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -43,7 +61,7 @@ type Config struct {
 }
 
 func Load() *Config {
-	return &Config{
+	cfg := &Config{
 		ListenAddr:             envStr("LISTEN_ADDR", ":8080"),
 		RESTListenAddr:         envStr("REST_LISTEN_ADDR", ""),
 		WorkerHealthAddr:       envStr("WORKER_HEALTH_ADDR", "127.0.0.1:8082"),
@@ -57,6 +75,13 @@ func Load() *Config {
 		PublicURL:              envStr("CALENDAR_PUBLIC_URL", ""),
 		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", false),
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
+
+		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
+		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),
+		EventCacheLookaheadDays:    envInt("EVENT_CACHE_LOOKAHEAD_DAYS", defaultEventCacheLookaheadDays),
+		EventSyncGoogleInterval:    envDuration("EVENT_SYNC_GOOGLE_INTERVAL", time.Minute),
+		EventSyncMicrosoftInterval: envDuration("EVENT_SYNC_MICROSOFT_INTERVAL", time.Minute),
+		EventSyncAppleInterval:     envDuration("EVENT_SYNC_APPLE_INTERVAL", 5*time.Minute),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),
@@ -74,6 +99,10 @@ func Load() *Config {
 		ExcludeCalendarIDs:       envList("EXCLUDE_CALENDAR_IDS"),
 		IncludeImportedCalendars: envBool("INCLUDE_IMPORTED_CALENDARS", false),
 	}
+	if err := validateEventReadModelEnv(); err != nil {
+		cfg.eventReadModelConfigErr = err
+	}
+	return cfg
 }
 
 func (c *Config) Validate() error {
@@ -85,6 +114,40 @@ func (c *Config) Validate() error {
 	}
 	if c.DatabaseURL != "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
 		return fmt.Errorf("platform UI requires UI_TRUST_FORWARD_AUTH=true unless UI_ALLOW_UNAUTHENTICATED=true is explicitly set")
+	}
+	// A Config assembled directly by a caller predates the optional read-model
+	// fields. Load always supplies these defaults; retain that compatibility for
+	// focused API configuration tests and external callers.
+	if c.eventReadModelConfigErr != nil || c.EventReadModelEnabled || c.EventCacheLookbackDays != 0 || c.EventCacheLookaheadDays != 0 || c.EventSyncGoogleInterval != 0 || c.EventSyncMicrosoftInterval != 0 || c.EventSyncAppleInterval != 0 {
+		return c.ValidateEventReadModel()
+	}
+	return nil
+}
+
+// ValidateEventReadModel checks bounds before the serve or worker process can
+// create a rolling projection. Keeping this separate lets the worker validate
+// its own inputs without requiring the HTTP API key.
+func (c *Config) ValidateEventReadModel() error {
+	if c.eventReadModelConfigErr != nil {
+		return c.eventReadModelConfigErr
+	}
+	if c.EventCacheLookbackDays <= 0 || c.EventCacheLookbackDays > maxEventCacheDays {
+		return fmt.Errorf("EVENT_CACHE_LOOKBACK_DAYS must be between 1 and %d", maxEventCacheDays)
+	}
+	if c.EventCacheLookaheadDays <= 0 || c.EventCacheLookaheadDays > maxEventCacheDays {
+		return fmt.Errorf("EVENT_CACHE_LOOKAHEAD_DAYS must be between 1 and %d", maxEventCacheDays)
+	}
+	for _, item := range []struct {
+		name     string
+		interval time.Duration
+	}{
+		{"EVENT_SYNC_GOOGLE_INTERVAL", c.EventSyncGoogleInterval},
+		{"EVENT_SYNC_MICROSOFT_INTERVAL", c.EventSyncMicrosoftInterval},
+		{"EVENT_SYNC_APPLE_INTERVAL", c.EventSyncAppleInterval},
+	} {
+		if item.interval <= 0 || item.interval > 24*time.Hour {
+			return fmt.Errorf("%s must be greater than zero and no more than 24h", item.name)
+		}
 	}
 	return nil
 }
@@ -114,6 +177,33 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func validateEventReadModelEnv() error {
+	for _, key := range []string{"EVENT_SYNC_GOOGLE_INTERVAL", "EVENT_SYNC_MICROSOFT_INTERVAL", "EVENT_SYNC_APPLE_INTERVAL"} {
+		if value := os.Getenv(key); value != "" {
+			if _, err := time.ParseDuration(value); err != nil {
+				return fmt.Errorf("%s must be a Go duration: %w", key, err)
+			}
+		}
+	}
+	for _, key := range []string{"EVENT_CACHE_LOOKBACK_DAYS", "EVENT_CACHE_LOOKAHEAD_DAYS"} {
+		if value := os.Getenv(key); value != "" {
+			if _, err := strconv.Atoi(value); err != nil {
+				return fmt.Errorf("%s must be an integer: %w", key, err)
+			}
+		}
+	}
+	return nil
 }
 
 func envList(key string) []string {

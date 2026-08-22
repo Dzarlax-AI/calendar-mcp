@@ -10,14 +10,74 @@ import (
 	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/storage"
 )
 
 type Service struct {
-	registry *calendar.Registry
+	registry             *calendar.Registry
+	eventReadModel       EventReadModel
+	eventReadModelWindow storage.SyncWindow
 }
 
-func New(registry *calendar.Registry) *Service {
-	return &Service{registry: registry}
+// EventReadModel is the deliberately small projection surface used by the
+// browser read path and write-through reconciliation. *storage.Store
+// implements it without pulling application concerns into storage.
+type EventReadModel interface {
+	ListCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error)
+	EnsureCalendarSyncStates(context.Context, time.Time, storage.SyncWindow) error
+	ScheduleCalendarSync(context.Context, string, time.Time, bool) error
+	UpsertCachedEvent(context.Context, calendar.EventV2, time.Time) error
+	DeleteCachedEvent(context.Context, calendar.EventRef, time.Time) error
+}
+
+type Option func(*Service)
+
+// WithEventReadModel optionally enables projection-backed behavior for
+// callers that opt into it. Direct provider APIs continue to use ListEvents.
+func WithEventReadModel(model EventReadModel) Option {
+	return func(service *Service) { service.eventReadModel = model }
+}
+
+func New(registry *calendar.Registry, options ...Option) *Service {
+	service := &Service{registry: registry}
+	for _, option := range options {
+		option(service)
+	}
+	return service
+}
+
+// CloneWithEventReadModel creates the UI-only service variant. The registry is
+// immutable/thread-safe after construction; projection state is deliberately
+// not shared with the MCP or internal REST service.
+func (s *Service) CloneWithEventReadModel(model EventReadModel, window storage.SyncWindow) *Service {
+	if s == nil {
+		return nil
+	}
+	return &Service{registry: s.registry, eventReadModel: model, eventReadModelWindow: window}
+}
+
+func (s *Service) ListCachedEvents(ctx context.Context, calendarIDs []string, start, end time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
+	if s.eventReadModel == nil {
+		return nil, nil, calendar.NewAPIError(calendar.ErrorProviderUnavailable, "calendar read model is unavailable")
+	}
+	return s.eventReadModel.ListCachedEvents(ctx, calendarIDs, start, end)
+}
+
+func (s *Service) ScheduleCalendarSync(ctx context.Context, calendarID string, now time.Time) error {
+	if s.eventReadModel == nil {
+		return calendar.NewAPIError(calendar.ErrorProviderUnavailable, "calendar read model is unavailable")
+	}
+	err := s.eventReadModel.ScheduleCalendarSync(ctx, calendarID, now, false)
+	if !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	if !s.eventReadModelWindow.End.After(s.eventReadModelWindow.Start) {
+		return calendar.NewAPIError(calendar.ErrorProviderUnavailable, "calendar read model is unavailable")
+	}
+	if err := s.eventReadModel.EnsureCalendarSyncStates(ctx, now, s.eventReadModelWindow); err != nil {
+		return err
+	}
+	return s.eventReadModel.ScheduleCalendarSync(ctx, calendarID, now, false)
 }
 
 func (s *Service) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
@@ -90,34 +150,42 @@ func (s *Service) GetEvent(ctx context.Context, ref calendar.EventRef) (*calenda
 }
 
 func (s *Service) CreateEvent(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	event, _, err := s.CreateEventWithReconciliation(ctx, request)
+	return event, err
+}
+
+// CreateEventWithReconciliation preserves the established CreateEvent API
+// while allowing browser callers to disclose a safe post-write projection
+// warning without changing the provider result itself.
+func (s *Service) CreateEventWithReconciliation(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, []string, error) {
 	if request.CalendarID == "" {
-		return nil, invalidArgument("calendar_id is required")
+		return nil, nil, invalidArgument("calendar_id is required")
 	}
 	if err := calendar.ValidateEventTimeRangeV2(request.Event.Start, request.Event.End); err != nil {
-		return nil, invalidArgument(err.Error())
+		return nil, nil, invalidArgument(err.Error())
 	}
 	if err := calendar.ValidateRecurrence(request.Event.Recurrence); err != nil {
-		return nil, &calendar.APIError{Code: calendar.ErrorInvalidRecurrence, Message: err.Error(), Cause: err}
+		return nil, nil, &calendar.APIError{Code: calendar.ErrorInvalidRecurrence, Message: err.Error(), Cause: err}
 	}
 	provider, rawCalendarID, err := s.registry.Resolve(request.CalendarID)
 	if err != nil {
-		return nil, invalidArgument(err.Error())
+		return nil, nil, invalidArgument(err.Error())
 	}
 	v2, ok := provider.(calendar.EventProviderV2)
 	if !ok {
-		return nil, unsupported(provider.Name(), request.CalendarID, "V2 event creation is not supported")
+		return nil, nil, unsupported(provider.Name(), request.CalendarID, "V2 event creation is not supported")
 	}
 	if err := s.validateNotifications(ctx, provider, rawCalendarID, request.CalendarID, &request.Notifications); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	providerRequest := request
 	providerRequest.CalendarID = rawCalendarID
 	event, err := v2.CreateEventV2(ctx, providerRequest)
 	if err != nil {
-		return nil, providerFailure(provider.Name(), request.CalendarID, err)
+		return nil, nil, providerFailure(provider.Name(), request.CalendarID, err)
 	}
 	normalizeEvent(event, provider.Name(), request.CalendarID)
-	return event, nil
+	return event, s.reconcileCreatedEvent(ctx, *event), nil
 }
 
 func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
@@ -137,14 +205,17 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 		return nil, err
 	}
 	request.Ref = rawRef
+	var result *calendar.OperationResult
 	if request.Scope == calendar.ScopeFollowing {
-		return s.updateFollowing(ctx, provider, request, prefixedCalendarID)
+		result, err = s.updateFollowing(ctx, provider, request, prefixedCalendarID)
+	} else {
+		result, err = v2.UpdateEventV2(ctx, request)
 	}
-	result, err := v2.UpdateEventV2(ctx, request)
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
+	s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, false)
 	return result, nil
 }
 
@@ -165,14 +236,17 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		return nil, err
 	}
 	request.Ref = rawRef
+	var result *calendar.OperationResult
 	if request.Scope == calendar.ScopeFollowing {
-		return s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
+		result, err = s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
+	} else {
+		result, err = v2.DeleteEventV2(ctx, request)
 	}
-	result, err := v2.DeleteEventV2(ctx, request)
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
+	s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)
 	return result, nil
 }
 

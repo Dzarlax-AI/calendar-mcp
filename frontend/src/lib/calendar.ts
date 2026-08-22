@@ -1,5 +1,14 @@
 import type { EventInput } from "@fullcalendar/core";
-import type { CalendarRecord, EventCreateRequest, EventDraft, EventRecord, EventTime, EventUpdateRequest } from "./types";
+import type { CalendarRecord, EventCreateRequest, EventDraft, EventListResponse, EventRecord, EventTime, EventUpdateRequest } from "./types";
+
+export const EVENT_STATUS_POLL_INTERVAL_MS = 2_000;
+export const EVENT_STATUS_POLL_MAX_ATTEMPTS = 30;
+
+export type EventStatusSummary = {
+  kind: "failed" | "stale" | "syncing" | "updated";
+  label: string;
+  failedCount: number;
+};
 
 export function toCalendarEvent(event: EventRecord, calendar?: CalendarRecord): EventInput {
   return {
@@ -22,6 +31,41 @@ export function calendarEventKey(event: Pick<EventRecord, "calendarId" | "id">):
 
 export function sortCalendarIds(calendarIds: string[]): string[] {
   return [...calendarIds].sort();
+}
+
+export function formatRelativeTime(value: string | null | undefined, now = new Date()): string {
+  if (!value) return "recently";
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "recently";
+  const seconds = Math.max(0, Math.floor((now.getTime() - timestamp) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+export function summarizeEventSources(response: Pick<EventListResponse, "sources" | "complete">, now = new Date()): EventStatusSummary {
+  const sources = response.sources ?? [];
+  const failed = sources.filter((source) => source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.complete === false));
+  const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing") ? 1 : 0);
+  if (failedCount) return { kind: "failed", label: `${failedCount} calendar${failedCount === 1 ? "" : "s"} failed`, failedCount };
+  if (sources.some((source) => source.stale)) return { kind: "stale", label: "Some calendars are stale", failedCount: 0 };
+  if (sources.some((source) => source.status === "pending" || source.status === "syncing")) return { kind: "syncing", label: "Syncing", failedCount: 0 };
+  const latest = sources.map((source) => source.last_success_at).filter((value): value is string => Boolean(value)).reduce<string | undefined>((current, value) => {
+    if (!current) return value;
+    const currentTime = new Date(current).getTime();
+    const valueTime = new Date(value).getTime();
+    return Number.isNaN(currentTime) || (!Number.isNaN(valueTime) && valueTime > currentTime) ? value : current;
+  }, undefined);
+  return { kind: "updated", label: `Updated ${formatRelativeTime(latest, now)}`, failedCount: 0 };
+}
+
+export function eventStatusPollInterval(sources: EventListResponse["sources"], attempts: number, maxAttempts = EVENT_STATUS_POLL_MAX_ATTEMPTS): number | false {
+  const syncing = sources?.some((source) => source.status === "pending" || source.status === "syncing");
+  return syncing && attempts < maxAttempts ? EVENT_STATUS_POLL_INTERVAL_MS : false;
 }
 
 export function selectedReadableCalendarIds(calendars: CalendarRecord[], saved: unknown): string[] {

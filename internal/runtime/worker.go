@@ -17,6 +17,7 @@ import (
 	"calendar-mcp/internal/config"
 	"calendar-mcp/internal/connections"
 	"calendar-mcp/internal/credentials"
+	"calendar-mcp/internal/eventsync"
 	providerfactory "calendar-mcp/internal/providers"
 	"calendar-mcp/internal/storage"
 	"calendar-mcp/internal/syncengine"
@@ -35,6 +36,11 @@ func Worker(ctx context.Context) error {
 	cfg := config.Load()
 	if cfg.DatabaseURL == "" {
 		return errWorkerNotConfigured
+	}
+	if cfg.EventReadModelEnabled {
+		if err := cfg.ValidateEventReadModel(); err != nil {
+			return fmt.Errorf("event read-model configuration: %w", err)
+		}
 	}
 	cipher, err := credentials.NewCipher(cfg.EncryptionKey)
 	if err != nil {
@@ -74,7 +80,7 @@ func Worker(ctx context.Context) error {
 	waitCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	log.Println("calendar worker ready")
-	if err := runWorkerCycle(waitCtx, store, factory, time.Now().UTC()); err != nil {
+	if err := runWorkerCycleWithConfig(waitCtx, store, factory, cfg, time.Now().UTC()); err != nil {
 		log.Printf("calendar worker cycle failed: category=%T", err)
 	}
 	ticker := time.NewTicker(5 * time.Second)
@@ -82,7 +88,7 @@ func Worker(ctx context.Context) error {
 	for {
 		select {
 		case now := <-ticker.C:
-			if err := runWorkerCycle(waitCtx, store, factory, now.UTC()); err != nil {
+			if err := runWorkerCycleWithConfig(waitCtx, store, factory, cfg, now.UTC()); err != nil {
 				log.Printf("calendar worker cycle failed: category=%T", err)
 			}
 		case <-waitCtx.Done():
@@ -94,6 +100,24 @@ func Worker(ctx context.Context) error {
 }
 
 func runWorkerCycle(ctx context.Context, store *storage.Store, factory providerBuilder, now time.Time) error {
+	return runWorkerCycleWithConfig(ctx, store, factory, config.Load(), now)
+}
+
+// runWorkerCycleWithConfig gives the worker's two queues a fixed ordering:
+// at most one read-model claim is processed, then every due rule job is
+// drained. A slow or failing calendar therefore cannot starve rule syncing.
+func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory providerBuilder, cfg *config.Config, now time.Time) error {
+	if cfg == nil {
+		return errors.New("worker configuration is required")
+	}
+	if cfg.EventReadModelEnabled {
+		if err := cfg.ValidateEventReadModel(); err != nil {
+			return fmt.Errorf("event read-model configuration: %w", err)
+		}
+	}
+	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
+		log.Printf("calendar event read-model sync failed: category=%T", err)
+	}
 	if _, err := store.RecoverStaleJobs(ctx, now.Add(-workerLease), now); err != nil {
 		return err
 	}
@@ -111,6 +135,104 @@ func runWorkerCycle(ctx context.Context, store *storage.Store, factory providerB
 		}
 		if err := executeJob(ctx, store, factory, *job, now); err != nil {
 			log.Printf("calendar sync job failed: job_id=%s category=%T", job.ID, err)
+		}
+	}
+}
+
+func runOneEventSync(ctx context.Context, store *storage.Store, factory providerBuilder, cfg *config.Config, now time.Time) error {
+	if !cfg.EventReadModelEnabled {
+		return nil
+	}
+	window := eventReadModelWindow(cfg, now)
+	if err := store.EnsureCalendarSyncStates(ctx, now, window); err != nil {
+		return fmt.Errorf("ensure calendar sync states: %w", err)
+	}
+	state, err := store.ClaimDueCalendarSync(ctx, "event-sync-"+uuid.NewString(), now, now.Add(workerLease))
+	if err != nil || state == nil {
+		return err
+	}
+	providers, err := factory.Build(ctx)
+	if err != nil {
+		// The claim must be released so a transient construction failure is not
+		// held for a full lease. The worker never writes to providers here.
+		finishErr := store.FailCalendarSync(ctx, *state, "provider_build_failed", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+		return errors.Join(err, finishErr)
+	}
+	registry := calendar.NewRegistry(providers)
+	service := eventsync.NewService(store, registry, eventSyncPolicyFor(cfg))
+	return runClaimedEventSync(ctx, store, service, *state)
+}
+
+// eventReadModelWindow freezes the projection to UTC calendar days. Repeated
+// worker ticks on one day therefore preserve the cursor; only a new UTC day
+// rebases the rolling window and starts a replacement projection.
+func eventReadModelWindow(cfg *config.Config, anchor time.Time) storage.SyncWindow {
+	utc := anchor.UTC()
+	day := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	return storage.SyncWindow{
+		Start: day.AddDate(0, 0, -cfg.EventCacheLookbackDays),
+		End:   day.AddDate(0, 0, cfg.EventCacheLookaheadDays),
+	}
+}
+
+func eventSyncPolicyFor(cfg *config.Config) func(calendar.Provider) calendar.EventSyncPolicy {
+	return func(provider calendar.Provider) calendar.EventSyncPolicy {
+		// Start with adapter limits/retry behaviour and override only cadence.
+		policy := calendar.EventSyncPolicy{}
+		if configured, ok := calendar.EventSyncPolicyCapability(provider); ok {
+			policy = configured.EventSyncPolicy()
+		}
+		switch provider.Name() {
+		case "google":
+			policy.PollInterval = cfg.EventSyncGoogleInterval
+		case "microsoft":
+			policy.PollInterval = cfg.EventSyncMicrosoftInterval
+		case "apple":
+			policy.PollInterval = cfg.EventSyncAppleInterval
+		}
+		return policy
+	}
+}
+
+func runClaimedEventSync(ctx context.Context, store *storage.Store, service *eventsync.Service, state storage.CalendarSyncState) error {
+	syncCtx, cancelSync := context.WithCancel(ctx)
+	defer cancelSync()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	ticker := time.NewTicker(workerHeartbeat)
+	defer ticker.Stop()
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		heartbeatDone <- maintainCalendarSyncLease(heartbeatCtx, ticker.C, func(at time.Time) error {
+			return store.RenewCalendarSyncLease(heartbeatCtx, state, at.UTC(), at.UTC().Add(workerLease))
+		}, cancelSync)
+	}()
+	err := service.RunOne(syncCtx, state)
+	stopHeartbeat()
+	heartbeatErr := <-heartbeatDone
+	return errors.Join(err, heartbeatErr)
+}
+
+func maintainCalendarSyncLease(ctx context.Context, ticks <-chan time.Time, renew func(time.Time) error, cancelWork context.CancelFunc) error {
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case at, ok := <-ticks:
+			if !ok || ctx.Err() != nil {
+				return nil
+			}
+			if err := renew(at); err != nil {
+				if ctx.Err() != nil {
+					// Work completion can race the final lease release; once the
+					// heartbeat is stopped, that renewal result is not a failure.
+					return nil //nolint:nilerr
+				}
+				cancelWork()
+				return fmt.Errorf("renew calendar sync lease: %w", err)
+			}
 		}
 	}
 }

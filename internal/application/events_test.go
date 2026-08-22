@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/storage"
 )
 
 func TestCreateEventDefaultsNotificationsAndNormalizesIDs(t *testing.T) {
@@ -63,6 +64,149 @@ func TestCreateEventRejectsUnsupportedNotificationPolicy(t *testing.T) {
 	}
 	if p.createCalled {
 		t.Fatal("provider create was called after failed capability validation")
+	}
+}
+
+func TestCreateEventWritesThroughAndWarnsWithoutRepeatingProviderMutation(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}, created: &calendar.EventV2{ID: "event", CalendarID: "primary"}}
+	model := &stubEventReadModel{}
+	service := New(calendar.NewRegistry([]calendar.Provider{provider}), WithEventReadModel(model))
+
+	event, warnings, err := service.CreateEventWithReconciliation(t.Context(), calendar.CreateEventRequestV2{
+		CalendarID: "google:primary",
+		Event: calendar.EventCreateV2{
+			Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.createCalls != 1 || len(model.upserts) != 1 || len(model.scheduled) != 1 {
+		t.Fatalf("provider=%d upserts=%d scheduled=%d", provider.createCalls, len(model.upserts), len(model.scheduled))
+	}
+	if event.ID != "google:event" || model.upserts[0].ID != "event" || model.scheduled[0] != "google:primary" || len(warnings) != 0 {
+		t.Fatalf("event=%#v upserts=%#v scheduled=%#v warnings=%#v", event, model.upserts, model.scheduled, warnings)
+	}
+
+	model.upsertErr = errors.New("projection unavailable")
+	model.scheduleErr = errors.New("scheduler unavailable")
+	_, warnings, err = service.CreateEventWithReconciliation(t.Context(), calendar.CreateEventRequestV2{
+		CalendarID: "google:primary",
+		Event:      calendar.EventCreateV2{Start: calendar.EventTime{Date: "2026-08-24"}, End: calendar.EventTime{Date: "2026-08-25"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.createCalls != 2 || len(warnings) != 1 || warnings[0] != reconciliationWarning {
+		t.Fatalf("provider=%d warnings=%#v", provider.createCalls, warnings)
+	}
+}
+
+func TestDeleteEventWritesThroughAndReturnsReconciliationWarning(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		MutationScopes: []calendar.MutationScope{calendar.ScopeSeries}, NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}}
+	model := &stubEventReadModel{deleteErr: errors.New("projection unavailable")}
+	service := New(calendar.NewRegistry([]calendar.Provider{provider}), WithEventReadModel(model))
+	result, err := service.DeleteEvent(t.Context(), calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: "google:primary", EventID: "google:event"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.deleteCalls != 1 || len(model.deleted) != 1 || len(model.scheduled) != 1 || len(result.Warnings) != 1 || result.Warnings[0] != reconciliationWarning {
+		t.Fatalf("provider=%d deleted=%#v scheduled=%#v warnings=%#v", provider.deleteCalls, model.deleted, model.scheduled, result.Warnings)
+	}
+}
+
+func TestDeleteSeriesRemovesEveryCachedOccurrenceImmediately(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		MutationScopes: []calendar.MutationScope{calendar.ScopeSeries}, NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}}
+	model := &stubEventReadModel{cached: []calendar.EventV2{
+		{ID: "occurrence-1", CalendarID: "google:primary", RecurringEventID: "series"},
+		{ID: "occurrence-2", CalendarID: "google:primary", RecurringEventID: "series"},
+		{ID: "other", CalendarID: "google:primary", RecurringEventID: "other-series"},
+	}}
+	window := storage.SyncWindow{Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC().Add(time.Hour)}
+	service := New(calendar.NewRegistry([]calendar.Provider{provider})).CloneWithEventReadModel(model, window)
+	result, err := service.DeleteEvent(t.Context(), calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: "google:primary", EventID: "google:occurrence-1"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 0 || len(model.deleted) != 2 || model.deleted[0].EventID != "occurrence-1" || model.deleted[1].EventID != "occurrence-2" {
+		t.Fatalf("result=%#v deleted=%#v", result, model.deleted)
+	}
+}
+
+func TestUpdateEventPatchesReadModelAndSchedulesReconciliation(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		MutationScopes: []calendar.MutationScope{calendar.ScopeSingle}, NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}, updated: &calendar.OperationResult{Status: "completed", Event: &calendar.EventV2{ID: "event", CalendarID: "primary"}}}
+	model := &stubEventReadModel{}
+	service := New(calendar.NewRegistry([]calendar.Provider{provider}), WithEventReadModel(model))
+	result, err := service.UpdateEvent(t.Context(), calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: "google:primary", EventID: "google:event"}, Scope: calendar.ScopeSingle, Notifications: calendar.NotificationsNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.updateCalls != 1 || result.Event == nil || result.Event.ID != "google:event" || len(model.upserts) != 1 || model.upserts[0].ID != "event" || len(model.scheduled) != 1 {
+		t.Fatalf("provider=%d result=%#v upserts=%#v scheduled=%#v", provider.updateCalls, result, model.upserts, model.scheduled)
+	}
+}
+
+type stubEventReadModel struct {
+	cached      []calendar.EventV2
+	upserts     []calendar.EventV2
+	deleted     []calendar.EventRef
+	scheduled   []string
+	ensured     []storage.SyncWindow
+	upsertErr   error
+	deleteErr   error
+	scheduleErr error
+}
+
+func (m *stubEventReadModel) ListCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
+	return append([]calendar.EventV2(nil), m.cached...), nil, nil
+}
+func (m *stubEventReadModel) EnsureCalendarSyncStates(_ context.Context, _ time.Time, window storage.SyncWindow) error {
+	m.ensured = append(m.ensured, window)
+	return nil
+}
+func (m *stubEventReadModel) ScheduleCalendarSync(_ context.Context, calendarID string, _ time.Time, resetCursor bool) error {
+	if resetCursor {
+		return errors.New("unexpected cursor reset")
+	}
+	m.scheduled = append(m.scheduled, calendarID)
+	return m.scheduleErr
+}
+func (m *stubEventReadModel) UpsertCachedEvent(_ context.Context, event calendar.EventV2, _ time.Time) error {
+	m.upserts = append(m.upserts, event)
+	return m.upsertErr
+}
+func (m *stubEventReadModel) DeleteCachedEvent(_ context.Context, ref calendar.EventRef, _ time.Time) error {
+	m.deleted = append(m.deleted, ref)
+	return m.deleteErr
+}
+
+func TestCloneWithEventReadModelDoesNotChangeSharedService(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}, created: &calendar.EventV2{ID: "event", CalendarID: "primary"}}
+	shared := New(calendar.NewRegistry([]calendar.Provider{provider}))
+	model := &stubEventReadModel{}
+	ui := shared.CloneWithEventReadModel(model, storage.SyncWindow{Start: time.Now().UTC(), End: time.Now().UTC().Add(time.Hour)})
+	request := calendar.CreateEventRequestV2{CalendarID: "google:primary", Event: calendar.EventCreateV2{Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}}
+	if _, _, err := ui.CreateEventWithReconciliation(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.upserts) != 1 || len(model.scheduled) != 1 {
+		t.Fatalf("UI clone did not reconcile: %#v", model)
+	}
+	if _, err := shared.CreateEvent(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.upserts) != 1 || len(model.scheduled) != 1 {
+		t.Fatalf("shared service leaked UI read model: %#v", model)
 	}
 }
 
@@ -131,7 +275,11 @@ type stubV2Provider struct {
 	pageTokens    []string
 	created       *calendar.EventV2
 	createCalled  bool
+	createCalls   int
 	createRequest calendar.CreateEventRequestV2
+	updated       *calendar.OperationResult
+	updateCalls   int
+	deleteCalls   int
 }
 
 func (p *stubV2Provider) Name() string { return p.name }
@@ -163,6 +311,7 @@ func (p *stubV2Provider) GetEventV2(context.Context, calendar.EventRef) (*calend
 }
 func (p *stubV2Provider) CreateEventV2(_ context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
 	p.createCalled = true
+	p.createCalls++
 	p.createRequest = request
 	if p.created == nil {
 		return &calendar.EventV2{}, nil
@@ -170,9 +319,15 @@ func (p *stubV2Provider) CreateEventV2(_ context.Context, request calendar.Creat
 	copy := *p.created
 	return &copy, nil
 }
+
 func (p *stubV2Provider) UpdateEventV2(context.Context, calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	p.updateCalls++
+	if p.updated != nil {
+		return p.updated, nil
+	}
 	return &calendar.OperationResult{Status: "completed"}, nil
 }
 func (p *stubV2Provider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	p.deleteCalls++
 	return &calendar.OperationResult{Status: "completed"}, nil
 }

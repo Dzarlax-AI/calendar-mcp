@@ -1,0 +1,180 @@
+package google
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"google.golang.org/api/googleapi"
+
+	"calendar-mcp/internal/calendar"
+)
+
+// EventSyncPolicy supplies the bounded defaults appropriate for Google's
+// incremental Events.List feed. The coordinator owns enforcement.
+func (p *Provider) EventSyncPolicy() calendar.EventSyncPolicy {
+	return calendar.EventSyncPolicy{
+		PollInterval: time.Minute,
+		RetryBase:    5 * time.Second,
+		RetryMax:     5 * time.Minute,
+		MaxPages:     250,
+		MaxResets:    2,
+	}
+}
+
+// SyncEvents reads exactly one Google Events.List page. Google event IDs are
+// provider-local object identities, so this adapter never prefixes them.
+func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
+	if request.CalendarID == "" || p == nil || p.svc == nil {
+		return calendar.EventSyncPage{}, syncProtocolError(nil)
+	}
+
+	call := p.svc.Events.List(request.CalendarID).ShowDeleted(true).SingleEvents(true).MaxResults(2500)
+	switch request.Mode {
+	case calendar.EventSyncReplacement:
+		if request.Window.Start.IsZero() || request.Window.End.IsZero() || !request.Window.End.After(request.Window.Start) {
+			return calendar.EventSyncPage{}, syncProtocolError(nil)
+		}
+		// The initial request establishes the sync token. It intentionally uses
+		// the same unbounded parameter set as later sync-token requests; the
+		// frozen projection window is applied locally below.
+	case calendar.EventSyncIncremental:
+		if request.Cursor == "" {
+			return calendar.EventSyncPage{}, syncProtocolError(nil)
+		}
+		// syncToken is deliberately not combined with replacement-only bounds.
+		call = call.SyncToken(string(request.Cursor))
+	default:
+		return calendar.EventSyncPage{}, syncProtocolError(nil)
+	}
+	if request.PageToken != "" {
+		call = call.PageToken(string(request.PageToken))
+	}
+
+	response, err := call.Context(ctx).Do()
+	if err != nil {
+		var apiErr *googleapi.Error
+		if errors.As(err, &apiErr) && apiErr.Code == http.StatusGone {
+			// A stale sync token requires replacement, but must not mutate this page.
+			return calendar.EventSyncPage{ResetRequired: true}, nil
+		}
+		return calendar.EventSyncPage{}, classifyGoogleSyncError(err)
+	}
+
+	page := calendar.EventSyncPage{}
+	for _, item := range response.Items {
+		if item == nil || item.Id == "" {
+			return calendar.EventSyncPage{}, syncProtocolError(nil)
+		}
+		if item.Status == "cancelled" {
+			page.DeletedEventIDs = append(page.DeletedEventIDs, item.Id)
+			continue
+		}
+		event := fromGoogleEventV2(item, request.CalendarID, response.TimeZone)
+		inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
+		if windowErr != nil {
+			return calendar.EventSyncPage{}, syncProtocolError(windowErr)
+		}
+		if !inWindow {
+			// The initial feed is unbounded to establish a parameter-compatible
+			// token, so replacement pages ignore objects outside the projection.
+			// Incremental changes may move a cached item outside it; tombstone it.
+			if request.Mode == calendar.EventSyncIncremental {
+				page.DeletedEventIDs = append(page.DeletedEventIDs, item.Id)
+			}
+			continue
+		}
+		page.Upserts = append(page.Upserts, calendar.EventSyncUpsert{
+			Object: calendar.SyncObject{ObjectID: item.Id, ETag: item.Etag},
+			Event:  event,
+		})
+	}
+
+	if response.NextPageToken != "" {
+		page.NextPageToken = calendar.EventSyncPageToken(response.NextPageToken)
+		return page, nil
+	}
+	page.Complete = true
+	// Google only emits the durable sync token on the final page.
+	page.NextCursor = calendar.EventSyncCursor(response.NextSyncToken)
+	return page, nil
+}
+
+func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWindow) (bool, error) {
+	if window.Start.IsZero() || window.End.IsZero() || !window.End.After(window.Start) {
+		return false, errors.New("invalid sync window")
+	}
+	start, err := event.Start.Instant()
+	if err != nil {
+		return false, err
+	}
+	end, err := event.End.Instant()
+	if err != nil {
+		return false, err
+	}
+	if !end.After(start) {
+		return false, errors.New("invalid event time range")
+	}
+	return start.Before(window.End) && end.After(window.Start), nil
+}
+
+func classifyGoogleSyncError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) {
+		return &calendar.EventSyncError{Class: calendar.EventSyncTransient, Cause: err}
+	}
+	class := calendar.EventSyncProtocol
+	switch {
+	case apiErr.Code == http.StatusUnauthorized:
+		class = calendar.EventSyncAuth
+	case apiErr.Code == http.StatusForbidden && googleSyncRateLimited(apiErr):
+		class = calendar.EventSyncRateLimited
+	case apiErr.Code == http.StatusForbidden:
+		class = calendar.EventSyncPermission
+	case apiErr.Code == http.StatusTooManyRequests:
+		class = calendar.EventSyncRateLimited
+	case apiErr.Code >= 500 && apiErr.Code <= 599:
+		class = calendar.EventSyncTransient
+	}
+	return &calendar.EventSyncError{Class: class, RetryAfter: googleRetryAfter(apiErr.Header), Cause: err}
+}
+
+func googleSyncRateLimited(apiErr *googleapi.Error) bool {
+	if apiErr == nil {
+		return false
+	}
+	for _, item := range apiErr.Errors {
+		switch strings.ToLower(item.Reason) {
+		case "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded", "dailylimitexceeded", "calendarusagelimitsexceeded":
+			return true
+		}
+	}
+	return false
+}
+
+func syncProtocolError(cause error) error {
+	return &calendar.EventSyncError{Class: calendar.EventSyncProtocol, Cause: cause}
+}
+
+func googleRetryAfter(header http.Header) time.Duration {
+	if header == nil {
+		return 0
+	}
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		return max(0, time.Until(retryAt))
+	}
+	return 0
+}

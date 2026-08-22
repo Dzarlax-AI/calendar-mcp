@@ -57,13 +57,18 @@ type uiEvent struct {
 	Created          *time.Time          `json:"created,omitempty"`
 	Updated          *time.Time          `json:"updated,omitempty"`
 	ReadOnly         bool                `json:"read_only,omitempty"`
+	Warnings         []string            `json:"warnings,omitempty"`
 }
 
 type uiSourceStatus struct {
-	Provider   string   `json:"provider"`
-	CalendarID string   `json:"calendar_id,omitempty"`
-	Complete   bool     `json:"complete"`
-	Error      *uiError `json:"error,omitempty"`
+	Provider      string     `json:"provider"`
+	CalendarID    string     `json:"calendar_id,omitempty"`
+	Complete      bool       `json:"complete"`
+	Error         *uiError   `json:"error,omitempty"`
+	Status        string     `json:"status"`
+	LastSuccessAt *time.Time `json:"last_success_at"`
+	Stale         bool       `json:"stale"`
+	ErrorCode     *string    `json:"error_code"`
 }
 
 type uiEventsResponse struct {
@@ -76,6 +81,7 @@ type uiOperationResult struct {
 	Status        string    `json:"status"`
 	Event         *uiEvent  `json:"event,omitempty"`
 	RelatedEvents []uiEvent `json:"related_events,omitempty"`
+	Warnings      []string  `json:"warnings,omitempty"`
 }
 
 type uiCalendar struct {
@@ -265,6 +271,16 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	calendarIDs := uniqueStrings(r.URL.Query()["calendar_id"])
+	if s.eventReadModelEnabled {
+		response, err := s.listCachedUIEvents(r.Context(), calendarIDs, start, end)
+		if err != nil {
+			writeUIAPIError(w, err)
+			return
+		}
+		response.sort()
+		writeUIJSON(w, http.StatusOK, response)
+		return
+	}
 	response := uiEventsResponse{Items: []uiEvent{}, Complete: true, Sources: []uiSourceStatus{}}
 	if len(calendarIDs) == 0 {
 		page, err := s.listUIDrainedEvents(r, "", start, end)
@@ -286,6 +302,72 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	response.sort()
 	writeUIJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, start, end time.Time) (uiEventsResponse, error) {
+	if len(calendarIDs) == 0 {
+		control, err := s.uiControlPlane(ctx)
+		if err != nil {
+			return uiEventsResponse{}, err
+		}
+		for _, item := range control.Calendars {
+			if item.CanRead {
+				calendarIDs = append(calendarIDs, item.ID)
+			}
+		}
+	}
+	calendarIDs = uniqueStrings(calendarIDs)
+	events, sources, err := s.app.ListCachedEvents(ctx, calendarIDs, start, end)
+	if err != nil {
+		return uiEventsResponse{}, err
+	}
+	response := uiEventsResponse{Items: make([]uiEvent, 0, len(events)), Sources: make([]uiSourceStatus, 0, len(calendarIDs)), Complete: true}
+	for _, event := range events {
+		response.Items = append(response.Items, toUIEvent(normalizeCachedUIEvent(event)))
+	}
+	seen := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		response.Sources = append(response.Sources, toCachedUISource(source))
+		seen[source.CalendarID] = struct{}{}
+	}
+	for _, calendarID := range calendarIDs {
+		if _, ok := seen[calendarID]; ok {
+			continue
+		}
+		// A readable calendar with no durable state has not been warmed yet.
+		response.Sources = append(response.Sources, uiSourceStatus{Provider: uiCalendarProvider(calendarID), CalendarID: calendarID, Status: "pending", Stale: true})
+	}
+	for _, source := range response.Sources {
+		if source.Status != "ready" || source.Stale {
+			response.Complete = false
+		}
+	}
+	return response, nil
+}
+
+func (s *Server) refreshUICalendar(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireApplication(); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	calendarID := r.PathValue("id")
+	if calendarID == "" {
+		writeUIAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "calendar_id is required"))
+		return
+	}
+	if err := s.app.ScheduleCalendarSync(r.Context(), calendarID, time.Now().UTC()); err != nil {
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrCalendarSyncIneligible) {
+			writeUIAPIError(w, calendar.NewAPIError(calendar.ErrorNotFound, "calendar refresh is unavailable"))
+			return
+		}
+		if errors.Is(err, storage.ErrCalendarSyncActive) {
+			writeUIAPIError(w, calendar.NewAPIError(calendar.ErrorConflict, "calendar refresh is already in progress"))
+			return
+		}
+		writeUIAPIError(w, err)
+		return
+	}
+	writeUIJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
 func (s *Server) listUIDrainedEvents(r *http.Request, calendarID string, start, end time.Time) (calendar.Page[calendar.EventV2], error) {
@@ -345,7 +427,7 @@ func (s *Server) createUIEvent(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, err)
 		return
 	}
-	event, err := s.app.CreateEvent(r.Context(), calendar.CreateEventRequestV2{
+	event, warnings, err := s.app.CreateEventWithReconciliation(r.Context(), calendar.CreateEventRequestV2{
 		CalendarID:    input.CalendarID,
 		Event:         calendar.EventCreateV2{Title: input.Title, Description: input.Description, Location: input.Location, Start: input.Start, End: input.End, Recurrence: input.Recurrence, Visibility: input.Visibility, Transparency: input.Transparency, ColorID: input.ColorID},
 		Notifications: calendar.NotificationsNone,
@@ -354,7 +436,9 @@ func (s *Server) createUIEvent(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, err)
 		return
 	}
-	writeUIJSON(w, http.StatusCreated, toUIEvent(*event))
+	response := toUIEvent(*event)
+	response.Warnings = warnings
+	writeUIJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) updateUIEvent(w http.ResponseWriter, r *http.Request) {
@@ -704,7 +788,7 @@ func toUIEvent(event calendar.EventV2) uiEvent {
 }
 
 func toUIOperation(result calendar.OperationResult) uiOperationResult {
-	converted := uiOperationResult{Status: result.Status, RelatedEvents: make([]uiEvent, 0, len(result.RelatedEvents))}
+	converted := uiOperationResult{Status: result.Status, RelatedEvents: make([]uiEvent, 0, len(result.RelatedEvents)), Warnings: append([]string(nil), result.Warnings...)}
 	if result.Event != nil {
 		event := toUIEvent(*result.Event)
 		converted.Event = &event
@@ -716,7 +800,11 @@ func toUIOperation(result calendar.OperationResult) uiOperationResult {
 }
 
 func toUISource(source calendar.SourceStatus) uiSourceStatus {
-	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Complete: source.Complete}
+	status := "ready"
+	if !source.Complete {
+		status = "failed"
+	}
+	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Complete: source.Complete, Status: status}
 	if source.Error != nil {
 		converted := safeUIError(source.Error)
 		converted.Provider = source.Provider
@@ -733,7 +821,53 @@ func failedUISource(provider, calendarID string, err error) uiSourceStatus {
 	converted := safeUIError(err)
 	converted.Provider = provider
 	converted.CalendarID = calendarID
-	return uiSourceStatus{Provider: converted.Provider, CalendarID: calendarID, Complete: false, Error: &converted}
+	return uiSourceStatus{Provider: converted.Provider, CalendarID: calendarID, Complete: false, Error: &converted, Status: "failed"}
+}
+
+func toCachedUISource(source storage.CachedSourceStatus) uiSourceStatus {
+	status := source.Status
+	if !isUISyncStatus(status) {
+		status = "failed"
+	}
+	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Status: status, LastSuccessAt: source.LastSuccessAt, Stale: source.Stale}
+	result.Complete = status == "ready" && !source.Stale
+	if code, ok := safeUISyncErrorCode(source.ErrorCode); ok {
+		result.ErrorCode = &code
+	}
+	return result
+}
+
+func normalizeCachedUIEvent(event calendar.EventV2) calendar.EventV2 {
+	provider := event.Provider
+	if provider == "" {
+		provider = uiCalendarProvider(event.CalendarID)
+		event.Provider = provider
+	}
+	if provider != "" && event.ID != "" && !strings.HasPrefix(event.ID, provider+":") {
+		event.ID = provider + ":" + event.ID
+	}
+	if provider != "" && event.RecurringEventID != "" && !strings.HasPrefix(event.RecurringEventID, provider+":") {
+		event.RecurringEventID = provider + ":" + event.RecurringEventID
+	}
+	return event
+}
+
+func isUISyncStatus(value string) bool {
+	switch value {
+	case "pending", "syncing", "ready", "failed", "parked":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeUISyncErrorCode(value string) (string, bool) {
+	switch value {
+	case "transient", "rate_limited", "auth", "permission", "unsupported", "protocol":
+		return value, true
+	default:
+		return "", false
+	}
 }
 
 func uiCalendarProvider(calendarID string) string {

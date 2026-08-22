@@ -8,11 +8,11 @@ import listPlugin from "@fullcalendar/list";
 import interactionPlugin from "@fullcalendar/interaction";
 import type { DatesSetArg, EventClickArg, EventContentArg, EventDropArg, DateSelectArg } from "@fullcalendar/core";
 import type { EventResizeDoneArg } from "@fullcalendar/interaction";
-import { AlignLeft, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, Link2, ListChecks, ListFilter, MapPin, PlayCircle, Plus, Settings2, X } from "lucide-react";
+import { AlignLeft, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Clock3, Link2, ListChecks, ListFilter, MapPin, PlayCircle, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
-import { APIError, createEvent, deleteEvent, getEvents, updateEvent } from "../../lib/api";
-import { calendarEventKey, canWriteEvent, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
+import { APIError, createEvent, deleteEvent, getEvents, refreshCalendar, updateEvent } from "../../lib/api";
+import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, eventStatusPollInterval, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 
@@ -49,6 +49,9 @@ export default function CalendarPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia?.("(max-width: 820px)").matches);
   const [deleteConfirm, setDeleteConfirm] = useState<EventRecord | null>(null);
+  const lastPolledDataUpdatedAtRef = useRef(0);
+  const [pollingAttempts, setPollingAttempts] = useState(0);
+  const [pollingCapped, setPollingCapped] = useState(false);
   const sortedSelectedCalendarIds = useMemo(() => sortCalendarIds(selectedCalendarIds), [selectedCalendarIds]);
 
   const eventsQuery = useQuery({
@@ -56,26 +59,60 @@ export default function CalendarPage() {
     queryFn: () => getEvents(range!.start, range!.end, sortedSelectedCalendarIds),
     enabled: Boolean(range && sortedSelectedCalendarIds.length),
     placeholderData: (previous) => previous,
+    refetchInterval: (query) => {
+      return eventStatusPollInterval(query.state.data?.sources, pollingAttempts);
+    },
+    refetchIntervalInBackground: false,
   });
   const events = eventsQuery.data?.items ?? [];
+  const baseEventStatus = eventsQuery.data ? summarizeEventSources(eventsQuery.data) : null;
+  const eventStatus = baseEventStatus?.kind === "syncing" && pollingCapped ? { ...baseEventStatus, kind: "stale" as const, label: "Sync paused; refresh to try again" } : baseEventStatus;
+  const hasPendingSources = eventsQuery.data?.sources?.some((source) => source.status === "pending" || source.status === "syncing") ?? false;
   const eventsById = useMemo(() => new Map(events.map((event) => [calendarEventKey(event), event])), [events]);
   const calendarById = useMemo(() => new Map(calendars.map((calendar) => [calendar.id, calendar])), [calendars]);
   const calendarEvents = useMemo(() => events.map((event) => toCalendarEvent(event, calendarById.get(event.calendarId))), [events, calendarById]);
 
   const invalidateEvents = () => void queryClient.invalidateQueries({ queryKey: ["events"] });
+  useEffect(() => {
+    setPollingAttempts(0);
+    setPollingCapped(false);
+    lastPolledDataUpdatedAtRef.current = 0;
+  }, [range?.start, range?.end, sortedSelectedCalendarIds]);
+  const refreshMutation = useMutation({
+    mutationFn: (calendarIds: string[]) => Promise.all(calendarIds.map((calendarId) => refreshCalendar(csrfToken, calendarId))),
+    onSuccess: () => setNotice("Calendar refresh queued"),
+    onError: (error) => setNotice(safeError(error)),
+    onSettled: invalidateEvents,
+  });
+  useEffect(() => {
+    if (!hasPendingSources) {
+      setPollingAttempts(0);
+      setPollingCapped(false);
+      lastPolledDataUpdatedAtRef.current = eventsQuery.dataUpdatedAt;
+      return;
+    }
+    if (eventsQuery.dataUpdatedAt && eventsQuery.dataUpdatedAt !== lastPolledDataUpdatedAtRef.current) {
+      lastPolledDataUpdatedAtRef.current = eventsQuery.dataUpdatedAt;
+      setPollingAttempts((current) => {
+        const next = Math.min(EVENT_STATUS_POLL_MAX_ATTEMPTS, current + 1);
+        if (next >= EVENT_STATUS_POLL_MAX_ATTEMPTS) setPollingCapped(true);
+        return next;
+      });
+    }
+  }, [hasPendingSources, eventsQuery.dataUpdatedAt]);
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
-    onSuccess: () => { setModal(null); setNotice("Event created"); invalidateEvents(); },
+    onSuccess: (event) => { setModal(null); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
     onError: (error) => setNotice(safeError(error)),
   });
   const updateMutation = useMutation({
     mutationFn: (args: { event: EventRecord; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload),
-    onSuccess: (event) => { setSelectedEvent(event); setModal(null); setNotice("Event updated"); invalidateEvents(); },
+    onSuccess: (event) => { setSelectedEvent(event); setModal(null); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
     onError: (error, variables) => { variables.revert?.(); if (error instanceof APIError && error.status === 409) { setNotice("This event changed elsewhere. We refreshed it; please try again."); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice(safeError(error)); if (variables.event) setSelectedEvent(variables.event); },
   });
   const deleteMutation = useMutation({
     mutationFn: (args: { event: EventRecord; scope?: "single" | "following" | "series" }) => deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined }),
-    onSuccess: () => { setSelectedEvent(null); setPendingScope(null); setNotice("Event deleted"); invalidateEvents(); },
+    onSuccess: (result) => { setSelectedEvent(null); setPendingScope(null); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
     onError: (error) => setNotice(safeError(error)),
   });
 
@@ -139,20 +176,29 @@ export default function CalendarPage() {
       else updateMutation.mutate({ event: modal.event, payload });
     }
   }
+  function refreshSelectedCalendars() {
+    const readableSelected = calendars.filter((calendar) => calendar.capability.read && sortedSelectedCalendarIds.includes(calendar.id)).map((calendar) => calendar.id);
+    if (readableSelected.length) {
+      setPollingAttempts(0);
+      setPollingCapped(false);
+      lastPolledDataUpdatedAtRef.current = 0;
+      refreshMutation.mutate(readableSelected);
+    }
+  }
 
   return <div className={`calendar-screen ${sidebarOpen ? "with-sidebar" : "wide"} ${selectedEvent ? "with-drawer" : ""}`}>
     <CalendarSidebar calendars={calendars} selected={selectedCalendarIds} open={sidebarOpen} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => setSidebarOpen(false)} onJumpToDate={(date) => calendarRef.current?.getApi().gotoDate(date)} />
     <main className="calendar-main">
       <div className="calendar-toolbar">
         <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><button className="date-title" onClick={() => navigate("today")} aria-label="Go to today">{calendarRef.current?.getApi().view.title ?? "Calendar"}<ChevronDown size={17} /></button></div>
-        <div className="toolbar-actions"><div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} onClick={() => changeView(option.value)}>{option.label}</button>)}</div></div>
+        <div className="toolbar-actions"><button className="button button-outline" onClick={refreshSelectedCalendars} disabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} aria-label="Refresh selected calendars"><RefreshCw size={15} className={refreshMutation.isPending ? "spin" : undefined} /> Refresh</button><div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} onClick={() => changeView(option.value)}>{option.label}</button>)}</div></div>
       </div>
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSidebarOpen(true)}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
       {notice && <div className="notice" role="status"><span>{notice}</span><button className="icon-button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16} /></button></div>}
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={() => setSelectedCalendarIds(calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id))}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
-        {eventsQuery.isPending && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
+        {eventStatus && <div className={`event-status-row event-status-row--${eventStatus.kind}`} role="status" aria-live="polite"><span>{eventStatus.label}</span>{eventStatus.kind === "failed" && <span className="event-status-detail">Cached events remain visible.</span>}</div>}
+        {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
-        {eventsQuery.data && !eventsQuery.data.complete && <div className="partial-warning"><CircleAlert size={15} /> Some calendars could not finish loading.</div>}
         <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() })} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
@@ -163,7 +209,25 @@ export default function CalendarPage() {
   </div>;
 }
 
-function safeError(error: unknown) { return error instanceof Error ? error.message : "The request could not be completed."; }
+function safeError(error: unknown) {
+  if (!(error instanceof APIError)) return "The request could not be completed.";
+  switch (error.code) {
+    case "permission_denied": return "Calendar access was denied.";
+    case "rate_limited": return "Calendar provider is temporarily rate limited.";
+    case "not_found": return "The calendar or event was not found.";
+    case "conflict": return "The event changed elsewhere. Please refresh and try again.";
+    case "unsupported_capability": return "This calendar operation is not supported.";
+    case "invalid_argument":
+    case "invalid_recurrence": return "The calendar request is invalid.";
+    case "provider_unavailable":
+    case "partial_failure": return "Calendar provider is temporarily unavailable.";
+    default: return error.status >= 500 ? "Calendar service is temporarily unavailable." : "The request could not be completed.";
+  }
+}
+
+function mutationNotice(success: string, warnings?: string[]) {
+  return warnings?.length ? `${success}. ${warnings.join(" ")}` : success;
+}
 
 function CalendarSidebar({ calendars, selected, open, onToggle, onCreate, onClose, onJumpToDate }: { calendars: CalendarRecord[]; selected: string[]; open: boolean; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void }) {
   const groups = useMemo(() => Array.from(new Set(calendars.map((calendar) => calendar.group || "Calendars"))), [calendars]);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEvent, getBootstrap } from "./api";
+import { createEvent, deleteEvent, getBootstrap, getEvents, refreshCalendar } from "./api";
 
 describe("browser API client", () => {
   it("normalizes the flat bootstrap contract", async () => {
@@ -14,12 +14,47 @@ describe("browser API client", () => {
   it("sends same-origin credentials and the CSRF header on creates", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "e1", calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }), { status: 201, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-    await createEvent("csrf-token", { calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } });
+    const created = await createEvent("csrf-token", { calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } });
+    expect(created.warnings).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledWith("/api/ui/events", expect.objectContaining({ credentials: "same-origin", method: "POST" }));
     expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-CSRF-Token")).toBe("csrf-token");
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("attendees");
     expect(body).not.toHaveProperty("notification_policy");
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves bounded reconciliation warnings from successful mutations", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "e1", calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" }, warnings: ["Calendar data will refresh shortly."] }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const created = await createEvent("csrf-token", { calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } });
+    expect(created.warnings).toEqual(["Calendar data will refresh shortly."]);
+    vi.unstubAllGlobals();
+  });
+
+  it("bounds and normalizes delete reconciliation warnings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ warnings: ["one", "two", "three", "four", 5, "x".repeat(201)] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await deleteEvent("csrf-token", "c1", "e1");
+    expect(result.warnings).toEqual(["one", "two", "three"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes cached source freshness without exposing raw errors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "google", calendar_id: "c1", complete: false, status: "failed", stale: true, last_success_at: null, error_code: "provider_unavailable", error: { message: "secret provider payload" } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
+    expect(result.sources?.[0]).toMatchObject({ calendar_id: "c1", status: "failed", stale: true, error_code: "provider_unavailable", error: "Calendar provider is temporarily unavailable" });
+    expect(result.sources?.[0]?.error).not.toContain("secret");
+    vi.unstubAllGlobals();
+  });
+
+  it("enqueues a calendar refresh with CSRF protection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await refreshCalendar("csrf-token", "google:primary/calendar");
+    expect(fetchMock).toHaveBeenCalledWith("/api/ui/calendars/google%3Aprimary%2Fcalendar/refresh", expect.objectContaining({ method: "POST", credentials: "same-origin" }));
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-CSRF-Token")).toBe("csrf-token");
     vi.unstubAllGlobals();
   });
 });
