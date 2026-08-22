@@ -361,6 +361,11 @@ func appleSyncMembers(object caldav.CalendarObject, request calendar.EventSyncRe
 		if masters > 1 {
 			memberID := appleSyncMemberID(object.Path, uid, i)
 			for k := range expanded {
+				// Existing Apple mutation paths address one calendar resource as
+				// one series. A multi-master resource needs a member selector that
+				// those paths do not yet support, so expose the extra materialized
+				// members honestly as read-only instead of offering broken writes.
+				expanded[k].ReadOnly = true
 				if expanded[k].OriginalStart != nil {
 					expanded[k].ID = appleInstanceID(memberID, *expanded[k].OriginalStart)
 				} else {

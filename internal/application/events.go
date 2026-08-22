@@ -246,7 +246,7 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
-	s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, true)
+	s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)
 	return result, nil
 }
 

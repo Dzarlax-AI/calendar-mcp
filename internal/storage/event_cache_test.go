@@ -85,6 +85,24 @@ func TestCachedEventsOverlapReplayAndTombstones(t *testing.T) {
 	}
 }
 
+func TestListCachedEventsReturnsExpandedRecurrenceOnly(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	master := cachedTimedEvent("series", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z")
+	master.InstanceKind = "seriesMaster"
+	occurrence := cachedTimedEvent("series#instance", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z")
+	occurrence.InstanceKind = "occurrence"
+	occurrence.RecurringEventID = "series"
+	for _, event := range []calendar.EventV2{master, occurrence} {
+		if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, _, err := store.ListCachedEvents(t.Context(), []string{"calendar"}, mustTime(t, "2026-08-22T09:00:00Z"), mustTime(t, "2026-08-22T12:00:00Z"))
+	if err != nil || len(events) != 1 || events[0].ID != occurrence.ID {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
 func TestListCachedEventsExcludesDisconnectedAndUnreadableCalendars(t *testing.T) {
 	store, now := newEventCacheStore(t)
 	ctx := context.Background()

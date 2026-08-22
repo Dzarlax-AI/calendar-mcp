@@ -479,6 +479,12 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 		if err := json.Unmarshal(payload, &event); err != nil {
 			return nil, nil, fmt.Errorf("decode cached event: %w", err)
 		}
+		// The browser contract is recurrence-expanded. Some adapters retain a
+		// series master in the projection for reconciliation, but returning it
+		// alongside its first expanded occurrence renders that occurrence twice.
+		if event.InstanceKind == "seriesMaster" {
+			continue
+		}
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {

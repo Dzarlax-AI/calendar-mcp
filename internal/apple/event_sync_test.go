@@ -189,6 +189,9 @@ func TestAppleEventSyncReplacesEveryVEVENTInObjectAndDeletesMissingObject(t *tes
 	if page.Upserts[0].Event.ID == page.Upserts[1].Event.ID {
 		t.Fatalf("multi-VEVENT object reused event ID %q", page.Upserts[0].Event.ID)
 	}
+	if !page.Upserts[0].Event.ReadOnly || !page.Upserts[1].Event.ReadOnly {
+		t.Fatalf("multi-VEVENT members must be read-only until member-addressed mutations are supported: %#v", page.Upserts)
+	}
 }
 
 func TestAppleEventSyncCanonicalizesDeletedObjectIdentity(t *testing.T) {

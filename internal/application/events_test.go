@@ -119,6 +119,26 @@ func TestDeleteEventWritesThroughAndReturnsReconciliationWarning(t *testing.T) {
 	}
 }
 
+func TestDeleteSeriesRemovesEveryCachedOccurrenceImmediately(t *testing.T) {
+	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
+		MutationScopes: []calendar.MutationScope{calendar.ScopeSeries}, NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}}
+	model := &stubEventReadModel{cached: []calendar.EventV2{
+		{ID: "occurrence-1", CalendarID: "google:primary", RecurringEventID: "series"},
+		{ID: "occurrence-2", CalendarID: "google:primary", RecurringEventID: "series"},
+		{ID: "other", CalendarID: "google:primary", RecurringEventID: "other-series"},
+	}}
+	window := storage.SyncWindow{Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC().Add(time.Hour)}
+	service := New(calendar.NewRegistry([]calendar.Provider{provider})).CloneWithEventReadModel(model, window)
+	result, err := service.DeleteEvent(t.Context(), calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: "google:primary", EventID: "google:occurrence-1"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 0 || len(model.deleted) != 2 || model.deleted[0].EventID != "occurrence-1" || model.deleted[1].EventID != "occurrence-2" {
+		t.Fatalf("result=%#v deleted=%#v", result, model.deleted)
+	}
+}
+
 func TestUpdateEventPatchesReadModelAndSchedulesReconciliation(t *testing.T) {
 	provider := &stubV2Provider{name: "google", capabilities: calendar.CalendarCapabilities{
 		MutationScopes: []calendar.MutationScope{calendar.ScopeSingle}, NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
@@ -135,6 +155,7 @@ func TestUpdateEventPatchesReadModelAndSchedulesReconciliation(t *testing.T) {
 }
 
 type stubEventReadModel struct {
+	cached      []calendar.EventV2
 	upserts     []calendar.EventV2
 	deleted     []calendar.EventRef
 	scheduled   []string
@@ -145,7 +166,7 @@ type stubEventReadModel struct {
 }
 
 func (m *stubEventReadModel) ListCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
-	return nil, nil, nil
+	return append([]calendar.EventV2(nil), m.cached...), nil, nil
 }
 func (m *stubEventReadModel) EnsureCalendarSyncStates(_ context.Context, _ time.Time, window storage.SyncWindow) error {
 	m.ensured = append(m.ensured, window)
