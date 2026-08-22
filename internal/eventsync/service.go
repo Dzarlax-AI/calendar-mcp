@@ -138,6 +138,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			mode = calendar.EventSyncReplacement
 			pageToken = ""
 			clear(seenTokens)
+			degraded = false
 			continue
 		}
 		if !page.Complete {
@@ -151,9 +152,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		if page.Complete {
 			delay := policy.PollInterval
 			if degraded {
-				// A recoverable partial attempt should retry on the provider's
-				// bounded retry base rather than waiting for the normal poll.
-				delay = retryDelay(policy, 0)
+				delay = degradedRetryDelay(policy, state)
 			}
 			next := s.now().Add(delay)
 			if !degraded {
@@ -176,6 +175,14 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 		pageToken = page.NextPageToken
 	}
+}
+
+func degradedRetryDelay(policy calendar.EventSyncPolicy, state storage.CalendarSyncState) time.Duration {
+	delay := retryDelay(policy, 0)
+	if state.LastErrorCode == string(calendar.EventSyncProtocol) && policy.PollInterval > delay {
+		return policy.PollInterval
+	}
+	return delay
 }
 
 func (s *Service) policy(provider calendar.Provider) calendar.EventSyncPolicy {

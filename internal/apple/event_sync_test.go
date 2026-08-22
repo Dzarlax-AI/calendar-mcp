@@ -437,6 +437,8 @@ func TestAppleEventSyncFetchFailuresStayHard(t *testing.T) {
 				case http.MethodGet:
 					if tc.contentType != "" {
 						w.Header().Set("Content-Type", tc.contentType)
+					} else {
+						w.Header()["Content-Type"] = nil
 					}
 					_, _ = w.Write([]byte(eventObject("valid")))
 				}

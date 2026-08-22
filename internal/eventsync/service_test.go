@@ -288,6 +288,23 @@ func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
 			t.Fatalf("degraded retry at = %s, want %s", got, want)
 		}
 	})
+
+	t.Run("repeated protocol degradation backs off to poll interval", func(t *testing.T) {
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{
+			Complete:   true,
+			NextCursor: "advanced",
+			Warnings:   []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}},
+		}}}
+		store := &fakeStore{}
+		state := testState("saved")
+		state.LastErrorCode = string(calendar.EventSyncProtocol)
+		if err := newService(store, provider).RunOne(t.Context(), state); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {
+			t.Fatalf("degraded retry at = %s, want %s", got, want)
+		}
+	})
 }
 
 func TestRunOneFailureReplaysCursorAndSchedulesBoundedRateLimit(t *testing.T) {

@@ -88,7 +88,7 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 	}
 
 	initial, err := store.ClaimDueCalendarSync(ctx, "parity-initial-worker", now, now.Add(time.Hour))
-	if err != nil || initial == nil {
+	if err != nil || initial == nil || initial.CalendarID != calendarID {
 		t.Fatalf("initial claim=%#v err=%v", initial, err)
 	}
 	initialSuccess := now.Add(time.Minute)
@@ -124,7 +124,7 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 
 	degradedAt := now.Add(2 * time.Hour)
 	degraded, err := store.ClaimDueCalendarSync(ctx, "parity-degraded-worker", degradedAt, degradedAt.Add(time.Hour))
-	if err != nil || degraded == nil {
+	if err != nil || degraded == nil || degraded.CalendarID != calendarID {
 		t.Fatalf("degraded claim=%#v err=%v", degraded, err)
 	}
 	if degraded.Cursor != beforeCursor {
@@ -182,7 +182,7 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 
 	repairAt := degradedRetry
 	repair, err := store.ClaimDueCalendarSync(ctx, "parity-repair-worker", repairAt, repairAt.Add(time.Hour))
-	if err != nil || repair == nil {
+	if err != nil || repair == nil || repair.CalendarID != calendarID {
 		t.Fatalf("repair claim=%#v err=%v", repair, err)
 	}
 	if repair.Cursor != beforeCursor {

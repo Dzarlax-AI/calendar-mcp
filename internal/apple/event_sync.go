@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -97,6 +98,9 @@ func (p *Provider) replacementFromCalendarQuery(ctx context.Context, request cal
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Window.Start, End: request.Window.End}}}}
 	objects, malformed, err := p.queryCalendarForEventSync(ctx, request.CalendarID, query)
 	if err != nil {
+		if class, ok := appleCalendarQueryErrorClass(err); ok {
+			return calendar.EventSyncPage{}, appleEventSyncError(class)
+		}
 		return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
 	}
 	if malformed {
@@ -117,10 +121,29 @@ func (p *Provider) queryCalendarForEventSync(ctx context.Context, calendarID str
 		}
 	}()
 	objects, err = p.client.QueryCalendar(ctx, calendarID, query)
-	if err != nil && (strings.Contains(err.Error(), "XML syntax error") || strings.Contains(err.Error(), "unexpected EOF") || strings.HasPrefix(err.Error(), "ical:")) {
+	if err != nil && isAppleCalendarPayloadError(err) {
 		return nil, true, nil
 	}
 	return objects, false, err
+}
+
+func isAppleCalendarPayloadError(err error) bool {
+	var syntaxErr *xml.SyntaxError
+	return errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) || strings.HasPrefix(err.Error(), "ical:")
+}
+
+func appleCalendarQueryErrorClass(err error) (calendar.EventSyncErrorClass, bool) {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "HTTP multi-status request failed: 401 "):
+		return calendar.EventSyncAuth, true
+	case strings.Contains(message, "HTTP multi-status request failed: 403 "):
+		return calendar.EventSyncPermission, true
+	case strings.Contains(message, "HTTP multi-status request failed: 429 "):
+		return calendar.EventSyncRateLimited, true
+	default:
+		return "", false
+	}
 }
 
 func appleReplacementFromObjects(request calendar.EventSyncRequest, objects []caldav.CalendarObject) (calendar.EventSyncPage, error) {
@@ -468,6 +491,9 @@ func appleSyncMembers(object caldav.CalendarObject, request calendar.EventSyncRe
 		if events[i].Props.Get("RECURRENCE-ID") == nil {
 			masters++
 			uid, _ := events[i].Props.Text("UID")
+			if uid == "" {
+				continue
+			}
 			masterUIDs[uid] = struct{}{}
 		}
 	}
@@ -477,6 +503,9 @@ func appleSyncMembers(object caldav.CalendarObject, request calendar.EventSyncRe
 			continue
 		}
 		uid, _ := events[i].Props.Text("UID")
+		if uid == "" {
+			return nil, appleEventSyncError(calendar.EventSyncProtocol)
+		}
 		if _, ok := masterUIDs[uid]; !ok {
 			return nil, appleEventSyncError(calendar.EventSyncProtocol)
 		}
