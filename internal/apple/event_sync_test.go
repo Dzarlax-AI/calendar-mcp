@@ -145,6 +145,37 @@ func TestAppleEventSyncFallsBackToCursorlessReplacementWithInventoryETags(t *tes
 	}
 }
 
+func TestAppleEventSyncInitialReplacementInventoriesWhenEmptyTokenReportHasNoChanges(t *testing.T) {
+	var reports atomic.Int32
+	var propfinds atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			reports.Add(1)
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(syncResponse("current-token", false, "")))
+		case "PROPFIND":
+			propfinds.Add(1)
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(inventoryResponse(changedObject("/calendar/seed.ics", `"seed-etag"`))))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/calendar")
+			_, _ = w.Write([]byte(eventObject("seed")))
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if reports.Load() != 1 || propfinds.Load() != 1 || !page.Complete || page.NextCursor != "current-token" || len(page.Upserts) != 1 || len(page.Inventory) != 1 {
+		t.Fatalf("initial replacement page=%#v reports=%d propfinds=%d", page, reports.Load(), propfinds.Load())
+	}
+}
+
 func TestAppleEventSyncFallbackCanonicalizesObjectMissingDuringFetch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -187,7 +218,7 @@ func TestAppleEventSyncFamilySharingReportFallback(t *testing.T) {
 	}
 }
 
-func TestAppleEventSyncReplacesEveryVEVENTInObjectAndDeletesMissingObject(t *testing.T) {
+func TestAppleEventSyncChangesEveryVEVENTInObjectAndDeletesMissingObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "REPORT":
@@ -200,7 +231,9 @@ func TestAppleEventSyncReplacesEveryVEVENTInObjectAndDeletesMissingObject(t *tes
 		}
 	}))
 	defer server.Close()
-	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
+	request := eventSyncRequest(calendar.EventSyncIncremental)
+	request.Cursor = "old"
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}

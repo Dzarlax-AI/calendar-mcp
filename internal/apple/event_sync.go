@@ -63,6 +63,20 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		}
 		return p.replacementFromInventory(ctx, request)
 	}
+	if request.Mode == calendar.EventSyncReplacement {
+		// A successful sync-collection with an empty token is allowed to return
+		// only the current token, not a complete collection snapshot. Seed the
+		// projection from an authoritative inventory and retain the token only
+		// for subsequent incremental runs.
+		page, err := p.replacementFromInventory(ctx, request)
+		if err != nil {
+			return calendar.EventSyncPage{}, err
+		}
+		if !changes.limited {
+			page.NextCursor = calendar.EventSyncCursor(changes.syncToken)
+		}
+		return page, nil
+	}
 
 	page, err := p.pageFromChanges(ctx, request, changes)
 	if err != nil {
