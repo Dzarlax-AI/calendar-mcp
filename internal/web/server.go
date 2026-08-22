@@ -47,20 +47,27 @@ type Config struct {
 	// same-origin browser API. It must not be replaced by the API-key REST
 	// server because browser requests never receive an MCP API key.
 	ApplicationService *application.Service
-	OnProvidersChanged func([]calendar.Provider)
+	// EventReadModelEnabled is supplied by runtime configuration. Nil defaults
+	// to false so constructing a web server never reads process environment.
+	EventReadModelEnabled *bool
+	// EventReadModelWindow is the valid projection window used to initialize a
+	// newly eligible calendar when refresh happens before the worker's first tick.
+	EventReadModelWindow storage.SyncWindow
+	OnProvidersChanged   func([]calendar.Provider)
 }
 
 type Server struct {
-	store       *storage.Store
-	connections *connections.Service
-	oauth       *oauthflow.Service
-	providers   ProviderBuilder
-	app         *application.Service
-	config      Config
-	template    *template.Template
-	publicDocs  map[string]template.HTML
-	spa         fs.FS
-	origin      string
+	store                 *storage.Store
+	connections           *connections.Service
+	oauth                 *oauthflow.Service
+	providers             ProviderBuilder
+	app                   *application.Service
+	config                Config
+	template              *template.Template
+	publicDocs            map[string]template.HTML
+	spa                   fs.FS
+	origin                string
+	eventReadModelEnabled bool
 }
 
 func New(store *storage.Store, connectionService *connections.Service, oauthService *oauthflow.Service, providers ProviderBuilder, cfg Config) (*Server, error) {
@@ -92,7 +99,26 @@ func New(store *storage.Store, connectionService *connections.Service, oauthServ
 		}
 		origin = u.Scheme + "://" + u.Host
 	}
-	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, app: cfg.ApplicationService, config: cfg, template: parsed, publicDocs: publicDocs, spa: spa, origin: origin}, nil
+	eventReadModelEnabled := false
+	if cfg.EventReadModelEnabled != nil {
+		eventReadModelEnabled = *cfg.EventReadModelEnabled
+	}
+	app := cfg.ApplicationService
+	if eventReadModelEnabled {
+		if store == nil {
+			return nil, errors.New("calendar read model requires storage")
+		}
+		if !cfg.EventReadModelWindow.End.After(cfg.EventReadModelWindow.Start) {
+			return nil, errors.New("calendar read model requires a valid sync window")
+		}
+	}
+	if app != nil && eventReadModelEnabled {
+		// The platform store is optional at process scope but mandatory for the
+		// hosted browser server. The clone isolates UI reconciliation from MCP
+		// and internal REST, which continue to use cfg.ApplicationService.
+		app = app.CloneWithEventReadModel(store, cfg.EventReadModelWindow)
+	}
+	return &Server{store: store, connections: connectionService, oauth: oauthService, providers: providers, app: app, config: cfg, template: parsed, publicDocs: publicDocs, spa: spa, origin: origin, eventReadModelEnabled: eventReadModelEnabled}, nil
 }
 
 func renderMarkdown(source []byte) (template.HTML, error) {
@@ -121,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/ui/control-plane", noStore(s.uiProtected(http.HandlerFunc(s.controlPlane))))
 	mux.Handle("GET /api/ui/events", noStore(s.uiProtected(http.HandlerFunc(s.listUIEvents))))
 	mux.Handle("GET /api/ui/event", noStore(s.uiProtected(http.HandlerFunc(s.getUIEvent))))
+	mux.Handle("POST /api/ui/calendars/{id}/refresh", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.refreshUICalendar)))))
 	mux.Handle("POST /api/ui/events", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.createUIEvent)))))
 	mux.Handle("PATCH /api/ui/event", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.updateUIEvent)))))
 	mux.Handle("DELETE /api/ui/event", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.deleteUIEvent)))))

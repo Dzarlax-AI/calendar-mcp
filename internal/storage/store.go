@@ -22,12 +22,15 @@ const (
 )
 
 var (
-	ErrNotFound           = errors.New("storage record not found")
-	ErrSchemaMismatch     = errors.New("storage schema version mismatch")
-	ErrOAuthNotConsumable = errors.New("oauth attempt is expired, consumed, or missing")
-	ErrConnectionInUse    = errors.New("connection is referenced by a sync rule")
-	ErrRuleCycle          = errors.New("sync rule would create a cycle")
-	ErrJobLeaseLost       = errors.New("sync job lease is no longer owned by this worker attempt")
+	ErrNotFound               = errors.New("storage record not found")
+	ErrSchemaMismatch         = errors.New("storage schema version mismatch")
+	ErrOAuthNotConsumable     = errors.New("oauth attempt is expired, consumed, or missing")
+	ErrConnectionInUse        = errors.New("connection is referenced by a sync rule")
+	ErrRuleCycle              = errors.New("sync rule would create a cycle")
+	ErrJobLeaseLost           = errors.New("sync job lease is no longer owned by this worker attempt")
+	ErrCalendarSyncActive     = errors.New("calendar sync has an active lease")
+	ErrCalendarSyncIneligible = errors.New("calendar sync calendar is not readable on a connected connection")
+	ErrInvalidSyncCode        = errors.New("calendar sync error code is invalid")
 )
 
 //go:embed migrations/postgres/*.sql migrations/sqlite/*.sql
@@ -87,11 +90,6 @@ func parseDatabaseURL(raw string) (Dialect, string, string, error) {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	path := "migrations/" + string(s.dialect) + "/001_initial.sql"
-	script, err := migrations.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read migration: %w", err)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
@@ -114,20 +112,37 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 0 {
-		if _, err := tx.ExecContext(ctx, string(script)); err != nil {
-			return fmt.Errorf("apply schema version 1: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, s.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"), SchemaVersion, time.Now().UTC()); err != nil {
-			return fmt.Errorf("record schema version: %w", err)
-		}
-	} else if version != SchemaVersion {
+	if version > SchemaVersion {
 		return fmt.Errorf("%w: database=%d binary=%d", ErrSchemaMismatch, version, SchemaVersion)
+	}
+	for next := version + 1; next <= SchemaVersion; next++ {
+		path := fmt.Sprintf("migrations/%s/%03d_%s.sql", s.dialect, next, migrationName(next))
+		script, err := migrations.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read schema version %d: %w", next, err)
+		}
+		if _, err := tx.ExecContext(ctx, string(script)); err != nil {
+			return fmt.Errorf("apply schema version %d: %w", next, err)
+		}
+		if _, err := tx.ExecContext(ctx, s.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"), next, time.Now().UTC()); err != nil {
+			return fmt.Errorf("record schema version %d: %w", next, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
 	return nil
+}
+
+func migrationName(version int) string {
+	switch version {
+	case 1:
+		return "initial"
+	case 2:
+		return "event_read_model"
+	default:
+		return ""
+	}
 }
 
 func (s *Store) CheckSchema(ctx context.Context) error {
@@ -198,7 +213,12 @@ func (s *Store) UpdateConnectionCredentials(ctx context.Context, id string, encr
 }
 
 func (s *Store) UpdateConnectionVerification(ctx context.Context, id, status, errorCode string, verifiedAt time.Time) error {
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE connections SET status=?, last_verified_at=?, last_error_code=?, updated_at=? WHERE id=?`),
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin connection verification update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE connections SET status=?, last_verified_at=?, last_error_code=?, updated_at=? WHERE id=?`),
 		status, verifiedAt, nullString(errorCode), verifiedAt, id)
 	if err != nil {
 		return fmt.Errorf("update connection verification: %w", err)
@@ -206,6 +226,17 @@ func (s *Store) UpdateConnectionVerification(ctx context.Context, id, status, er
 	changed, _ := res.RowsAffected()
 	if changed != 1 {
 		return ErrNotFound
+	}
+	if status == "connected" {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+			SET status=?, next_sync_at=?, last_error_code=NULL, updated_at=?
+			WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=?)
+				AND status=? AND (lease_until IS NULL OR lease_until<=?)`), "pending", verifiedAt, verifiedAt, id, "parked", verifiedAt); err != nil {
+			return fmt.Errorf("reactivate parked calendar sync states: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit connection verification update: %w", err)
 	}
 	return nil
 }

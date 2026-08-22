@@ -1,6 +1,54 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoadEventReadModelDefaults(t *testing.T) {
+	for _, key := range []string{
+		"EVENT_READ_MODEL_ENABLED", "EVENT_CACHE_LOOKBACK_DAYS", "EVENT_CACHE_LOOKAHEAD_DAYS",
+		"EVENT_SYNC_GOOGLE_INTERVAL", "EVENT_SYNC_MICROSOFT_INTERVAL", "EVENT_SYNC_APPLE_INTERVAL",
+	} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.EventReadModelEnabled {
+		t.Fatal("event read model is enabled by default")
+	}
+	if cfg.EventCacheLookbackDays != 365 || cfg.EventCacheLookaheadDays != 730 {
+		t.Fatalf("cache window = %d/%d, want 365/730", cfg.EventCacheLookbackDays, cfg.EventCacheLookaheadDays)
+	}
+	if cfg.EventSyncGoogleInterval != time.Minute || cfg.EventSyncMicrosoftInterval != time.Minute || cfg.EventSyncAppleInterval != 5*time.Minute {
+		t.Fatalf("intervals = %s/%s/%s", cfg.EventSyncGoogleInterval, cfg.EventSyncMicrosoftInterval, cfg.EventSyncAppleInterval)
+	}
+	if err := cfg.ValidateEventReadModel(); err != nil {
+		t.Fatalf("ValidateEventReadModel() error = %v", err)
+	}
+}
+
+func TestValidateEventReadModelRejectsUnsafeValues(t *testing.T) {
+	cfg := Load()
+	cfg.EventCacheLookbackDays = 0
+	if err := cfg.ValidateEventReadModel(); err == nil {
+		t.Fatal("accepted non-positive lookback")
+	}
+	cfg = Load()
+	cfg.EventSyncGoogleInterval = 0
+	if err := cfg.ValidateEventReadModel(); err == nil {
+		t.Fatal("accepted non-positive Google interval")
+	}
+	cfg = Load()
+	cfg.EventCacheLookaheadDays = maxEventCacheDays + 1
+	if err := cfg.ValidateEventReadModel(); err == nil {
+		t.Fatal("accepted unsafe cache lookahead")
+	}
+	t.Setenv("EVENT_SYNC_APPLE_INTERVAL", "not-a-duration")
+	if err := Load().ValidateEventReadModel(); err == nil || !strings.Contains(err.Error(), "EVENT_SYNC_APPLE_INTERVAL") {
+		t.Fatalf("invalid duration error = %v", err)
+	}
+}
 
 func TestLoadReadsLegacyAPIKey(t *testing.T) {
 	t.Setenv("API_KEY", "primary")

@@ -107,11 +107,23 @@ export type EventRecord = {
   source?: string;
   recurrence?: RecurrenceInfo;
   originalStart?: EventTime;
+  warnings?: string[];
+};
+
+export type EventSourceStatus = {
+  provider: string;
+  calendar_id: string;
+  complete: boolean;
+  error?: string;
+  status?: "pending" | "syncing" | "ready" | "failed" | "parked" | string;
+  last_success_at?: string | null;
+  stale?: boolean;
+  error_code?: string | null;
 };
 
 export type EventListResponse = {
   items: EventRecord[];
-  sources?: Array<{ calendar_id: string; complete: boolean; error?: string }>;
+  sources?: EventSourceStatus[];
   complete: boolean;
 };
 

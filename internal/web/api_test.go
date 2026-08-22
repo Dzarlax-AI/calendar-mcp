@@ -467,6 +467,190 @@ func TestUIAPIEventListStopsAtPageSafetyLimit(t *testing.T) {
 	}
 }
 
+func TestUIAPIEventReadModelIsConfigDrivenAndUsesCacheWithoutProviderReads(t *testing.T) {
+	t.Setenv("EVENT_READ_MODEL_ENABLED", "true")
+	directProvider := uiProvider()
+	directProvider.events = []calendar.EventV2{{ID: "provider", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}}
+	directHandler := newUIAPIHandler(t, Config{TrustForwardAuth: true}, directProvider)
+	directResponse := listUIEventsResponse(t, directHandler, "calendar_id=google:primary")
+	if len(directProvider.listCalls) != 1 || !strings.Contains(directResponse, `"id":"google:provider"`) {
+		t.Fatalf("environment changed web behavior: calls=%d response=%s", len(directProvider.listCalls), directResponse)
+	}
+
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	if err := store.UpsertCachedEvent(t.Context(), calendar.EventV2{ID: "cached", CalendarID: "google:primary", Provider: "google", Title: "Cached", Start: calendar.EventTime{DateTime: "2026-08-22T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-22T10:00:00Z", TimeZone: "UTC"}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	response := listUIEventsResponse(t, handler, "calendar_id=google:primary")
+	if len(provider.listCalls) != 0 {
+		t.Fatalf("cache mode called provider ListEventsV2 %d times", len(provider.listCalls))
+	}
+	if !strings.Contains(response, `"id":"google:cached"`) || !strings.Contains(response, `"status":"ready"`) || !strings.Contains(response, `"complete":true`) {
+		t.Fatalf("cached response = %s", response)
+	}
+}
+
+func TestUIAPIDisabledReadModelLeavesMutationsProjectionFree(t *testing.T) {
+	provider := uiProvider()
+	disabled := false
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &disabled}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	request := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/events", `{"calendar_id":"google:primary","title":"Synthetic","start":{"date":"2026-08-22"},"end":{"date":"2026-08-23"}}`, "token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || strings.Contains(response.Body.String(), "warnings") {
+		t.Fatalf("disabled mutation response = %d %s", response.Code, response.Body.String())
+	}
+	claimed, err := store.ClaimDueCalendarSync(t.Context(), "test-worker", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	if err != nil || claimed != nil {
+		t.Fatalf("disabled mutation scheduled projection: state=%#v err=%v", claimed, err)
+	}
+}
+
+func TestUIAPIEventReadModelShowsUnwarmedAndPartialSources(t *testing.T) {
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	now := time.Now().UTC()
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:unwarmed", ConnectionID: "account", ProviderCalendarID: "unwarmed", Name: "Unwarmed", CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertCachedEvent(t.Context(), calendar.EventV2{ID: "healthy", CalendarID: "google:primary", Provider: "google", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	response := listUIEventsResponse(t, handler, "calendar_id=google:primary&calendar_id=google:unwarmed")
+	if len(provider.listCalls) != 0 {
+		t.Fatalf("cache mode called provider ListEventsV2 %d times", len(provider.listCalls))
+	}
+	for _, want := range []string{`"id":"google:healthy"`, `"calendar_id":"google:unwarmed"`, `"status":"pending"`, `"stale":true`, `"complete":false`} {
+		if !strings.Contains(response, want) {
+			t.Fatalf("cached partial response missing %s: %s", want, response)
+		}
+	}
+}
+
+func TestUIAPIRefreshEnqueuesWithoutProviderCall(t *testing.T) {
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	request := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/calendars/google:primary/refresh", `{}`, "token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || response.Body.String() != "{\"status\":\"accepted\"}\n" {
+		t.Fatalf("refresh response = %d %s", response.Code, response.Body.String())
+	}
+	if len(provider.listCalls) != 0 || provider.createCalls != 0 || provider.updateCalls != 0 || provider.deleteCalls != 0 {
+		t.Fatalf("refresh reached provider: list=%d create=%d update=%d delete=%d", len(provider.listCalls), provider.createCalls, provider.updateCalls, provider.deleteCalls)
+	}
+	claimed, err := store.ClaimDueCalendarSync(t.Context(), "test-worker", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	if err != nil || claimed == nil || claimed.CalendarID != "google:primary" {
+		t.Fatalf("refresh did not enqueue sync: state=%#v err=%v", claimed, err)
+	}
+}
+
+func TestUIAPIRefreshInitializesUnwarmedEligibleCalendar(t *testing.T) {
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	request := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/calendars/google:primary/refresh", `{}`, "token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unwarmed refresh response = %d %s", response.Code, response.Body.String())
+	}
+	claimed, err := store.ClaimDueCalendarSync(t.Context(), "test-worker", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	if err != nil || claimed == nil || claimed.CalendarID != "google:primary" {
+		t.Fatalf("unwarmed refresh did not initialize and enqueue: state=%#v err=%v", claimed, err)
+	}
+	if len(provider.listCalls) != 0 {
+		t.Fatalf("unwarmed refresh called provider ListEventsV2 %d times", len(provider.listCalls))
+	}
+}
+
+func TestUIAPIEnabledReadModelRequiresValidWindow(t *testing.T) {
+	provider := uiProvider()
+	_, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true}, provider)
+	cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	_, err = New(store, connections.New(store, cipher), nil, func(context.Context) ([]calendar.Provider, error) { return []calendar.Provider{provider}, nil }, Config{
+		PublicURL: "https://calendar.example", TrustForwardAuth: true, AppleCalDAVURL: "https://caldav.icloud.com",
+		ApplicationService: application.New(calendar.NewRegistry([]calendar.Provider{provider})), EventReadModelEnabled: &enabled,
+	})
+	if err == nil || !strings.Contains(err.Error(), "valid sync window") {
+		t.Fatalf("enabled server error = %v", err)
+	}
+}
+
+func TestUIAPIRefreshRejectsIneligibleCalendarsWithoutProviderCall(t *testing.T) {
+	for _, setup := range []struct {
+		name  string
+		apply func(*testing.T, *storage.Store)
+	}{
+		{
+			name: "disconnected",
+			apply: func(t *testing.T, store *storage.Store) {
+				if err := store.UpdateConnectionVerification(t.Context(), "account", "disconnected", "", time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unreadable",
+			apply: func(t *testing.T, store *storage.Store) {
+				if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:primary", ConnectionID: "account", ProviderCalendarID: "primary", Name: "Primary", CanRead: false, CanWrite: true, SupportsRecurrence: true, DiscoveredAt: time.Now().UTC()}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			provider := uiProvider()
+			enabled := true
+			handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+			prepareCachedCalendar(t, store, "google:primary")
+			setup.apply(t, store)
+			request := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/calendars/google:primary/refresh", `{}`, "token")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "cursor") || strings.Contains(response.Body.String(), "disconnected") {
+				t.Fatalf("ineligible refresh response = %d %s", response.Code, response.Body.String())
+			}
+			if len(provider.listCalls) != 0 || provider.createCalls != 0 || provider.updateCalls != 0 || provider.deleteCalls != 0 {
+				t.Fatalf("refresh reached provider: list=%d create=%d update=%d delete=%d", len(provider.listCalls), provider.createCalls, provider.updateCalls, provider.deleteCalls)
+			}
+		})
+	}
+}
+
+func prepareCachedCalendar(t *testing.T, store *storage.Store, calendarID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.ClaimDueCalendarSync(t.Context(), "warm-worker", now, now.Add(time.Minute))
+	if err != nil || state == nil || state.CalendarID != calendarID {
+		t.Fatalf("claim cached calendar state=%#v err=%v", state, err)
+	}
+	next := now.Add(time.Hour)
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testEventReadModelWindow() storage.SyncWindow {
+	now := time.Now().UTC()
+	return storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}
+}
+
 func listUIEventsResponse(t *testing.T, handler http.Handler, query string) string {
 	t.Helper()
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/events?start=2026-08-22T00:00:00Z&end=2026-08-23T00:00:00Z&"+query, nil)

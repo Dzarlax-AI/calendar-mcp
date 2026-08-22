@@ -133,13 +133,7 @@ func Serve(_ context.Context) error {
 			}}
 		}
 		factory := providerfactory.NewFactory(cfg, platformStore, connectionService)
-		ui, err := web.New(platformStore, connectionService, oauthflow.New(platformStore, credentialCipher, oauthProviders), factory.Build, web.Config{
-			PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated,
-			MCPAPIKey: cfg.APIKey, LegacyAPIKeyConfigured: cfg.LegacyAPIKey != "",
-			GoogleConfigured: cfg.GoogleClientID != "", MicrosoftConfigured: cfg.MS365ClientID != "", AppleCalDAVURL: cfg.AppleCalDAVURL,
-			ApplicationService: appService,
-			OnProvidersChanged: reg.ReplaceProviders,
-		})
+		ui, err := web.New(platformStore, connectionService, oauthflow.New(platformStore, credentialCipher, oauthProviders), factory.Build, webRuntimeConfig(cfg, appService, reg.ReplaceProviders))
 		if err != nil {
 			return fmt.Errorf("initialize calendar UI: %w", err)
 		}
@@ -154,6 +148,25 @@ func Serve(_ context.Context) error {
 
 	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(calendarProviders))
 	return RunServers(servers)
+}
+
+func webRuntimeConfig(cfg *config.Config, appService *application.Service, onProvidersChanged func([]calendar.Provider)) web.Config {
+	return webRuntimeConfigAt(cfg, appService, onProvidersChanged, time.Now().UTC())
+}
+
+func webRuntimeConfigAt(cfg *config.Config, appService *application.Service, onProvidersChanged func([]calendar.Provider), anchor time.Time) web.Config {
+	eventReadModelEnabled := cfg.EventReadModelEnabled
+	window := storage.SyncWindow{}
+	if eventReadModelEnabled {
+		window = eventReadModelWindow(cfg, anchor)
+	}
+	return web.Config{
+		PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated,
+		MCPAPIKey: cfg.APIKey, LegacyAPIKeyConfigured: cfg.LegacyAPIKey != "",
+		GoogleConfigured: cfg.GoogleClientID != "", MicrosoftConfigured: cfg.MS365ClientID != "", AppleCalDAVURL: cfg.AppleCalDAVURL,
+		ApplicationService: appService, EventReadModelEnabled: &eventReadModelEnabled, EventReadModelWindow: window,
+		OnProvidersChanged: onProvidersChanged,
+	}
 }
 
 func NewHTTPServer(addr string, handler http.Handler, writeTimeout time.Duration) *http.Server {
