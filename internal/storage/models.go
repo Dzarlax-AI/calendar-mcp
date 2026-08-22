@@ -114,6 +114,8 @@ type EventSyncBatch struct {
 	NextCursor        string
 	NextSyncAt        *time.Time
 	FullSync          bool
+	Degraded          bool
+	ErrorCode         string
 }
 
 // CachedSourceStatus keeps the read model's freshness outcome separate from
