@@ -2,6 +2,7 @@ package apple
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -138,7 +139,7 @@ func TestAppleEventSyncFallsBackToCursorlessReplacementWithInventoryETags(t *tes
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || page.NextCursor != "" || gets.Load() != 1 || len(page.Inventory) != 1 || page.Inventory[0].ETag != `"exact-etag"` || len(page.ReplacedObjectIDs) != 1 || page.ReplacedObjectIDs[0] != "/calendar/a.ics" {
+	if !page.Complete || page.NextCursor != "" || gets.Load() != 1 || len(page.Inventory) != 1 || page.Inventory[0].ETag != `"exact-etag"` || len(page.ReplacedObjectIDs) != 1 || page.ReplacedObjectIDs[0] != "/calendar/a.ics" || len(page.Warnings) != 0 {
 		t.Fatalf("replacement page = %#v, GETs=%d", page, gets.Load())
 	}
 	// The frozen request has no previous inventory bridge. A second replacement
@@ -173,6 +174,37 @@ func TestAppleEventSyncInitialReplacementInventoriesWhenEmptyTokenReportHasNoCha
 	}
 	if reports.Load() != 2 || !page.Complete || page.NextCursor != "current-token" || len(page.Upserts) != 1 || len(page.Inventory) != 1 {
 		t.Fatalf("initial replacement page=%#v reports=%d", page, reports.Load())
+	}
+}
+
+func TestAppleEventSyncCalendarQueryMalformedObjectFallsBackToIsolatedFetch(t *testing.T) {
+	var reports atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			if reports.Add(1) == 1 {
+				w.WriteHeader(http.StatusMultiStatus)
+				_, _ = w.Write([]byte(syncResponse("current-token", false, "")))
+				return
+			}
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(queryResponse("/calendar/bad.ics", `"bad"`, "BEGIN:VCALENDAR\r\nBROKEN\r\nEND:VCALENDAR\r\n")))
+		case "PROPFIND":
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(inventoryResponse(changedObject("/calendar/bad.ics", `"bad"`))))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/calendar")
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nBROKEN\r\nEND:VCALENDAR\r\n"))
+		}
+	}))
+	defer server.Close()
+
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if reports.Load() != 2 || !page.Complete || page.NextCursor != "current-token" || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+		t.Fatalf("query fallback page=%#v reports=%d", page, reports.Load())
 	}
 }
 
@@ -263,7 +295,7 @@ func TestAppleEventSyncCanonicalizesDeletedObjectIdentity(t *testing.T) {
 	}
 }
 
-func TestAppleEventSyncMalformedObjectBlocksReplacementCompletion(t *testing.T) {
+func TestAppleEventSyncAllMalformedObjectsWarnWithoutMutations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "REPORT":
@@ -277,9 +309,170 @@ func TestAppleEventSyncMalformedObjectBlocksReplacementCompletion(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	_, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
-	if err == nil || !strings.Contains(err.Error(), string(calendar.EventSyncProtocol)) || strings.Contains(err.Error(), "bad.ics") {
-		t.Fatalf("malformed object error = %v", err)
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncReplacement))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+		t.Fatalf("malformed object page = %#v", page)
+	}
+}
+
+func TestAppleEventSyncParsedEmptyObjectStillDeletesMembership(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(syncResponse("next", false, changedObject("/calendar/empty.ics", `"empty"`))))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/calendar")
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"))
+		}
+	}))
+	defer server.Close()
+
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if !page.Complete || len(page.DeletedObjectIDs) != 1 || page.DeletedObjectIDs[0] != "/calendar/empty.ics" || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.Warnings) != 0 {
+		t.Fatalf("empty object page = %#v", page)
+	}
+}
+
+func TestAppleEventSyncIsolatesMalformedObjectsFromValidSiblings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(syncResponse("next", false, changedObject("/calendar/good.ics", `"good"`)+changedObject("/calendar/bad.ics", `"bad"`))))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/calendar")
+			if r.URL.Path == "/calendar/good.ics" {
+				_, _ = w.Write([]byte(eventObject("good")))
+				return
+			}
+			// A content line without a colon is syntactically invalid iCalendar.
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nBROKEN\r\nEND:VCALENDAR\r\n"))
+		}
+	}))
+	defer server.Close()
+
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || len(page.Inventory) != 1 || len(page.ReplacedObjectIDs) != 1 || len(page.DeletedObjectIDs) != 0 || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestAppleEventSyncTreatsOrphanRecurrenceExceptionAsMalformed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(syncResponse("next", false, changedObject("/calendar/orphan.ics", `"orphan"`))))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/calendar")
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:orphan\r\nRECURRENCE-ID:20260820T090000Z\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"))
+		}
+	}))
+	defer server.Close()
+
+	page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+	if err != nil {
+		t.Fatalf("SyncEvents() error = %v", err)
+	}
+	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/orphan.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+		t.Fatalf("orphan exception page = %#v", page)
+	}
+}
+
+func TestAppleEventSyncFetchFailuresStayHard(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		wantClass  calendar.EventSyncErrorClass
+		retryAfter time.Duration
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, wantClass: calendar.EventSyncAuth},
+		{name: "forbidden", status: http.StatusForbidden, wantClass: calendar.EventSyncPermission},
+		{name: "rate limited", status: http.StatusTooManyRequests, wantClass: calendar.EventSyncRateLimited, retryAfter: 7 * time.Second},
+		{name: "server failure", status: http.StatusBadGateway, wantClass: calendar.EventSyncTransient},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case "REPORT":
+					w.WriteHeader(http.StatusMultiStatus)
+					_, _ = w.Write([]byte(syncResponse("next", false, changedObject("/calendar/object.ics", `"etag"`))))
+				case http.MethodGet:
+					if tc.status == http.StatusTooManyRequests {
+						w.Header().Set("Retry-After", "7")
+					}
+					w.WriteHeader(tc.status)
+				}
+			}))
+			defer server.Close()
+
+			_, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+			assertAppleEventSyncError(t, err, tc.wantClass, tc.retryAfter)
+		})
+	}
+
+	for _, tc := range []struct {
+		name        string
+		contentType string
+	}{
+		{name: "missing content type"},
+		{name: "wrong content type", contentType: "text/html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case "REPORT":
+					w.WriteHeader(http.StatusMultiStatus)
+					_, _ = w.Write([]byte(syncResponse("next", false, changedObject("/calendar/object.ics", `"etag"`))))
+				case http.MethodGet:
+					if tc.contentType != "" {
+						w.Header().Set("Content-Type", tc.contentType)
+					} else {
+						w.Header()["Content-Type"] = nil
+					}
+					_, _ = w.Write([]byte(eventObject("valid")))
+				}
+			}))
+			defer server.Close()
+
+			_, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+			assertAppleEventSyncError(t, err, calendar.EventSyncProtocol, 0)
+		})
+	}
+
+	t.Run("network", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		url := server.URL
+		server.Close()
+		p := &Provider{httpClient: &http.Client{Timeout: time.Second}, caldavURL: url}
+		_, err := p.SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+		assertAppleEventSyncError(t, err, calendar.EventSyncTransient, 0)
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		p := &Provider{httpClient: http.DefaultClient, caldavURL: "http://127.0.0.1:1"}
+		_, err := p.SyncEvents(ctx, eventSyncRequest(calendar.EventSyncIncremental))
+		assertAppleEventSyncError(t, err, calendar.EventSyncTransient, 0)
+	})
+}
+
+func assertAppleEventSyncError(t *testing.T, err error, wantClass calendar.EventSyncErrorClass, wantRetryAfter time.Duration) {
+	t.Helper()
+	var syncErr *calendar.EventSyncError
+	if !errors.As(err, &syncErr) || syncErr == nil || syncErr.Class != wantClass || syncErr.RetryAfter != wantRetryAfter {
+		t.Fatalf("error = %#v, want class=%q retry_after=%s", err, wantClass, wantRetryAfter)
 	}
 }
 

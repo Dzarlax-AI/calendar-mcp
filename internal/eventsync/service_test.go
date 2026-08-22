@@ -228,7 +228,7 @@ func TestRunOneInitialAndMultipageIncremental(t *testing.T) {
 		if err := newService(store, provider).RunOne(context.Background(), testState("")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 1 || !store.applied[0].final || !store.applied[0].batch.FullSync || store.applied[0].batch.NextCursor != "" {
+		if len(store.applied) != 1 || !store.applied[0].final || !store.applied[0].batch.FullSync || store.applied[0].batch.NextCursor != "" || store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != "" {
 			t.Fatalf("applied page = %#v", store.applied)
 		}
 		if got := provider.requests[0]; got.Mode != calendar.EventSyncReplacement || got.CalendarID != "provider-calendar" || got.Window.Start != testState("").WindowStart {
@@ -244,11 +244,65 @@ func TestRunOneInitialAndMultipageIncremental(t *testing.T) {
 		if err := newService(store, provider).RunOne(context.Background(), testState("saved")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 2 || store.applied[0].final || !store.applied[1].final || store.applied[0].batch.FullSync || store.applied[1].batch.NextCursor != "advanced" {
+		if len(store.applied) != 2 || store.applied[0].final || !store.applied[1].final || store.applied[0].batch.FullSync || store.applied[1].batch.NextCursor != "advanced" || store.applied[0].batch.Degraded || store.applied[1].batch.Degraded || store.applied[1].batch.ErrorCode != "" {
 			t.Fatalf("applied pages = %#v", store.applied)
 		}
 		if provider.requests[1].PageToken != "next" || provider.requests[1].Cursor != "saved" || provider.requests[0].Mode != calendar.EventSyncIncremental {
 			t.Fatalf("requests = %#v", provider.requests)
+		}
+	})
+}
+
+func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
+	t.Run("intermediate warning followed by clean terminal page", func(t *testing.T) {
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{
+			{NextPageToken: "next", Warnings: []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}}},
+			terminal("advanced", "two"),
+		}}
+		store := &fakeStore{}
+		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.applied) != 2 || !store.applied[0].batch.Degraded || !store.applied[1].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.NextCursor != "" {
+			t.Fatalf("applied pages = %#v", store.applied)
+		}
+		if got, want := *store.applied[1].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC); !got.Equal(want) {
+			t.Fatalf("degraded retry at = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("terminal warning", func(t *testing.T) {
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{
+			Complete:   true,
+			NextCursor: "advanced",
+			Warnings:   []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}},
+		}}}
+		store := &fakeStore{}
+		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.applied) != 1 || !store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[0].batch.NextCursor != "" {
+			t.Fatalf("applied page = %#v", store.applied)
+		}
+		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC); !got.Equal(want) {
+			t.Fatalf("degraded retry at = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("repeated protocol degradation backs off to poll interval", func(t *testing.T) {
+		provider := &fakeProvider{pages: []calendar.EventSyncPage{{
+			Complete:   true,
+			NextCursor: "advanced",
+			Warnings:   []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}},
+		}}}
+		store := &fakeStore{}
+		state := testState("saved")
+		state.LastErrorCode = string(calendar.EventSyncProtocol)
+		if err := newService(store, provider).RunOne(t.Context(), state); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {
+			t.Fatalf("degraded retry at = %s, want %s", got, want)
 		}
 	})
 }
@@ -304,6 +358,8 @@ func TestInvalidPagesRepeatedTokensAndLeaseLossDoNotLeakOpaqueValues(t *testing.
 		{"incremental terminal without cursor", []calendar.EventSyncPage{{Complete: true}}, ErrInvalidPage},
 		{"replacement without membership", []calendar.EventSyncPage{{Complete: true, NextCursor: "secret-cursor", ReplacedObjectIDs: []string{"object"}}}, ErrInvalidPage},
 		{"repeated token", []calendar.EventSyncPage{{NextPageToken: "secret-page"}, {NextPageToken: "secret-page"}}, ErrRepeatedPage},
+		{"warning with non-protocol code", []calendar.EventSyncPage{{Complete: true, NextCursor: "secret-cursor", Warnings: []calendar.EventSyncWarning{{Code: calendar.EventSyncTransient, ObjectID: "object"}}}}, ErrInvalidPage},
+		{"warning without object ID", []calendar.EventSyncPage{{Complete: true, NextCursor: "secret-cursor", Warnings: []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol}}}}, ErrInvalidPage},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

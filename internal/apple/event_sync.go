@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav/caldav"
 
 	"calendar-mcp/internal/calendar"
@@ -93,14 +96,54 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 
 func (p *Provider) replacementFromCalendarQuery(ctx context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Window.Start, End: request.Window.End}}}}
-	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
+	objects, malformed, err := p.queryCalendarForEventSync(ctx, request.CalendarID, query)
 	if err != nil {
-		if !strings.Contains(err.Error(), "XML syntax error") && !strings.Contains(err.Error(), "unexpected EOF") {
-			return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
+		if class, ok := appleCalendarQueryErrorClass(err); ok {
+			return calendar.EventSyncPage{}, appleEventSyncError(class)
 		}
+		return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncTransient)
+	}
+	if malformed {
 		return p.replacementFromInventory(ctx, request)
 	}
 	return appleReplacementFromObjects(request, objects)
+}
+
+// QueryCalendar decodes every calendar-data property before returning its
+// object list. If one resource is malformed, retry through the inventory GET
+// lane, which can isolate that resource while retaining valid siblings.
+func (p *Provider) queryCalendarForEventSync(ctx context.Context, calendarID string, query *caldav.CalendarQuery) (objects []caldav.CalendarObject, malformed bool, err error) {
+	defer func() {
+		if recover() != nil {
+			objects = nil
+			malformed = true
+			err = nil
+		}
+	}()
+	objects, err = p.client.QueryCalendar(ctx, calendarID, query)
+	if err != nil && isAppleCalendarPayloadError(err) {
+		return nil, true, nil
+	}
+	return objects, false, err
+}
+
+func isAppleCalendarPayloadError(err error) bool {
+	var syntaxErr *xml.SyntaxError
+	return errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) || strings.HasPrefix(err.Error(), "ical:")
+}
+
+func appleCalendarQueryErrorClass(err error) (calendar.EventSyncErrorClass, bool) {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "HTTP multi-status request failed: 401 "):
+		return calendar.EventSyncAuth, true
+	case strings.Contains(message, "HTTP multi-status request failed: 403 "):
+		return calendar.EventSyncPermission, true
+	case strings.Contains(message, "HTTP multi-status request failed: 429 "):
+		return calendar.EventSyncRateLimited, true
+	default:
+		return "", false
+	}
 }
 
 func appleReplacementFromObjects(request calendar.EventSyncRequest, objects []caldav.CalendarObject) (calendar.EventSyncPage, error) {
@@ -284,9 +327,10 @@ func (p *Provider) pageFromChanges(ctx context.Context, request calendar.EventSy
 }
 
 type appleFetchedObject struct {
-	source  appleSyncObject
-	object  caldav.CalendarObject
-	deleted bool
+	source    appleSyncObject
+	object    caldav.CalendarObject
+	deleted   bool
+	malformed bool
 }
 
 func (p *Provider) fetchSyncObjects(ctx context.Context, calendarID string, inventory []appleSyncObject) ([]appleFetchedObject, error) {
@@ -297,7 +341,7 @@ func (p *Provider) fetchSyncObjects(ctx context.Context, calendarID string, inve
 
 	sem := make(chan struct{}, fallbackConcurrency)
 	var wg sync.WaitGroup
-	var failed bool
+	var failure error
 	var failures sync.Mutex
 	for i, item := range inventory {
 		path, err := appleObjectPath(calendarID, item.path)
@@ -318,29 +362,94 @@ func (p *Provider) fetchSyncObjects(ctx context.Context, calendarID string, inve
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			object, err := p.client.GetCalendarObject(ctx, path)
+			object, missing, malformed, err := p.fetchEventSyncObject(ctx, path, etag)
 			if err != nil {
-				if isMissingCalendarObject(err) {
-					results[i].deleted = true
-					return
-				}
 				failures.Lock()
-				failed = true
+				if failure == nil {
+					failure = err
+				}
 				failures.Unlock()
 				return
 			}
-			object.Path = path
-			if etag != "" {
-				object.ETag = etag
+			if missing {
+				results[i].deleted = true
+				return
+			}
+			if malformed {
+				results[i].malformed = true
+				return
 			}
 			results[i].object = *object
 		}(i, path, item.etag)
 	}
 	wg.Wait()
-	if failed {
-		return nil, appleEventSyncError(calendar.EventSyncTransient)
+	if failure != nil {
+		return nil, failure
 	}
 	return results, nil
+}
+
+// fetchEventSyncObject uses the provider's authenticated HTTP client rather
+// than caldav.Client.GetCalendarObject so sync can distinguish an HTTP or body
+// transport failure from malformed iCalendar in one individual resource.
+// Normal Apple reads keep using the CalDAV client unchanged.
+func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) (*caldav.CalendarObject, bool, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.caldavURL+path, nil)
+	if err != nil {
+		return nil, false, false, appleEventSyncError(calendar.EventSyncProtocol)
+	}
+	req.Header.Set("Accept", ical.MIMEType)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, false, false, appleEventSyncError(calendar.EventSyncTransient)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusNotFound, http.StatusGone:
+		return nil, true, false, nil
+	case http.StatusUnauthorized:
+		return nil, false, false, appleEventSyncError(calendar.EventSyncAuth)
+	case http.StatusForbidden:
+		return nil, false, false, appleEventSyncError(calendar.EventSyncPermission)
+	case http.StatusTooManyRequests:
+		return nil, false, false, &calendar.EventSyncError{Class: calendar.EventSyncRateLimited, RetryAfter: retryAfter(resp.Header)}
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, false, false, appleEventSyncError(calendar.EventSyncTransient)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, false, appleEventSyncError(calendar.EventSyncTransient)
+	}
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, ical.MIMEType) {
+		// A successful HTTP response with an absent or unrelated media type is
+		// a protocol failure, not malformed iCalendar. Treating it as a
+		// recoverable object would hide HTML/login/proxy responses and could
+		// silently discard a valid resource whose representation was wrong.
+		return nil, false, false, appleEventSyncError(calendar.EventSyncProtocol)
+	}
+	container, valid := decodeAppleEventSyncCalendar(data)
+	if !valid {
+		return nil, false, true, nil
+	}
+	return &caldav.CalendarObject{Path: path, ETag: etag, Data: container}, false, false, nil
+}
+
+// go-ical reports malformed content as an error, but a malformed parameter can
+// also reach one of its parser panics. An individual remote resource must not
+// take down an otherwise valid sync page.
+func decodeAppleEventSyncCalendar(data []byte) (container *ical.Calendar, valid bool) {
+	defer func() {
+		if recover() != nil {
+			container = nil
+			valid = false
+		}
+	}()
+	container, err := ical.NewDecoder(bytes.NewReader(data)).Decode()
+	return container, err == nil
 }
 
 func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObject) (calendar.EventSyncPage, error) {
@@ -350,11 +459,14 @@ func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObje
 			page.DeletedObjectIDs = append(page.DeletedObjectIDs, fetched.source.path)
 			continue
 		}
+		if fetched.malformed {
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.source.path})
+			continue
+		}
 		members, err := appleSyncMembers(fetched.object, request)
 		if err != nil {
-			// Do not return a partial replacement page: doing so could make a
-			// terminal sweep silently discard the malformed resource's membership.
-			return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncProtocol)
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path})
+			continue
 		}
 		if len(members) == 0 {
 			page.DeletedObjectIDs = append(page.DeletedObjectIDs, fetched.object.Path)
@@ -374,9 +486,43 @@ func appleSyncMembers(object caldav.CalendarObject, request calendar.EventSyncRe
 	events := object.Data.Events()
 	items := make([]calendar.EventV2, 0, len(events))
 	masters := 0
+	masterUIDs := make(map[string]struct{}, len(events))
 	for i := range events {
 		if events[i].Props.Get("RECURRENCE-ID") == nil {
 			masters++
+			uid, _ := events[i].Props.Text("UID")
+			if uid == "" {
+				continue
+			}
+			masterUIDs[uid] = struct{}{}
+		}
+	}
+	for i := range events {
+		recurrenceID := events[i].Props.Get("RECURRENCE-ID")
+		if recurrenceID == nil {
+			continue
+		}
+		uid, _ := events[i].Props.Text("UID")
+		if uid == "" {
+			return nil, appleEventSyncError(calendar.EventSyncProtocol)
+		}
+		if _, ok := masterUIDs[uid]; !ok {
+			return nil, appleEventSyncError(calendar.EventSyncProtocol)
+		}
+		if _, err := recurrenceID.DateTime(nil); err != nil {
+			return nil, err
+		}
+		status, _ := events[i].Props.Text("STATUS")
+		if !strings.EqualFold(status, "CANCELLED") {
+			for _, name := range []string{"DTSTART", "DTEND"} {
+				prop := events[i].Props.Get(name)
+				if prop == nil {
+					return nil, appleEventSyncError(calendar.EventSyncProtocol)
+				}
+				if _, err := prop.DateTime(nil); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	for i := range events {
@@ -455,9 +601,14 @@ func appleReplacementPage(request calendar.EventSyncRequest, fetched []appleFetc
 			page.DeletedObjectIDs = append(page.DeletedObjectIDs, item.source.path)
 			continue
 		}
+		if item.malformed {
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.source.path})
+			continue
+		}
 		members, err := appleSyncMembers(item.object, request)
 		if err != nil {
-			return calendar.EventSyncPage{}, appleEventSyncError(calendar.EventSyncProtocol)
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.object.Path})
+			continue
 		}
 		object := calendar.SyncObject{ObjectID: item.object.Path, ETag: item.object.ETag}
 		if len(members) == 0 {
@@ -490,11 +641,13 @@ func (p *Provider) propfindEventSyncInventory(ctx context.Context, calendarID st
 		return nil, appleEventSyncError(calendar.EventSyncTransient)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusUnauthorized {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
 		return nil, appleEventSyncError(calendar.EventSyncAuth)
-	}
-	if resp.StatusCode == http.StatusForbidden {
+	case http.StatusForbidden:
 		return nil, appleEventSyncError(calendar.EventSyncPermission)
+	case http.StatusTooManyRequests:
+		return nil, &calendar.EventSyncError{Class: calendar.EventSyncRateLimited, RetryAfter: retryAfter(resp.Header)}
 	}
 	if resp.StatusCode != http.StatusMultiStatus {
 		return nil, appleEventSyncError(calendar.EventSyncTransient)

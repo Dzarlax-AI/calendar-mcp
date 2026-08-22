@@ -56,6 +56,14 @@ type EventSyncUpsert struct {
 	Event  EventV2
 }
 
+// EventSyncWarning identifies a provider object whose page data was accepted
+// with a protocol-level degradation. ObjectID is provider data and must not be
+// included in errors or logs.
+type EventSyncWarning struct {
+	Code     EventSyncErrorClass
+	ObjectID string
+}
+
 // EventSyncPage is a provider-neutral, single-page delta. Inventory is the
 // object inventory observed on this page. ReplacedObjectIDs is an explicit
 // completeness assertion: all current event membership for each listed object
@@ -75,6 +83,7 @@ type EventSyncPage struct {
 	NextCursor        EventSyncCursor
 	ResetRequired     bool
 	Complete          bool
+	Warnings          []EventSyncWarning
 }
 
 // EventSyncPolicy is the bounded scheduling policy chosen for a provider.

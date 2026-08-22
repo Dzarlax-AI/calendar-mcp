@@ -102,12 +102,12 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		FROM calendar_sync_state ss
 		JOIN calendars c ON c.id=ss.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
-		WHERE ss.status IN (?, ?, ?, ?) AND conn.status=? AND c.can_read=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
+		WHERE ss.status IN (?, ?, ?, ?, ?) AND conn.status=? AND c.can_read=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
 	}
-	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "syncing", "connected", true, now, now))
+	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, now, now))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
@@ -182,6 +182,16 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
 	}
+	degradedCode := ""
+	if batch.Degraded {
+		degradedCode = batch.ErrorCode
+		if degradedCode == "" {
+			degradedCode = string(calendar.EventSyncProtocol)
+		}
+		if degradedCode != string(calendar.EventSyncProtocol) || !safeCalendarSyncCode(degradedCode) {
+			return ErrInvalidSyncCode
+		}
+	}
 	syncedAt := now
 	objectMembers := make(map[string]map[string]struct{}, len(batch.Upserts))
 	for _, upsert := range batch.Upserts {
@@ -208,6 +218,9 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 	}
 	deletedObjects := make(map[string]struct{}, len(batch.DeletedObjectIDs))
 	for _, objectID := range batch.DeletedObjectIDs {
+		if objectID == "" {
+			return errors.New("deleted source object ID is required")
+		}
 		deletedObjects[objectID] = struct{}{}
 	}
 	for _, sourceObjectID := range batch.ReplacedObjectIDs {
@@ -262,30 +275,46 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 		}
 	}
 	if final {
-		if batch.FullSync {
-			if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM cached_events WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
-				return fmt.Errorf("sweep cached event generation: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
-				return fmt.Errorf("sweep calendar sync object generation: %w", err)
-			}
-		}
 		nextSyncAt := state.NextSyncAt
 		if batch.NextSyncAt != nil {
 			nextSyncAt = *batch.NextSyncAt
 		}
-		res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+		if batch.Degraded {
+			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+				SET status=?, next_sync_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "degraded", nextSyncAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+			if err != nil {
+				return fmt.Errorf("degrade calendar sync: %w", err)
+			}
+			changed, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if changed != 1 {
+				return ErrCalendarSyncLeaseLost
+			}
+		} else {
+			if batch.FullSync {
+				if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM cached_events WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
+					return fmt.Errorf("sweep cached event generation: %w", err)
+				}
+				if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
+					return fmt.Errorf("sweep calendar sync object generation: %w", err)
+				}
+			}
+			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
 			SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
 			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), batch.NextCursor, "ready", nextSyncAt, syncedAt, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
-		if err != nil {
-			return fmt.Errorf("finish calendar sync: %w", err)
-		}
-		changed, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed != 1 {
-			return ErrCalendarSyncLeaseLost
+			if err != nil {
+				return fmt.Errorf("finish calendar sync: %w", err)
+			}
+			changed, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if changed != 1 {
+				return ErrCalendarSyncLeaseLost
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

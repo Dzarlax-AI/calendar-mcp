@@ -90,6 +90,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 	pageToken := calendar.EventSyncPageToken("")
 	seenTokens := make(map[calendar.EventSyncPageToken]struct{})
 	resets := 0
+	degraded := false
 	for pages := 0; ; pages++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -115,6 +116,9 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		if err := validatePage(mode, page); err != nil {
 			return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
 		}
+		if len(page.Warnings) != 0 {
+			degraded = true
+		}
 		if page.ResetRequired {
 			resets++
 			if resets > policy.MaxResets {
@@ -134,6 +138,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			mode = calendar.EventSyncReplacement
 			pageToken = ""
 			clear(seenTokens)
+			degraded = false
 			continue
 		}
 		if !page.Complete {
@@ -143,10 +148,16 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			seenTokens[page.NextPageToken] = struct{}{}
 		}
 
-		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement)
+		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement, degraded)
 		if page.Complete {
-			next := s.now().Add(policy.PollInterval)
-			batch.NextCursor = string(page.NextCursor)
+			delay := policy.PollInterval
+			if degraded {
+				delay = degradedRetryDelay(policy, state)
+			}
+			next := s.now().Add(delay)
+			if !degraded {
+				batch.NextCursor = string(page.NextCursor)
+			}
 			batch.NextSyncAt = &next
 		}
 		applyErr := s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
@@ -164,6 +175,14 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 		pageToken = page.NextPageToken
 	}
+}
+
+func degradedRetryDelay(policy calendar.EventSyncPolicy, state storage.CalendarSyncState) time.Duration {
+	delay := retryDelay(policy, 0)
+	if state.LastErrorCode == string(calendar.EventSyncProtocol) && policy.PollInterval > delay {
+		return policy.PollInterval
+	}
+	return delay
 }
 
 func (s *Service) policy(provider calendar.Provider) calendar.EventSyncPolicy {
@@ -279,6 +298,11 @@ func classify(err error) (calendar.EventSyncErrorClass, time.Duration) {
 }
 
 func validatePage(mode calendar.EventSyncMode, page calendar.EventSyncPage) error {
+	for _, warning := range page.Warnings {
+		if warning.Code != calendar.EventSyncProtocol || warning.ObjectID == "" {
+			return ErrInvalidPage
+		}
+	}
 	if page.ResetRequired {
 		if page.Complete || page.NextPageToken != "" || page.NextCursor != "" || len(page.Upserts) != 0 || len(page.DeletedEventIDs) != 0 || len(page.DeletedObjectIDs) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.Inventory) != 0 {
 			return ErrInvalidPage
@@ -333,12 +357,16 @@ func validatePage(mode calendar.EventSyncMode, page calendar.EventSyncPage) erro
 	return nil
 }
 
-func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, fullSync bool) storage.EventSyncBatch {
+func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, fullSync, degraded bool) storage.EventSyncBatch {
 	batch := storage.EventSyncBatch{
 		DeletedEventIDs:   append([]string(nil), page.DeletedEventIDs...),
 		DeletedObjectIDs:  append([]string(nil), page.DeletedObjectIDs...),
 		ReplacedObjectIDs: append([]string(nil), page.ReplacedObjectIDs...),
 		FullSync:          fullSync,
+		Degraded:          degraded,
+	}
+	if degraded {
+		batch.ErrorCode = string(calendar.EventSyncProtocol)
 	}
 	objects := make(map[string]storage.SyncObject, len(page.Inventory)+len(page.Upserts))
 	for _, object := range page.Inventory {
