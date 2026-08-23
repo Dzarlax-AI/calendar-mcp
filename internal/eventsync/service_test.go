@@ -72,6 +72,8 @@ type fakeStore struct {
 	applyErrAt int
 	applyErr   error
 	resetErr   error
+	quarantine []storage.CalendarSyncQuarantine
+	repairs    []storage.EventSyncRepairBatch
 }
 
 func (s *fakeStore) ApplyEventSyncPage(_ context.Context, state storage.CalendarSyncState, batch storage.EventSyncBatch, final bool, _ time.Time) error {
@@ -101,6 +103,18 @@ func (s *fakeStore) ResetCalendarSync(_ context.Context, state storage.CalendarS
 	state.Cursor = ""
 	state.Generation++
 	return &state, nil
+}
+
+func (s *fakeStore) ListDueEventSyncQuarantine(_ context.Context, _ storage.CalendarSyncState, _ time.Time, limit int) ([]storage.CalendarSyncQuarantine, error) {
+	if limit > len(s.quarantine) {
+		limit = len(s.quarantine)
+	}
+	return s.quarantine[:limit], nil
+}
+
+func (s *fakeStore) ApplyEventSyncObjectRepair(_ context.Context, _ storage.CalendarSyncState, batch storage.EventSyncRepairBatch, _ time.Time) error {
+	s.repairs = append(s.repairs, batch)
+	return nil
 }
 
 func testState(cursor string) storage.CalendarSyncState {
@@ -190,11 +204,12 @@ func TestPolicyForOverridesProviderPolicyAndNormalizesValues(t *testing.T) {
 	}}
 	got := service.policy(provider)
 	want := calendar.EventSyncPolicy{
-		PollInterval: 7 * time.Minute,
-		RetryBase:    10 * time.Minute,
-		RetryMax:     10 * time.Minute,
-		MaxPages:     defaultMaxPages,
-		MaxResets:    defaultMaxResets,
+		PollInterval:           7 * time.Minute,
+		RetryBase:              10 * time.Minute,
+		RetryMax:               10 * time.Minute,
+		MaxPages:               defaultMaxPages,
+		MaxResets:              defaultMaxResets,
+		MaxObjectRepairsPerRun: defaultMaxObjectRepairsPerRun,
 	}
 	if got != want {
 		t.Fatalf("policy = %#v, want %#v", got, want)
@@ -207,11 +222,12 @@ func TestPolicyForOverridesProviderPolicyAndNormalizesValues(t *testing.T) {
 func TestLegacyProviderPolicyUsesConservativeDefaults(t *testing.T) {
 	got := (&Service{}).policy(legacyProvider{})
 	want := calendar.EventSyncPolicy{
-		PollInterval: defaultPollInterval,
-		RetryBase:    defaultRetryBase,
-		RetryMax:     defaultRetryMax,
-		MaxPages:     defaultMaxPages,
-		MaxResets:    defaultMaxResets,
+		PollInterval:           defaultPollInterval,
+		RetryBase:              defaultRetryBase,
+		RetryMax:               defaultRetryMax,
+		MaxPages:               defaultMaxPages,
+		MaxResets:              defaultMaxResets,
+		MaxObjectRepairsPerRun: defaultMaxObjectRepairsPerRun,
 	}
 	if got != want {
 		t.Fatalf("policy = %#v, want %#v", got, want)
@@ -253,7 +269,7 @@ func TestRunOneInitialAndMultipageIncremental(t *testing.T) {
 	})
 }
 
-func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
+func TestRunOneWarningsDegradeAttemptAndAdvanceCursor(t *testing.T) {
 	t.Run("intermediate warning followed by clean terminal page", func(t *testing.T) {
 		provider := &fakeProvider{pages: []calendar.EventSyncPage{
 			{NextPageToken: "next", Warnings: []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}}},
@@ -263,10 +279,10 @@ func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
 		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 2 || !store.applied[0].batch.Degraded || !store.applied[1].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.NextCursor != "" {
+		if len(store.applied) != 2 || !store.applied[0].batch.Degraded || !store.applied[1].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.NextCursor != "advanced" {
 			t.Fatalf("applied pages = %#v", store.applied)
 		}
-		if got, want := *store.applied[1].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC); !got.Equal(want) {
+		if got, want := *store.applied[1].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {
 			t.Fatalf("degraded retry at = %s, want %s", got, want)
 		}
 	})
@@ -281,10 +297,10 @@ func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
 		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 1 || !store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[0].batch.NextCursor != "" {
+		if len(store.applied) != 1 || !store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[0].batch.NextCursor != "advanced" {
 			t.Fatalf("applied page = %#v", store.applied)
 		}
-		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC); !got.Equal(want) {
+		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {
 			t.Fatalf("degraded retry at = %s, want %s", got, want)
 		}
 	})

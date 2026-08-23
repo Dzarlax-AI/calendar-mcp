@@ -63,6 +63,10 @@ type EventSyncUpsert struct {
 type EventSyncWarning struct {
 	Code     EventSyncErrorClass
 	ObjectID string
+	// ETag is the response representation tag observed with the malformed
+	// object. It lets storage reset repair backoff only when the provider has
+	// actually changed that object; it must never be exposed publicly.
+	ETag string
 }
 
 // EventSyncPage is a provider-neutral, single-page delta. Inventory is the
@@ -95,12 +99,54 @@ type EventSyncPolicy struct {
 	RetryMax     time.Duration
 	MaxPages     int
 	MaxResets    int
+	// MaxObjectRepairsPerRun bounds repair work performed under a normal
+	// calendar lease. Zero lets the coordinator use the conservative default.
+	MaxObjectRepairsPerRun int
 }
 
 // EventSyncProvider is an optional capability. It intentionally does not
 // extend Provider so legacy providers continue to compile and operate.
 type EventSyncProvider interface {
 	SyncEvents(context.Context, EventSyncRequest) (EventSyncPage, error)
+}
+
+// EventSyncObjectRepairOutcome distinguishes a provider deletion from an
+// object which still exists but no longer belongs to the frozen projection.
+// Storage may tombstone cached membership for both cases, but callers must not
+// use a lossy boolean because their retry and diagnostics semantics differ.
+type EventSyncObjectRepairOutcome string
+
+const (
+	EventSyncObjectReplaceMembership    EventSyncObjectRepairOutcome = "replace_membership"
+	EventSyncObjectAbsentFromProjection EventSyncObjectRepairOutcome = "absent_from_projection"
+	EventSyncObjectProviderDeleted      EventSyncObjectRepairOutcome = "provider_deleted"
+	EventSyncObjectStillQuarantined     EventSyncObjectRepairOutcome = "still_quarantined"
+)
+
+// EventSyncObjectRepairRequest addresses one known provider object. CalendarID
+// is provider-local and the opaque object ID/ETag remain internal only.
+type EventSyncObjectRepairRequest struct {
+	CalendarID string
+	Window     EventSyncWindow
+	Object     SyncObject
+	Generation int64
+}
+
+// EventSyncObjectRepairResult contains one explicit repair outcome. A
+// ReplaceMembership result must carry the complete current membership for the
+// object; StillQuarantined must carry a protocol warning for the same object.
+type EventSyncObjectRepairResult struct {
+	Object  SyncObject
+	Outcome EventSyncObjectRepairOutcome
+	Upserts []EventSyncUpsert
+	Warning *EventSyncWarning
+}
+
+// EventSyncObjectRepairProvider is optional and intentionally separate from
+// EventSyncProvider: adapters can support normal sync before they grow a safe
+// object-repair path.
+type EventSyncObjectRepairProvider interface {
+	RepairEventSyncObject(context.Context, EventSyncObjectRepairRequest) (EventSyncObjectRepairResult, error)
 }
 
 // EventSyncPolicyProvider is an optional capability for adapters with
@@ -115,6 +161,12 @@ type EventSyncPolicyProvider interface {
 func EventSyncCapability(provider Provider) (EventSyncProvider, bool) {
 	syncer, ok := provider.(EventSyncProvider)
 	return syncer, ok
+}
+
+// EventSyncObjectRepairCapability discovers optional object repair support.
+func EventSyncObjectRepairCapability(provider Provider) (EventSyncObjectRepairProvider, bool) {
+	repairer, ok := provider.(EventSyncObjectRepairProvider)
+	return repairer, ok
 }
 
 // EventSyncPolicyCapability discovers optional provider scheduling defaults.

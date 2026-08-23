@@ -140,7 +140,7 @@ function normalizeEventList(raw: RawEventListResponse): EventListResponse {
 }
 
 const SAFE_ERROR_CODES = new Set(["invalid_argument", "invalid_recurrence", "unsupported_capability", "not_found", "permission_denied", "conflict", "rate_limited", "provider_unavailable", "partial_failure"]);
-const SAFE_STATUS = new Set(["pending", "syncing", "ready", "failed", "parked"]);
+const SAFE_STATUS = new Set(["pending", "syncing", "ready", "failed", "parked", "degraded"]);
 
 function safeErrorCode(value: unknown): string | null {
   if (typeof value !== "string") return null;

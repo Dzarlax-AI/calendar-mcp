@@ -854,7 +854,7 @@ func normalizeCachedUIEvent(event calendar.EventV2) calendar.EventV2 {
 
 func isUISyncStatus(value string) bool {
 	switch value {
-	case "pending", "syncing", "ready", "failed", "parked":
+	case "pending", "syncing", "ready", "failed", "parked", "degraded":
 		return true
 	default:
 		return false

@@ -5,9 +5,10 @@ export const EVENT_STATUS_POLL_INTERVAL_MS = 2_000;
 export const EVENT_STATUS_POLL_MAX_ATTEMPTS = 30;
 
 export type EventStatusSummary = {
-  kind: "failed" | "stale" | "syncing" | "updated";
+  kind: "failed" | "degraded" | "stale" | "syncing" | "updated";
   label: string;
   failedCount: number;
+  degradedCalendarIds?: string[];
 };
 
 export function toCalendarEvent(event: EventRecord, calendar?: CalendarRecord): EventInput {
@@ -49,9 +50,11 @@ export function formatRelativeTime(value: string | null | undefined, now = new D
 
 export function summarizeEventSources(response: Pick<EventListResponse, "sources" | "complete">, now = new Date()): EventStatusSummary {
   const sources = response.sources ?? [];
-  const failed = sources.filter((source) => source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.complete === false));
-  const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing") ? 1 : 0);
+  const failed = sources.filter((source) => source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false));
+  const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing" || source.status === "degraded") ? 1 : 0);
   if (failedCount) return { kind: "failed", label: `${failedCount} calendar${failedCount === 1 ? "" : "s"} failed`, failedCount };
+  const degradedCalendarIds = sources.filter((source) => source.status === "degraded").map((source) => source.calendar_id).filter((id): id is string => Boolean(id));
+  if (degradedCalendarIds.length) return { kind: "degraded", label: `${degradedCalendarIds.length} calendar${degradedCalendarIds.length === 1 ? " needs" : "s need"} repair`, failedCount: 0, degradedCalendarIds };
   if (sources.some((source) => source.stale)) return { kind: "stale", label: "Some calendars are stale", failedCount: 0 };
   if (sources.some((source) => source.status === "pending" || source.status === "syncing")) return { kind: "syncing", label: "Syncing", failedCount: 0 };
   const latest = sources.map((source) => source.last_success_at).filter((value): value is string => Boolean(value)).reduce<string | undefined>((current, value) => {

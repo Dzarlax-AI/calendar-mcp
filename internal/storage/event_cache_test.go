@@ -33,7 +33,7 @@ func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertSchemaVersion(t, store, 2)
+	assertSchemaVersion(t, store, 3)
 	for _, table := range []string{"cached_events", "calendar_sync_state", "calendar_sync_objects"} {
 		var name string
 		if err := store.db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
@@ -44,11 +44,11 @@ func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 
 func TestMigrateFreshAndIdempotentEventReadModel(t *testing.T) {
 	store := newSQLiteStore(t)
-	assertSchemaVersion(t, store, 2)
+	assertSchemaVersion(t, store, 3)
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	assertSchemaVersion(t, store, 2)
+	assertSchemaVersion(t, store, 3)
 }
 
 func TestPostgresEventReadModelIntegration(t *testing.T) {
@@ -214,7 +214,7 @@ func TestApplyEventSyncPageAdvancesCursorAndSweepsOnlyCompletedFullGeneration(t 
 	}
 }
 
-func TestApplyEventSyncPageDegradedFinalPreservesAuthoritativeSnapshotAndRetries(t *testing.T) {
+func TestApplyEventSyncPageDegradedFinalAdvancesCursorAndRetries(t *testing.T) {
 	store, now := newEventCacheStore(t)
 	ctx := context.Background()
 	initial, err := store.ClaimDueCalendarSync(ctx, "snapshot-worker", now, now.Add(time.Hour))
@@ -240,11 +240,6 @@ func TestApplyEventSyncPageDegradedFinalPreservesAuthoritativeSnapshotAndRetries
 	if err := store.ApplyEventSyncPage(ctx, *initial, snapshot, true, now); err != nil {
 		t.Fatal(err)
 	}
-	var beforeCursor string
-	var beforeSuccess time.Time
-	if err := store.db.QueryRowContext(ctx, "SELECT cursor, last_success_at FROM calendar_sync_state WHERE calendar_id='calendar'").Scan(&beforeCursor, &beforeSuccess); err != nil {
-		t.Fatal(err)
-	}
 	var unresolvedGeneration int64
 	if err := store.db.QueryRowContext(ctx, "SELECT sync_generation FROM calendar_sync_objects WHERE calendar_id='calendar' AND object_id='unresolved.ics'").Scan(&unresolvedGeneration); err != nil {
 		t.Fatal(err)
@@ -260,12 +255,13 @@ func TestApplyEventSyncPageDegradedFinalPreservesAuthoritativeSnapshotAndRetries
 		FullSync:          true,
 		Degraded:          true,
 		ErrorCode:         "protocol",
+		Warnings:          []EventSyncWarning{{ObjectID: "unresolved.ics", ErrorCode: "protocol", ETag: "etag-1"}},
 		ReplacedObjectIDs: []string{"valid-a.ics"},
 		Upserts: []CachedEventUpsert{{
 			SourceObjectID: "valid-a.ics",
 			Event:          cachedTimedEvent("valid-a", "2026-08-22T10:00:00Z", "2026-08-22T11:30:00Z"),
 		}},
-		NextCursor: "must-not-replace-authoritative-cursor",
+		NextCursor: "degraded-cursor",
 		NextSyncAt: &retryAt,
 	}
 	if err := store.ApplyEventSyncPage(ctx, *claim, degraded, true, degradedAt); err != nil {
@@ -281,7 +277,7 @@ func TestApplyEventSyncPageDegradedFinalPreservesAuthoritativeSnapshotAndRetries
 	if err := store.db.QueryRowContext(ctx, "SELECT cursor, status, generation, last_success_at, last_error_code, next_sync_at, lease_owner, lease_until FROM calendar_sync_state WHERE calendar_id='calendar'").Scan(&cursor, &status, &generation, &success, &code, &next, &leaseOwner, &leaseUntil); err != nil {
 		t.Fatal(err)
 	}
-	if cursor != beforeCursor || generation != claim.Generation || !success.Equal(beforeSuccess) || status != "degraded" || code != "protocol" || !next.Equal(retryAt) || leaseOwner.Valid || leaseUntil.Valid {
+	if cursor != degraded.NextCursor || generation != claim.Generation || !success.Equal(degradedAt) || status != "degraded" || code != "protocol" || !next.Equal(retryAt) || leaseOwner.Valid || leaseUntil.Valid {
 		t.Fatalf("degraded final state cursor=%q generation=%d success=%s status=%q code=%q next=%s lease=%q/%v", cursor, generation, success, status, code, next, leaseOwner.String, leaseUntil)
 	}
 	var afterUnresolvedGeneration int64
@@ -292,15 +288,30 @@ func TestApplyEventSyncPageDegradedFinalPreservesAuthoritativeSnapshotAndRetries
 		t.Fatalf("unresolved object generation=%d, want %d", afterUnresolvedGeneration, unresolvedGeneration)
 	}
 	events, _, err := store.ListCachedEvents(ctx, []string{"calendar"}, mustTime(t, "2026-08-22T09:00:00Z"), mustTime(t, "2026-08-22T14:00:00Z"))
-	if err != nil || len(events) != 3 {
+	if err != nil || len(events) != 2 {
 		t.Fatalf("degraded events=%#v err=%v", events, err)
 	}
 	ids := make(map[string]calendar.EventV2, len(events))
 	for _, event := range events {
 		ids[event.ID] = event
 	}
-	if ids["valid-a"].End.DateTime != "2026-08-22T11:30:00Z" || ids["valid-b"].ID == "" || ids["unresolved"].ID == "" {
+	if ids["valid-a"].End.DateTime != "2026-08-22T11:30:00Z" || ids["valid-b"].ID != "" || ids["unresolved"].ID == "" {
 		t.Fatalf("degraded projection=%#v", ids)
+	}
+	cleanClaim, err := store.ClaimDueCalendarSync(ctx, "clean-worker", retryAt, retryAt.Add(time.Hour))
+	if err != nil || cleanClaim == nil {
+		t.Fatalf("clean claim=%#v err=%v", cleanClaim, err)
+	}
+	cleanNext := retryAt.Add(time.Minute)
+	if err := store.ApplyEventSyncPage(ctx, *cleanClaim, EventSyncBatch{NextCursor: "clean-cursor", NextSyncAt: &cleanNext}, true, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	var cleanStatus string
+	if err := store.db.QueryRowContext(ctx, "SELECT status FROM calendar_sync_state WHERE calendar_id='calendar'").Scan(&cleanStatus); err != nil {
+		t.Fatal(err)
+	}
+	if cleanStatus != "degraded" {
+		t.Fatalf("clean sync status=%q, want degraded while quarantine is active", cleanStatus)
 	}
 }
 

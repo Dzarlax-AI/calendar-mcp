@@ -101,6 +101,7 @@ describe("calendar mapping", () => {
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing" }, { ...base, stale: true }] }, now).kind).toBe("stale");
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing", complete: false }] }, now).label).toBe("Syncing");
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "failed" }, { ...base, stale: true }] }, now).label).toBe("1 calendar failed");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, calendar_id: "c1", status: "degraded", complete: false }] }, now)).toMatchObject({ kind: "degraded", label: "1 calendar needs repair", degradedCalendarIds: ["c1"] });
     expect(summarizeEventSources({ complete: true, sources: [base] }, now).label).toBe("Updated 1 hr ago");
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, last_success_at: "2026-09-15T11:30:00Z" }, { ...base, last_success_at: "2026-09-15T10:45:00+02:00" }] }, now).label).toBe("Updated 30 min ago");
   });

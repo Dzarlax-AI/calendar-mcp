@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>План: per-object quarantine и repair для календарей</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 22px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; } h1 { margin-top: 0; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; } .approval { border-left: 4px solid #d97706; }
+    .good { border-left: 4px solid #059669; } table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 9px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; } li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Per-object quarantine и repair для календарей</h1>
+  <span class="badge">Approval required before implementation</span>
+
+  <section>
+    <h2>1. Краткое резюме</h2>
+    <p>Один повреждённый Google event или Apple <code>.ics</code>-resource не должен переводить весь календарь в generic failed. Мы сохраняем валидные события, помещаем конкретный объект в quarantine, продвигаем безопасный cursor, оставляем последнюю cached projection видимой и даём bounded repair.</p>
+    <p>Текущий baseline: commit <code>b3e2307</code> в ветке <code>fix/calendar-sync-protocol-isolation</code>; production уже исправил OAuth client mismatch, но object-level protocol failures остаются.</p>
+  </section>
+
+  <section class="good">
+    <h2>2. Доказанное текущее поведение</h2>
+    <ul>
+      <li>Google adapter добавляет warning с ObjectID, но warning не сохраняется отдельно; coordinator блокирует terminal cursor для всей попытки.</li>
+      <li>Apple fallback изолирует malformed resources, но resource path и причина также выбрасываются после page processing.</li>
+      <li>Storage сохраняет valid cached events, но переводит весь calendar source в <code>degraded/protocol</code>.</li>
+      <li>API/UI не поддерживают <code>degraded</code>: неизвестный status нормализуется как <code>failed</code>, поэтому пользователь видит «calendar failed».</li>
+      <li>В production cached events остаются видимыми; OAuth ошибок после parity fix не наблюдается.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Целевое поведение</h2>
+    <ul>
+      <li>Valid siblings синхронизируются, а terminal cursor продвигается.</li>
+      <li>Для известного объекта создаётся quarantine row с provider-local ID, ETag, safe error code, timestamps и bounded retry.</li>
+      <li>Full replacement sweep не удаляет cache membership активного quarantined object.</li>
+      <li>Один due repair запускается под тем же calendar lease; repair не меняет основной cursor.</li>
+      <li>Успешный upsert или подтверждённое удаление очищает active quarantine атомарно; активная нерешённая запись не истекает по TTL.</li>
+      <li>UI показывает amber «Events pending repair» и aggregate count; provider IDs, ETags, URLs, cursors, raw payload и credentials наружу не выходят.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Контракт и инварианты</h2>
+    <pre><code>type EventSyncObjectRepairProvider interface {
+  RepairEventSyncObject(context.Context, EventSyncObjectRepairRequest) (
+    EventSyncObjectRepairResult, error)
+}
+
+type EventSyncObjectRepairResult struct {
+  Object  SyncObject
+  Outcome EventSyncObjectRepairOutcome
+  Upserts []EventV2
+  Warning *EventSyncWarning
+}
+
+type EventSyncObjectRepairOutcome string
+
+const (
+  ReplaceMembership    EventSyncObjectRepairOutcome = "replace_membership"
+  AbsentFromProjection EventSyncObjectRepairOutcome = "absent_from_projection"
+  ProviderDeleted      EventSyncObjectRepairOutcome = "provider_deleted"
+  StillQuarantined     EventSyncObjectRepairOutcome = "still_quarantined"
+)</code></pre>
+    <ol>
+      <li>Warning без stable ObjectID остаётся hard protocol error.</li>
+      <li>На каждой page valid mutations и quarantine upserts атомарны; на terminal page в ту же транзакцию входят quarantine-aware sweep, aggregate status и cursor advance.</li>
+      <li>Changed ETag сбрасывает repair backoff; unchanged ETag сохраняет backoff.</li>
+      <li>Hard repair failure не блокирует основной feed.</li>
+      <li>At most one due repair per claimed calendar run.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>5. Файлы и workstreams</h2>
+    <table>
+      <thead><tr><th>Lane</th><th>Model</th><th>Files</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Contract/schema/storage</td><td>Terra high</td><td><code>internal/calendar/event_sync.go</code>, <code>internal/storage/*</code>, migrations</td><td>Typed repair contract, quarantine table, atomic storage methods</td></tr>
+        <tr><td>Google/Apple adapters</td><td>Terra high</td><td><code>internal/google/*</code>, <code>internal/apple/*</code></td><td>Object repair, confirmed delete, provider-specific tests</td></tr>
+        <tr><td>Coordinator</td><td>Terra high</td><td><code>internal/eventsync/service*.go</code></td><td>Cursor advancement, bounded repair, lease safety</td></tr>
+        <tr><td>API/UI</td><td>Luna medium</td><td><code>internal/web/*</code>, <code>frontend/src/*</code></td><td>Safe degraded status, aggregate diagnostics, repair action</td></tr>
+        <tr><td>Plan review</td><td>Sol medium, completed</td><td>Cross-cutting plan only</td><td>Findings incorporated by root; no second Sol pass and no implementation lane</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Model rule:</strong> implementation is Terra/Luna-owned; root integrates and verifies; Sol is reserved for the explicitly requested plan review and owns no implementation lane.</p>
+  </section>
+
+  <section>
+    <h2>6. Execution waves</h2>
+    <ol>
+      <li><strong>Contract freeze:</strong> Terra finalizes types, migration and invariants.</li>
+      <li><strong>Provider lanes:</strong> Terra implements Google and Apple repair against the frozen contract.</li>
+      <li><strong>Coordinator/storage:</strong> Terra integrates atomic quarantine and cursor behavior.</li>
+      <li><strong>API/UI:</strong> Luna consumes the stable aggregate contract.</li>
+      <li><strong>Integration:</strong> root inspects diffs and runs full checks.</li>
+      <li><strong>Root integration:</strong> inspect the cumulative diff, reconcile the model outputs and run the release checks.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>7. Tests and QA</h2>
+    <ul>
+      <li>Focused: <code>go test ./internal/{google,apple,eventsync,storage,web} -count=1</code>.</li>
+      <li>Full: <code>GOCACHE=/private/tmp/calendar-mcp-go-build go test -race -count=1 ./...</code>, <code>go vet ./...</code>, frontend typecheck/Vitest, <code>git diff --check</code>.</li>
+      <li>SQLite and Postgres tests must prove atomic sweep exclusion, cursor advance, repair success/delete, backoff and lease loss; Postgres verification is a production rollout blocker, not optional evidence.</li>
+      <li>Manual QA: malformed Google object, malformed Apple resource, cached events visible, repair accepted, source returns ready, no raw diagnostics in browser response.</li>
+      <li>Deployment QA: same immutable image for serve/worker, migration compatibility, internal health, external UI, one real Google repair and one Apple repair.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>8. Риски и rollback</h2>
+    <ul>
+      <li>Advancing cursor before a repair path is durable could permanently miss a malformed event; quarantine transaction must commit first.</li>
+      <li>Replacement sweep could delete poisoned cache membership; active quarantine exclusion is mandatory.</li>
+      <li>Schema migration is not rolling-safe with older binaries; use an expand-only migration, drain old serve/worker processes, wait for leases, migrate once, then start the same immutable digest. Name a compatible rollback digest before rollout.</li>
+      <li>Diagnostic metadata can leak calendar content; public API exposes aggregate fields only.</li>
+    </ul>
+    <p>До migration activation rollback — previous immutable digest. После schema activation rollback only via the pre-declared compatibility build; do not manually delete cursors, cached rows or quarantine rows. A production rollout is blocked if Postgres migration and replay checks are unavailable.</p>
+  </section>
+
+  <section>
+    <h2>9. Открытые решения</h2>
+    <ul>
+      <li>Публичный status: рекомендовано добавить <code>degraded</code> вместо маскировки под <code>failed</code>.</li>
+      <li>Repair: Phase 1 — automatic bounded repair; Phase 2 — calendar-scoped manual scheduling. HTTP action performs no provider I/O, atomically wakes at most one due quarantine/next sync, and returns explicit <code>202/409/422</code> outcomes.</li>
+      <li>Quarantine retention: active unresolved rows have no TTL; resolved/history retention is Phase 2. Provider object IDs, ETags and diagnostic tokens do not cross the public API.</li>
+      <li>Provider semantics: Google 404 is confirmed deletion; Apple repair must capture the response ETag (never reuse the caller ETag) and distinguish changed, unchanged and missing resources.</li>
+      <li>Hard auth/permission/schema/protocol failures remain quarantined or failed according to source semantics; transient/rate-limit repair failures reschedule without blocking the normal feed.</li>
+      <li>Microsoft не включать в этот scope: для него пока нет доказанной object-level repair semantics.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>10. Фактический результат реализации</h2>
+    <ul>
+      <li>Backend contract/storage/coordinator и Google/Apple object repair реализованы; schema version поднята до 3 с SQLite/Postgres quarantine migration.</li>
+      <li>API/UI сохраняют <code>degraded</code>, не раскрывают provider payloads и оставляют cached events видимыми; manual retry использует существующий provider-free refresh endpoint.</li>
+      <li>Проверки: полный Go test и vet пройдены, frontend Vitest (21 тест) и production build пройдены, <code>git diff --check</code> чистый.</li>
+      <li>Sol code review PR нашёл и заблокировал три проблемы; они исправлены в последующем commit: active quarantine влияет на terminal status, Apple malformed repair сохраняет response ETag, still-quarantined repair получает bounded retry.</li>
+      <li>Ограничение: production Postgres integration требует отдельного окружения с <code>TEST_POSTGRES_URL</code>; deploy до этой проверки не разрешён.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>11. Approval gate</h2>
+    <p>Реализация завершена локально и готовится к PR. Merge, deployment и внешние сообщения остаются отдельными gates: сначала PR, затем Sol code review, затем Rabbit review и только после этого итоговое уведомление пользователя.</p>
+  </section>
+</main>
+</body>
+</html>

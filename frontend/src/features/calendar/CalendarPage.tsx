@@ -176,14 +176,23 @@ export default function CalendarPage() {
       else updateMutation.mutate({ event: modal.event, payload });
     }
   }
-  function refreshSelectedCalendars() {
-    const readableSelected = calendars.filter((calendar) => calendar.capability.read && sortedSelectedCalendarIds.includes(calendar.id)).map((calendar) => calendar.id);
-    if (readableSelected.length) {
+  function refreshCalendarIds(candidateIds: string[]) {
+    const readable = calendars.filter((calendar) => calendar.capability.read && candidateIds.includes(calendar.id)).map((calendar) => calendar.id);
+    if (readable.length) {
       setPollingAttempts(0);
       setPollingCapped(false);
       lastPolledDataUpdatedAtRef.current = 0;
-      refreshMutation.mutate(readableSelected);
+      refreshMutation.mutate(readable);
     }
+  }
+
+  function refreshSelectedCalendars() {
+    refreshCalendarIds(sortedSelectedCalendarIds);
+  }
+
+  function refreshDegradedCalendars() {
+    const degraded = eventStatus?.kind === "degraded" ? eventStatus.degradedCalendarIds ?? [] : [];
+    refreshCalendarIds(degraded);
   }
 
   return <div className={`calendar-screen ${sidebarOpen ? "with-sidebar" : "wide"} ${selectedEvent ? "with-drawer" : ""}`}>
@@ -196,7 +205,7 @@ export default function CalendarPage() {
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSidebarOpen(true)}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
       {notice && <div className="notice" role="status"><span>{notice}</span><button className="icon-button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16} /></button></div>}
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={() => setSelectedCalendarIds(calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id))}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
-        {eventStatus && <div className={`event-status-row event-status-row--${eventStatus.kind}`} role="status" aria-live="polite"><span>{eventStatus.label}</span>{eventStatus.kind === "failed" && <span className="event-status-detail">Cached events remain visible.</span>}</div>}
+        {eventStatus && <div className={`event-status-row event-status-row--${eventStatus.kind}`} role="status" aria-live="polite"><span>{eventStatus.label}</span>{(eventStatus.kind === "failed" || eventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{eventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Retry repair</button>}</div>}
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
         <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() })} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
