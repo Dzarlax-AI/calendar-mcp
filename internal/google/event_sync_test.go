@@ -152,6 +152,9 @@ func TestSyncEventsClassifiesErrorsWithoutLeakingTokens(t *testing.T) {
 			if !errors.As(err, &syncErr) || syncErr.Class != tt.want {
 				t.Fatalf("error = %#v, want class %q", err, tt.want)
 			}
+			if syncErr.ProviderStatus != tt.code || syncErr.ProviderReason != tt.reason {
+				t.Fatalf("provider detail = status %d reason %q, want %d %q", syncErr.ProviderStatus, syncErr.ProviderReason, tt.code, tt.reason)
+			}
 			if tt.want == calendar.EventSyncRateLimited && syncErr.RetryAfter != 7*time.Second {
 				t.Fatalf("RetryAfter = %s, want 7s", syncErr.RetryAfter)
 			}

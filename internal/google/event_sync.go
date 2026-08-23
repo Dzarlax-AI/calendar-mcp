@@ -130,6 +130,13 @@ func classifyGoogleSyncError(err error) error {
 		return &calendar.EventSyncError{Class: calendar.EventSyncTransient, Cause: err}
 	}
 	class := calendar.EventSyncProtocol
+	reason := ""
+	if len(apiErr.Errors) > 0 {
+		// Google supplies a bounded machine-readable reason alongside the HTTP
+		// status. Keep only that allowlisted value; never expose response bodies,
+		// URLs, cursors, or credentials in logs.
+		reason = strings.TrimSpace(apiErr.Errors[0].Reason)
+	}
 	switch {
 	case apiErr.Code == http.StatusUnauthorized:
 		class = calendar.EventSyncAuth
@@ -142,7 +149,7 @@ func classifyGoogleSyncError(err error) error {
 	case apiErr.Code >= 500 && apiErr.Code <= 599:
 		class = calendar.EventSyncTransient
 	}
-	return &calendar.EventSyncError{Class: class, RetryAfter: googleRetryAfter(apiErr.Header), Cause: err}
+	return &calendar.EventSyncError{Class: class, RetryAfter: googleRetryAfter(apiErr.Header), ProviderStatus: apiErr.Code, ProviderReason: reason, Cause: err}
 }
 
 func googleSyncRateLimited(apiErr *googleapi.Error) bool {

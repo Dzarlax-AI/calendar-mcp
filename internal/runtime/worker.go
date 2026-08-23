@@ -116,7 +116,9 @@ func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory
 		}
 	}
 	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
-		log.Printf("calendar event read-model sync failed: category=%T", err)
+		// EventSyncError.Error exposes only bounded provider status/reason fields;
+		// it deliberately excludes response bodies, cursors, tokens, and payloads.
+		log.Printf("calendar event read-model sync failed: error=%v", err)
 	}
 	if _, err := store.RecoverStaleJobs(ctx, now.Add(-workerLease), now); err != nil {
 		return err

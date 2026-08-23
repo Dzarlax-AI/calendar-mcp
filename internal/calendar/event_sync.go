@@ -2,6 +2,7 @@ package calendar
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -138,16 +139,28 @@ const (
 // EventSyncError lets adapters supply a safe category and optional RetryAfter
 // without leaking opaque provider cursors through an error string.
 type EventSyncError struct {
-	Class      EventSyncErrorClass
-	RetryAfter time.Duration
-	Cause      error
+	Class          EventSyncErrorClass
+	RetryAfter     time.Duration
+	ProviderStatus int
+	ProviderReason string
+	Cause          error
 }
 
 func (e *EventSyncError) Error() string {
 	if e == nil || e.Class == "" {
 		return "event sync provider failure"
 	}
-	return "event sync " + string(e.Class) + " failure"
+	message := "event sync " + string(e.Class) + " failure"
+	if e.ProviderStatus > 0 {
+		message += fmt.Sprintf(" (provider_status=%d", e.ProviderStatus)
+		if e.ProviderReason != "" {
+			message += ", provider_reason=" + e.ProviderReason
+		}
+		message += ")"
+	} else if e.ProviderReason != "" {
+		message += " (provider_reason=" + e.ProviderReason + ")"
+	}
+	return message
 }
 
 func (e *EventSyncError) Unwrap() error {
