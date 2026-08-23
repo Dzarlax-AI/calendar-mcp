@@ -95,6 +95,30 @@ func TestSyncEventsIncrementalOmitsWindowAndUsesTerminalToken(t *testing.T) {
 	}
 }
 
+func TestSyncEventsRejectsInvalidIncrementalWindowBeforeAdvancingCursor(t *testing.T) {
+	var requests atomic.Int32
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"items":[],"nextSyncToken":"must-not-be-used"}`)
+	})
+	defer closeServer()
+
+	page, err := provider.SyncEvents(context.Background(), calendar.EventSyncRequest{
+		CalendarID: "primary",
+		Window:     calendar.EventSyncWindow{Start: syncWindow().End, End: syncWindow().Start},
+		Cursor:     "opaque-cursor",
+		Mode:       calendar.EventSyncIncremental,
+	})
+	var syncErr *calendar.EventSyncError
+	if !errors.As(err, &syncErr) || syncErr.Class != calendar.EventSyncProtocol {
+		t.Fatalf("error = %#v, want protocol error", err)
+	}
+	if page.Complete || page.NextCursor != "" || requests.Load() != 0 {
+		t.Fatalf("page = %#v, requests = %d; invalid window must not advance or call Google", page, requests.Load())
+	}
+}
+
 func TestSyncEventsCancellationAndMovedEventBecomeDeletions(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

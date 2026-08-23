@@ -32,13 +32,13 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 	if request.CalendarID == "" || p == nil || p.svc == nil {
 		return calendar.EventSyncPage{}, syncProtocolError(nil)
 	}
+	if !validSyncWindow(request.Window) {
+		return calendar.EventSyncPage{}, syncProtocolError(nil)
+	}
 
 	call := p.svc.Events.List(request.CalendarID).ShowDeleted(true).SingleEvents(true).MaxResults(2500)
 	switch request.Mode {
 	case calendar.EventSyncReplacement:
-		if request.Window.Start.IsZero() || request.Window.End.IsZero() || !request.Window.End.After(request.Window.Start) {
-			return calendar.EventSyncPage{}, syncProtocolError(nil)
-		}
 		// The initial request establishes the sync token. It intentionally uses
 		// the same unbounded parameter set as later sync-token requests; the
 		// frozen projection window is applied locally below.
@@ -112,7 +112,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 }
 
 func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWindow) (bool, error) {
-	if window.Start.IsZero() || window.End.IsZero() || !window.End.After(window.Start) {
+	if !validSyncWindow(window) {
 		return false, errors.New("invalid sync window")
 	}
 	start, err := event.Start.Instant()
@@ -127,6 +127,10 @@ func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWi
 		return false, errors.New("invalid event time range")
 	}
 	return start.Before(window.End) && end.After(window.Start), nil
+}
+
+func validSyncWindow(window calendar.EventSyncWindow) bool {
+	return !window.Start.IsZero() && !window.End.IsZero() && window.End.After(window.Start)
 }
 
 func classifyGoogleSyncError(err error) error {
