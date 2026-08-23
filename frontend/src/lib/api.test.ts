@@ -49,6 +49,15 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves degraded status while hiding provider payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "apple", calendar_id: "c1", complete: false, status: "degraded", stale: true, error_code: "protocol", error: { message: "raw iCalendar payload" } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
+    expect(result.sources?.[0]).toMatchObject({ calendar_id: "c1", status: "degraded", error_code: "protocol" });
+    expect(result.sources?.[0]?.error).not.toContain("iCalendar");
+    vi.unstubAllGlobals();
+  });
+
   it("enqueues a calendar refresh with CSRF protection", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);

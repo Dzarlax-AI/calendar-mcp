@@ -115,6 +115,21 @@ func TestAppleEventSyncCollectionPagesAndKeepsTokensOutOfErrors(t *testing.T) {
 	}
 }
 
+func TestAppleRepairMalformedUsesResponseETag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/calendar")
+			w.Header().Set("ETag", `"changed"`)
+			_, _ = w.Write([]byte("BEGIN:VCALENDAR\r\nBROKEN\r\nEND:VCALENDAR\r\n"))
+		}
+	}))
+	defer server.Close()
+	result, err := eventSyncProvider(t, server).RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: eventSyncCalendar, Object: calendar.SyncObject{ObjectID: "/calendar/bad.ics", ETag: `"old"`}, Window: eventSyncRequest(calendar.EventSyncIncremental).Window})
+	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || result.Warning == nil || result.Warning.ETag != `"changed"` {
+		t.Fatalf("repair=%#v err=%v", result, err)
+	}
+}
+
 func TestAppleEventSyncFallsBackToCursorlessReplacementWithInventoryETags(t *testing.T) {
 	var gets atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +377,7 @@ func TestAppleEventSyncIsolatesMalformedObjectsFromValidSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || len(page.Inventory) != 1 || len(page.ReplacedObjectIDs) != 1 || len(page.DeletedObjectIDs) != 0 || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) {
+	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || len(page.Inventory) != 1 || len(page.ReplacedObjectIDs) != 1 || len(page.DeletedObjectIDs) != 0 || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics", ETag: `"bad"`}) {
 		t.Fatalf("page = %#v", page)
 	}
 }
@@ -384,7 +399,7 @@ func TestAppleEventSyncTreatsOrphanRecurrenceExceptionAsMalformed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/orphan.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/orphan.ics", ETag: `"orphan"`}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
 		t.Fatalf("orphan exception page = %#v", page)
 	}
 }

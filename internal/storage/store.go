@@ -140,6 +140,8 @@ func migrationName(version int) string {
 		return "initial"
 	case 2:
 		return "event_read_model"
+	case 3:
+		return "event_sync_quarantine"
 	default:
 		return ""
 	}

@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	defaultPollInterval = 5 * time.Minute
-	defaultRetryBase    = time.Minute
-	defaultRetryMax     = 15 * time.Minute
-	defaultMaxPages     = 1_000
-	defaultMaxResets    = 2
+	defaultPollInterval           = 5 * time.Minute
+	defaultRetryBase              = time.Minute
+	defaultRetryMax               = 15 * time.Minute
+	defaultMaxPages               = 1_000
+	defaultMaxResets              = 2
+	defaultMaxObjectRepairsPerRun = 1
 )
 
 var (
@@ -40,6 +41,8 @@ type CalendarResolver interface {
 // behaviour testable without requiring adapters to import storage.
 type CalendarSyncStore interface {
 	ApplyEventSyncPage(context.Context, storage.CalendarSyncState, storage.EventSyncBatch, bool, time.Time) error
+	ListDueEventSyncQuarantine(context.Context, storage.CalendarSyncState, time.Time, int) ([]storage.CalendarSyncQuarantine, error)
+	ApplyEventSyncObjectRepair(context.Context, storage.CalendarSyncState, storage.EventSyncRepairBatch, time.Time) error
 	FailCalendarSync(context.Context, storage.CalendarSyncState, string, time.Time, time.Time) error
 	ParkCalendarSync(context.Context, storage.CalendarSyncState, string, time.Time) error
 	ResetCalendarSync(context.Context, storage.CalendarSyncState, time.Time) (*storage.CalendarSyncState, error)
@@ -82,6 +85,9 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		return s.fail(ctx, state, s.policy(provider), calendar.EventSyncUnsupported, 0, ErrCapabilityUnavailable)
 	}
 	policy := s.policy(provider)
+	if err := s.repairOne(ctx, state, provider, providerCalendarID, policy); err != nil {
+		return err
+	}
 	mode := calendar.EventSyncIncremental
 	if state.Cursor == "" {
 		mode = calendar.EventSyncReplacement
@@ -150,14 +156,8 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 
 		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement, degraded)
 		if page.Complete {
-			delay := policy.PollInterval
-			if degraded {
-				delay = degradedRetryDelay(policy, state)
-			}
-			next := s.now().Add(delay)
-			if !degraded {
-				batch.NextCursor = string(page.NextCursor)
-			}
+			next := s.now().Add(policy.PollInterval)
+			batch.NextCursor = string(page.NextCursor)
 			batch.NextSyncAt = &next
 		}
 		applyErr := s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
@@ -224,7 +224,100 @@ func (s *Service) policy(provider calendar.Provider) calendar.EventSyncPolicy {
 	if policy.MaxResets <= 0 {
 		policy.MaxResets = defaultMaxResets
 	}
+	if policy.MaxObjectRepairsPerRun <= 0 {
+		policy.MaxObjectRepairsPerRun = defaultMaxObjectRepairsPerRun
+	}
 	return policy
+}
+
+func (s *Service) repairOne(ctx context.Context, state storage.CalendarSyncState, provider calendar.Provider, providerCalendarID string, policy calendar.EventSyncPolicy) error {
+	repairer, ok := calendar.EventSyncObjectRepairCapability(provider)
+	if !ok {
+		return nil
+	}
+	due, err := s.Store.ListDueEventSyncQuarantine(ctx, state, s.now(), policy.MaxObjectRepairsPerRun)
+	if err != nil {
+		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+			return err
+		}
+		return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+	}
+	if len(due) == 0 {
+		return nil
+	}
+	item := due[0]
+	result, repairErr := repairer.RepairEventSyncObject(ctx, calendar.EventSyncObjectRepairRequest{
+		CalendarID: providerCalendarID,
+		Window:     calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
+		Object:     calendar.SyncObject{ObjectID: item.ObjectID, ETag: item.ETag}, Generation: state.Generation,
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if repairErr != nil {
+		class, retryAfter := classify(repairErr)
+		if class == calendar.EventSyncAuth || class == calendar.EventSyncPermission || class == calendar.EventSyncUnsupported {
+			return s.fail(ctx, state, policy, class, retryAfter, providerFailureResult(repairErr))
+		}
+		// A transient/rate-limited/protocol object repair is local to this
+		// object. Persist its retry and continue the ordinary feed below.
+		next := s.now().Add(retryDelay(policy, retryAfter))
+		warning := storage.EventSyncWarning{ObjectID: item.ObjectID, ETag: item.ETag, ErrorCode: string(calendar.EventSyncProtocol)}
+		applyErr := s.Store.ApplyEventSyncObjectRepair(ctx, state, storage.EventSyncRepairBatch{ObjectID: item.ObjectID, ETag: item.ETag, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &warning, NextRepairAt: &next}, s.now())
+		if errors.Is(applyErr, storage.ErrCalendarSyncLeaseLost) {
+			return applyErr
+		}
+		if applyErr != nil {
+			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+		}
+		return nil
+	}
+	batch, err := repairBatch(result, state.CalendarID, item)
+	if err != nil {
+		return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
+	}
+	if batch.Outcome == calendar.EventSyncObjectStillQuarantined {
+		next := s.now().Add(retryDelay(policy, 0))
+		batch.NextRepairAt = &next
+	}
+	if err := s.Store.ApplyEventSyncObjectRepair(ctx, state, batch, s.now()); err != nil {
+		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+			return err
+		}
+		return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+	}
+	return nil
+}
+
+func repairBatch(result calendar.EventSyncObjectRepairResult, calendarID string, item storage.CalendarSyncQuarantine) (storage.EventSyncRepairBatch, error) {
+	objectID := result.Object.ObjectID
+	if objectID == "" {
+		objectID = item.ObjectID
+	}
+	if objectID != item.ObjectID {
+		return storage.EventSyncRepairBatch{}, ErrInvalidPage
+	}
+	batch := storage.EventSyncRepairBatch{ObjectID: objectID, ETag: result.Object.ETag, Outcome: result.Outcome}
+	if batch.ETag == "" {
+		batch.ETag = item.ETag
+	}
+	for _, upsert := range result.Upserts {
+		if upsert.Event.ID == "" || (upsert.Object.ObjectID != "" && upsert.Object.ObjectID != objectID) {
+			return storage.EventSyncRepairBatch{}, ErrInvalidPage
+		}
+		upsert.Event.CalendarID = calendarID
+		batch.Upserts = append(batch.Upserts, storage.CachedEventUpsert{SourceObjectID: objectID, Event: upsert.Event})
+	}
+	if result.Outcome == calendar.EventSyncObjectStillQuarantined {
+		if result.Warning == nil || result.Warning.ObjectID != objectID || result.Warning.Code != calendar.EventSyncProtocol {
+			return storage.EventSyncRepairBatch{}, ErrInvalidPage
+		}
+		batch.Warning = &storage.EventSyncWarning{ObjectID: objectID, ETag: result.Warning.ETag, ErrorCode: string(result.Warning.Code)}
+		if batch.Warning.ETag == "" {
+			batch.Warning.ETag = batch.ETag
+		}
+	}
+	return batch, nil
 }
 
 func (s *Service) now() time.Time {
@@ -414,6 +507,9 @@ func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, ful
 		if sourceObjectID != "" {
 			objects[sourceObjectID] = storage.SyncObject{ObjectID: sourceObjectID, ETag: upsert.Object.ETag}
 		}
+	}
+	for _, warning := range page.Warnings {
+		batch.Warnings = append(batch.Warnings, storage.EventSyncWarning{ObjectID: warning.ObjectID, ETag: warning.ETag, ErrorCode: string(warning.Code)})
 	}
 	batch.Objects = make([]storage.SyncObject, 0, len(objects))
 	for _, object := range objects {

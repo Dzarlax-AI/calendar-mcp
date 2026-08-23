@@ -418,6 +418,11 @@ func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) 
 	if resp.StatusCode/100 != 2 {
 		return nil, false, false, appleEventSyncError(calendar.EventSyncTransient)
 	}
+	responseETag := strings.TrimSpace(resp.Header.Get("ETag"))
+	if responseETag == "" {
+		// A missing response ETag is conservatively treated as unchanged.
+		responseETag = etag
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -433,9 +438,45 @@ func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) 
 	}
 	container, valid := decodeAppleEventSyncCalendar(data)
 	if !valid {
-		return nil, false, true, nil
+		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, nil
 	}
-	return &caldav.CalendarObject{Path: path, ETag: etag, Data: container}, false, false, nil
+	return &caldav.CalendarObject{Path: path, ETag: responseETag, Data: container}, false, false, nil
+}
+
+// RepairEventSyncObject isolates one CalDAV resource. The ETag belongs to the
+// repair response; the caller ETag is only an input for identity/backoff and is
+// never copied into a successful repaired object.
+func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.EventSyncObjectRepairRequest) (calendar.EventSyncObjectRepairResult, error) {
+	if p == nil || p.httpClient == nil || request.CalendarID == "" || request.Object.ObjectID == "" {
+		return calendar.EventSyncObjectRepairResult{}, appleEventSyncError(calendar.EventSyncProtocol)
+	}
+	path, err := appleObjectPath(request.CalendarID, request.Object.ObjectID)
+	if err != nil {
+		return calendar.EventSyncObjectRepairResult{}, appleEventSyncError(calendar.EventSyncProtocol)
+	}
+	object, missing, malformed, err := p.fetchEventSyncObject(ctx, path, request.Object.ETag)
+	if err != nil {
+		return calendar.EventSyncObjectRepairResult{}, err
+	}
+	if missing {
+		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: request.Object.ETag}, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+	}
+	if malformed {
+		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag}}, nil
+	}
+	members, err := appleSyncMembers(*object, calendar.EventSyncRequest{CalendarID: request.CalendarID, Window: request.Window})
+	if err != nil {
+		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag}}, nil
+	}
+	identity := calendar.SyncObject{ObjectID: path, ETag: object.ETag}
+	if len(members) == 0 {
+		return calendar.EventSyncObjectRepairResult{Object: identity, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
+	}
+	upserts := make([]calendar.EventSyncUpsert, 0, len(members))
+	for _, event := range members {
+		upserts = append(upserts, calendar.EventSyncUpsert{Object: identity, Event: event})
+	}
+	return calendar.EventSyncObjectRepairResult{Object: identity, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: upserts}, nil
 }
 
 // go-ical reports malformed content as an error, but a malformed parameter can
@@ -460,12 +501,12 @@ func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObje
 			continue
 		}
 		if fetched.malformed {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.source.path})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.source.path, ETag: fetched.source.etag})
 			continue
 		}
 		members, err := appleSyncMembers(fetched.object, request)
 		if err != nil {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path, ETag: fetched.object.ETag})
 			continue
 		}
 		if len(members) == 0 {

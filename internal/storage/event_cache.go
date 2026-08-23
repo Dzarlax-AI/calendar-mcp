@@ -14,6 +14,114 @@ import (
 
 var ErrCalendarSyncLeaseLost = errors.New("calendar sync lease is no longer owned by this worker")
 
+// ListDueEventSyncQuarantine returns at most limit active repairable objects
+// for a calendar already owned by state. The caller must still apply its
+// result through the lease-protected mutation method below.
+func (s *Store) ListDueEventSyncQuarantine(ctx context.Context, state CalendarSyncState, now time.Time, limit int) ([]CalendarSyncQuarantine, error) {
+	if state.CalendarID == "" || state.LeaseOwner == "" {
+		return nil, ErrCalendarSyncLeaseLost
+	}
+	if limit <= 0 {
+		return []CalendarSyncQuarantine{}, nil
+	}
+	q := `SELECT calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active
+		FROM calendar_sync_quarantine WHERE calendar_id=? AND active=? AND next_repair_at<=?
+		ORDER BY next_repair_at, object_id LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, s.query(q), state.CalendarID, true, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list due event sync quarantine: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]CalendarSyncQuarantine, 0, limit)
+	for rows.Next() {
+		var item CalendarSyncQuarantine
+		if err := rows.Scan(&item.CalendarID, &item.ObjectID, &item.ETag, &item.ErrorCode, &item.FirstSeenAt, &item.LastSeenAt, &item.NextRepairAt, &item.RepairAttempts, &item.Active); err != nil {
+			return nil, fmt.Errorf("scan due event sync quarantine: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate due event sync quarantine: %w", err)
+	}
+	return items, nil
+}
+
+// ApplyEventSyncObjectRepair applies a single repair outcome while the same
+// calendar lease remains current. It never changes the opaque main cursor.
+func (s *Store) ApplyEventSyncObjectRepair(ctx context.Context, state CalendarSyncState, batch EventSyncRepairBatch, now time.Time) error {
+	if state.CalendarID == "" || state.LeaseOwner == "" || batch.ObjectID == "" {
+		return ErrCalendarSyncLeaseLost
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin event sync object repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
+		return err
+	}
+	switch batch.Outcome {
+	case calendar.EventSyncObjectReplaceMembership:
+		if len(batch.Upserts) == 0 {
+			return errors.New("repair replacement requires event membership")
+		}
+		members := make(map[string]struct{}, len(batch.Upserts))
+		for _, upsert := range batch.Upserts {
+			if upsert.SourceObjectID != "" && upsert.SourceObjectID != batch.ObjectID {
+				return errors.New("repair membership object does not match quarantine object")
+			}
+			members[upsert.Event.ID] = struct{}{}
+		}
+		if err := tombstoneMissingObjectMembers(ctx, s, tx, state.CalendarID, batch.ObjectID, members, state.Generation, now); err != nil {
+			return err
+		}
+		for _, upsert := range batch.Upserts {
+			event := upsert.Event
+			event.CalendarID = state.CalendarID
+			if err := upsertCachedEvent(ctx, s, tx, event, batch.ObjectID, state.Generation, now); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_objects(calendar_id, object_id, etag, sync_generation)
+			VALUES (?, ?, ?, ?) ON CONFLICT(calendar_id, object_id) DO UPDATE SET etag=excluded.etag, sync_generation=excluded.sync_generation`), state.CalendarID, batch.ObjectID, batch.ETag, state.Generation); err != nil {
+			return fmt.Errorf("upsert repaired calendar sync object: %w", err)
+		}
+		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, batch.ObjectID); err != nil {
+			return err
+		}
+	case calendar.EventSyncObjectAbsentFromProjection, calendar.EventSyncObjectProviderDeleted:
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE cached_events SET deleted=?, sync_generation=?, synced_at=?
+			WHERE calendar_id=? AND source_object_id=? AND deleted=?`), true, state.Generation, now, state.CalendarID, batch.ObjectID, false); err != nil {
+			return fmt.Errorf("tombstone repaired object membership: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects WHERE calendar_id=? AND object_id=?`), state.CalendarID, batch.ObjectID); err != nil {
+			return fmt.Errorf("delete repaired calendar sync object: %w", err)
+		}
+		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, batch.ObjectID); err != nil {
+			return err
+		}
+	case calendar.EventSyncObjectStillQuarantined:
+		if batch.Warning == nil || batch.Warning.ObjectID != batch.ObjectID || batch.Warning.ErrorCode != string(calendar.EventSyncProtocol) {
+			return errors.New("repair quarantine result requires matching protocol warning")
+		}
+		if err := upsertEventSyncWarning(ctx, s, tx, state.CalendarID, *batch.Warning, now); err != nil {
+			return err
+		}
+		if batch.NextRepairAt != nil {
+			if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET next_repair_at=?, repair_attempts=repair_attempts+1
+				WHERE calendar_id=? AND object_id=? AND active=?`), *batch.NextRepairAt, state.CalendarID, batch.ObjectID, true); err != nil {
+				return fmt.Errorf("reschedule quarantined repair: %w", err)
+			}
+		}
+	default:
+		return errors.New("unknown event sync repair outcome")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit event sync object repair: %w", err)
+	}
+	return nil
+}
+
 // EnsureCalendarSyncStates creates projection state for every readable
 // calendar. Existing cursors and leases are intentionally preserved.
 func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, window SyncWindow) error {
@@ -192,6 +300,11 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 			return ErrInvalidSyncCode
 		}
 	}
+	for _, warning := range batch.Warnings {
+		if warning.ObjectID == "" || warning.ErrorCode != string(calendar.EventSyncProtocol) {
+			return ErrInvalidSyncCode
+		}
+	}
 	syncedAt := now
 	objectMembers := make(map[string]map[string]struct{}, len(batch.Upserts))
 	for _, upsert := range batch.Upserts {
@@ -238,6 +351,14 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 			return err
 		}
 	}
+	// Warnings are written before successful data. A valid upsert/delete for
+	// the same object below clears it in this transaction, so stale warnings
+	// can never win over confirmed provider state.
+	for _, warning := range batch.Warnings {
+		if err := upsertEventSyncWarning(ctx, s, tx, state.CalendarID, warning, syncedAt); err != nil {
+			return err
+		}
+	}
 	for _, upsert := range batch.Upserts {
 		event := upsert.Event
 		if event.CalendarID == "" {
@@ -250,9 +371,15 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 		if err := upsertCachedEvent(ctx, s, tx, event, sourceObjectID, state.Generation, syncedAt); err != nil {
 			return err
 		}
+		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, sourceObjectID); err != nil {
+			return err
+		}
 	}
 	for _, eventID := range batch.DeletedEventIDs {
 		if err := tombstoneCachedEvent(ctx, s, tx, calendar.EventRef{CalendarID: state.CalendarID, EventID: eventID}, state.Generation, syncedAt); err != nil {
+			return err
+		}
+		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, eventID); err != nil {
 			return err
 		}
 	}
@@ -273,16 +400,48 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 		if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects WHERE calendar_id=? AND object_id=?`), state.CalendarID, objectID); err != nil {
 			return fmt.Errorf("delete calendar sync object: %w", err)
 		}
+		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, objectID); err != nil {
+			return err
+		}
 	}
 	if final {
+		var activeQuarantine bool
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT EXISTS(
+			SELECT 1 FROM calendar_sync_quarantine WHERE calendar_id=? AND active=?)`), state.CalendarID, true).Scan(&activeQuarantine); err != nil {
+			return fmt.Errorf("check active event sync quarantine: %w", err)
+		}
+		finalDegraded := batch.Degraded || activeQuarantine
+		if finalDegraded && degradedCode == "" {
+			degradedCode = string(calendar.EventSyncProtocol)
+		}
 		nextSyncAt := state.NextSyncAt
 		if batch.NextSyncAt != nil {
 			nextSyncAt = *batch.NextSyncAt
 		}
-		if batch.Degraded {
+		if batch.FullSync {
+			// A malformed object can be absent from the valid replacement pages;
+			// do not delete its last known membership or inventory until repair
+			// resolves it. The active quarantine table is the authoritative
+			// exclusion set, including warnings committed on earlier pages.
+			if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM cached_events
+				WHERE calendar_id=? AND sync_generation<>? AND NOT EXISTS (
+					SELECT 1 FROM calendar_sync_quarantine q WHERE q.calendar_id=cached_events.calendar_id
+						AND q.object_id=cached_events.source_object_id AND q.active=?
+				)`), state.CalendarID, state.Generation, true); err != nil {
+				return fmt.Errorf("sweep cached event generation: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects
+				WHERE calendar_id=? AND sync_generation<>? AND NOT EXISTS (
+					SELECT 1 FROM calendar_sync_quarantine q WHERE q.calendar_id=calendar_sync_objects.calendar_id
+						AND q.object_id=calendar_sync_objects.object_id AND q.active=?
+				)`), state.CalendarID, state.Generation, true); err != nil {
+				return fmt.Errorf("sweep calendar sync object generation: %w", err)
+			}
+		}
+		if finalDegraded {
 			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
-				SET status=?, next_sync_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "degraded", nextSyncAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+				SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), batch.NextCursor, "degraded", nextSyncAt, syncedAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 			if err != nil {
 				return fmt.Errorf("degrade calendar sync: %w", err)
 			}
@@ -294,14 +453,6 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 				return ErrCalendarSyncLeaseLost
 			}
 		} else {
-			if batch.FullSync {
-				if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM cached_events WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
-					return fmt.Errorf("sweep cached event generation: %w", err)
-				}
-				if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_objects WHERE calendar_id=? AND sync_generation<>?`), state.CalendarID, state.Generation); err != nil {
-					return fmt.Errorf("sweep calendar sync object generation: %w", err)
-				}
-			}
 			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
 			SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
 			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), batch.NextCursor, "ready", nextSyncAt, syncedAt, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
@@ -673,6 +824,38 @@ func tombstoneMissingObjectMembers(ctx context.Context, s *Store, tx *sql.Tx, ca
 		if err := tombstoneCachedEvent(ctx, s, tx, calendar.EventRef{CalendarID: calendarID, EventID: eventID}, generation, syncedAt); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func upsertEventSyncWarning(ctx context.Context, s *Store, tx *sql.Tx, calendarID string, warning EventSyncWarning, now time.Time) error {
+	if warning.ObjectID == "" || warning.ErrorCode != string(calendar.EventSyncProtocol) {
+		return ErrInvalidSyncCode
+	}
+	// Active rows have no expiry. A changed ETag (or a previously resolved row
+	// becoming active again) resets repair backoff; identical observations keep
+	// the existing schedule and attempt count.
+	if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_quarantine
+		(calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+		ON CONFLICT(calendar_id, object_id) DO UPDATE SET
+			etag=excluded.etag, error_code=excluded.error_code, last_seen_at=excluded.last_seen_at,
+			first_seen_at=CASE WHEN NOT calendar_sync_quarantine.active THEN excluded.first_seen_at ELSE calendar_sync_quarantine.first_seen_at END,
+			next_repair_at=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN excluded.next_repair_at ELSE calendar_sync_quarantine.next_repair_at END,
+			repair_attempts=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN 0 ELSE calendar_sync_quarantine.repair_attempts END,
+			active=excluded.active`), calendarID, warning.ObjectID, warning.ETag, warning.ErrorCode, now, now, now, true); err != nil {
+		return fmt.Errorf("upsert event sync quarantine: %w", err)
+	}
+	return nil
+}
+
+func clearEventSyncQuarantine(ctx context.Context, s *Store, tx *sql.Tx, calendarID, objectID string) error {
+	if objectID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET active=?
+		WHERE calendar_id=? AND object_id=? AND active=?`), false, calendarID, objectID, true); err != nil {
+		return fmt.Errorf("resolve event sync quarantine: %w", err)
 	}
 	return nil
 }

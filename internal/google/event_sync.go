@@ -82,7 +82,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 			// degraded so the cursor is not advanced past the bad object; the
 			// coordinator retries it on the bounded degraded cadence.
 			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{
-				Code: calendar.EventSyncProtocol, ObjectID: item.Id,
+				Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag,
 			})
 			continue
 		}
@@ -109,6 +109,36 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 	// Google only emits the durable sync token on the final page.
 	page.NextCursor = calendar.EventSyncCursor(response.NextSyncToken)
 	return page, nil
+}
+
+// RepairEventSyncObject refetches one malformed event without replaying the
+// whole calendar feed. A provider 404/410 is a confirmed deletion; malformed
+// data remains quarantined with the representation ETag observed by Google.
+func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.EventSyncObjectRepairRequest) (calendar.EventSyncObjectRepairResult, error) {
+	if p == nil || p.svc == nil || request.CalendarID == "" || request.Object.ObjectID == "" {
+		return calendar.EventSyncObjectRepairResult{}, syncProtocolError(nil)
+	}
+	item, err := p.svc.Events.Get(request.CalendarID, request.Object.ObjectID).Context(ctx).Do()
+	if err != nil {
+		var apiErr *googleapi.Error
+		if errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone) {
+			return calendar.EventSyncObjectRepairResult{Object: request.Object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+		}
+		return calendar.EventSyncObjectRepairResult{}, classifyGoogleSyncError(err)
+	}
+	object := calendar.SyncObject{ObjectID: item.Id, ETag: item.Etag}
+	if item.Status == "cancelled" {
+		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+	}
+	event := fromGoogleEventV2(item, request.CalendarID, "")
+	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
+	if windowErr != nil {
+		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag}}, nil
+	}
+	if !inWindow {
+		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
+	}
+	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
 }
 
 func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWindow) (bool, error) {

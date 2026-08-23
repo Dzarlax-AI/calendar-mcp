@@ -69,6 +69,26 @@ func TestSyncEventsReplacementUsesCompatibleParametersAndLocalProjection(t *test
 	}
 }
 
+func TestRepairEventSyncObjectQuarantinesMalformedAndConfirmsDelete(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/missing") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"bad","etag":"new-etag","summary":"bad"}`)
+	})
+	defer closeServer()
+	degraded, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "bad", ETag: "old-etag"}, Window: syncWindow()})
+	if err != nil || degraded.Outcome != calendar.EventSyncObjectStillQuarantined || degraded.Warning == nil || degraded.Warning.ETag != "new-etag" {
+		t.Fatalf("malformed repair=%#v err=%v", degraded, err)
+	}
+	deleted, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "missing"}, Window: syncWindow()})
+	if err != nil || deleted.Outcome != calendar.EventSyncObjectProviderDeleted {
+		t.Fatalf("missing repair=%#v err=%v", deleted, err)
+	}
+}
+
 func TestSyncEventsIncrementalOmitsWindowAndUsesTerminalToken(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
