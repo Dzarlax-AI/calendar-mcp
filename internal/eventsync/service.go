@@ -111,7 +111,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 		if callErr != nil {
 			class, retryAfter := classify(callErr)
-			return s.fail(ctx, state, policy, class, retryAfter, ErrProviderFailure)
+			return s.fail(ctx, state, policy, class, retryAfter, providerFailureResult(callErr))
 		}
 		if err := validatePage(mode, page); err != nil {
 			return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
@@ -175,6 +175,18 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 		pageToken = page.NextPageToken
 	}
+}
+
+// providerFailureResult preserves the adapter's safe typed classification and
+// bounded provider detail for diagnostics while retaining the package sentinel
+// used by callers and existing tests. Opaque provider payloads remain hidden
+// by EventSyncError.Error.
+func providerFailureResult(err error) error {
+	var syncErr *calendar.EventSyncError
+	if errors.As(err, &syncErr) && syncErr != nil {
+		return errors.Join(ErrProviderFailure, syncErr)
+	}
+	return ErrProviderFailure
 }
 
 func degradedRetryDelay(policy calendar.EventSyncPolicy, state storage.CalendarSyncState) time.Duration {

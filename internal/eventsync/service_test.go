@@ -418,6 +418,21 @@ func TestRunOneParksNonRetryableAndRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+func TestRunOnePreservesSafeProviderFailureDetails(t *testing.T) {
+	store := &fakeStore{}
+	provider := &fakeProvider{errs: []error{&calendar.EventSyncError{
+		Class: calendar.EventSyncTransient, ProviderStatus: 500, ProviderReason: "backendError",
+	}}}
+	err := newService(store, provider).RunOne(t.Context(), testState("cursor"))
+	var syncErr *calendar.EventSyncError
+	if !errors.Is(err, ErrProviderFailure) || !errors.As(err, &syncErr) {
+		t.Fatalf("error=%v, want provider failure with typed detail", err)
+	}
+	if syncErr.ProviderStatus != 500 || syncErr.ProviderReason != "backendError" || !strings.Contains(err.Error(), "provider_status=500") {
+		t.Fatalf("error=%v typed=%#v", err, syncErr)
+	}
+}
+
 func TestRunOneRetriesCapacityLimitsInsteadOfParking(t *testing.T) {
 	t.Run("page limit", func(t *testing.T) {
 		store := &fakeStore{}
