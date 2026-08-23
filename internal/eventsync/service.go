@@ -246,7 +246,15 @@ func (s *Service) fail(ctx context.Context, state storage.CalendarSyncState, pol
 	if parks(class) {
 		err = s.Store.ParkCalendarSync(ctx, state, string(class), now)
 	} else {
-		err = s.Store.FailCalendarSync(ctx, state, string(class), now, now.Add(retryDelay(policy, retryAfter)))
+		delay := retryDelay(policy, retryAfter)
+		// The first transient failure may retry quickly, but a repeated failure
+		// must not create a tight worker loop. Without a persisted attempt counter,
+		// the previous error class is the safe durable signal for moving to the
+		// provider poll interval.
+		if retryAfter <= 0 && state.LastErrorCode == string(class) {
+			delay = minDuration(maxDuration(delay, policy.PollInterval), policy.RetryMax)
+		}
+		err = s.Store.FailCalendarSync(ctx, state, string(class), now, now.Add(delay))
 	}
 	if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
 		return err
@@ -255,6 +263,20 @@ func (s *Service) fail(ctx context.Context, state storage.CalendarSyncState, pol
 		return ErrStorageFailure
 	}
 	return result
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxDuration(left, right time.Duration) time.Duration {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func parks(class calendar.EventSyncErrorClass) bool {

@@ -331,6 +331,23 @@ func TestRunOneFailureReplaysCursorAndSchedulesBoundedRateLimit(t *testing.T) {
 	}
 }
 
+func TestRunOneBacksOffRepeatedTransientFailureToPollInterval(t *testing.T) {
+	provider := &fakeProvider{errs: []error{&calendar.EventSyncError{Class: calendar.EventSyncTransient}}}
+	store := &fakeStore{}
+	state := testState("cursor")
+	state.LastErrorCode = string(calendar.EventSyncTransient)
+	service := newService(store, provider)
+	service.PolicyFor = func(calendar.Provider) calendar.EventSyncPolicy {
+		return calendar.EventSyncPolicy{PollInterval: time.Minute, RetryBase: 5 * time.Second, RetryMax: 5 * time.Minute, MaxPages: 10, MaxResets: 1}
+	}
+	if err := service.RunOne(t.Context(), state); !errors.Is(err, ErrProviderFailure) {
+		t.Fatal(err)
+	}
+	if len(store.failAt) != 1 || !store.failAt[0].Equal(time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC)) {
+		t.Fatalf("retry at=%v, want one-minute backoff", store.failAt)
+	}
+}
+
 func TestRunOneResetThenReplacementAndObjectReplacementMapping(t *testing.T) {
 	provider := &fakeProvider{pages: []calendar.EventSyncPage{
 		{ResetRequired: true},

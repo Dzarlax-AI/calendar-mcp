@@ -77,7 +77,14 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		event := fromGoogleEventV2(item, request.CalendarID, response.TimeZone)
 		inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
 		if windowErr != nil {
-			return calendar.EventSyncPage{}, syncProtocolError(windowErr)
+			// A single malformed/special Google event must not discard the
+			// otherwise valid page or park the entire calendar. Keep the page
+			// degraded so the cursor is not advanced past the bad object; the
+			// coordinator retries it on the bounded degraded cadence.
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{
+				Code: calendar.EventSyncProtocol, ObjectID: item.Id,
+			})
+			continue
 		}
 		if !inWindow {
 			// The initial feed is unbounded to establish a parameter-compatible
