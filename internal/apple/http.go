@@ -28,7 +28,10 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if resp.StatusCode >= 400 {
 		origStatus := resp.StatusCode
 		if body, ok := readIfMultiStatus(resp); ok {
-			log.Printf("apple: CalDAV %s %d → forcing 207 (multistatus body, %d bytes)", req.URL.Path, origStatus, len(body))
+			// Do not log the CalDAV path: it can contain account and calendar
+			// identifiers. The status and bounded body length are sufficient for
+			// diagnosing the fallback.
+			log.Printf("apple: CalDAV status=%d → forcing 207 (multistatus body, %d bytes)", origStatus, len(body))
 			resp.StatusCode = 207
 			resp.Status = "207 Multi-Status"
 			resp.Body = io.NopCloser(bytes.NewReader(body))
