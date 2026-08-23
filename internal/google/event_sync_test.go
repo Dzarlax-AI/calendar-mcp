@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"calendar-mcp/internal/calendar"
 )
 
@@ -162,6 +164,24 @@ func TestSyncEventsClassifiesErrorsWithoutLeakingTokens(t *testing.T) {
 				t.Fatalf("error leaked opaque token: %q", got)
 			}
 		})
+	}
+}
+
+func TestClassifyGoogleSyncErrorPreservesOAuthRefreshDetails(t *testing.T) {
+	err := classifyGoogleSyncError(&oauth2.RetrieveError{
+		Response:         &http.Response{StatusCode: http.StatusUnauthorized},
+		ErrorCode:        "invalid_grant",
+		ErrorDescription: "redacted description",
+	})
+	var syncErr *calendar.EventSyncError
+	if !errors.As(err, &syncErr) || syncErr.Class != calendar.EventSyncAuth {
+		t.Fatalf("error=%#v, want auth EventSyncError", err)
+	}
+	if syncErr.ProviderStatus != http.StatusUnauthorized || syncErr.ProviderReason != "invalid_grant" {
+		t.Fatalf("provider detail = status %d reason %q", syncErr.ProviderStatus, syncErr.ProviderReason)
+	}
+	if strings.Contains(err.Error(), "redacted description") {
+		t.Fatalf("error leaked OAuth description: %q", err)
 	}
 }
 

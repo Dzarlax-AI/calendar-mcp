@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
@@ -127,6 +128,18 @@ func classifyGoogleSyncError(err error) error {
 	}
 	var apiErr *googleapi.Error
 	if !errors.As(err, &apiErr) {
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) {
+			status := 0
+			if retrieveErr.Response != nil {
+				status = retrieveErr.Response.StatusCode
+			}
+			class := calendar.EventSyncTransient
+			if status == http.StatusUnauthorized || retrieveErr.ErrorCode == "invalid_grant" {
+				class = calendar.EventSyncAuth
+			}
+			return &calendar.EventSyncError{Class: class, ProviderStatus: status, ProviderReason: strings.TrimSpace(retrieveErr.ErrorCode), Cause: err}
+		}
 		return &calendar.EventSyncError{Class: calendar.EventSyncTransient, Cause: err}
 	}
 	class := calendar.EventSyncProtocol
