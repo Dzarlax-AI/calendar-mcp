@@ -26,9 +26,10 @@ type Surface =
   | { kind: "create"; preset?: Partial<EventDraft> }
   | { kind: "scope"; event: EventRecord; action: ScopeAction };
 type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toReschedulePayload> | ReturnType<typeof toUpdatePayload> };
-type Notice = { message: string; intent: "success" | "error" } | null;
+type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
+const COMPACT_LAYOUT_QUERY = "(max-width: 1080px)";
 
 const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
   { value: "timeGridDay", label: "Day" },
@@ -60,7 +61,7 @@ export default function CalendarPage() {
   });
   // Surface state is intentionally serializable: future deep-link support can
   // map date/view/filter/event without introducing a second ownership model.
-  const compactLayout = window.matchMedia?.("(max-width: 1080px)").matches ?? false;
+  const compactLayout = useMediaQuery(COMPACT_LAYOUT_QUERY);
   const [surface, setSurface] = useState<Surface>({ kind: "none" });
   const scopePayloadRef = useRef<ScopePayload | null>(null);
   const [editEvent, setEditEvent] = useState<EventRecord | null>(null);
@@ -119,17 +120,17 @@ export default function CalendarPage() {
   }, [hasPendingSources, eventsQuery.dataUpdatedAt]);
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
-    onSuccess: (event) => { setSurface({ kind: "none" }); setNotice({ message: mutationNotice("Event created", event.warnings), intent: "success" }); invalidateEvents(); },
+    onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
     onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
   });
   const updateMutation = useMutation({
     mutationFn: (args: { event: EventRecord; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload),
-    onSuccess: (event) => { setSurface((current) => current.kind === "event" ? { kind: "event", event } : current); setEditEvent(null); setNotice({ message: mutationNotice("Event updated", event.warnings), intent: "success" }); invalidateEvents(); },
+    onSuccess: (event) => { setSurface((current) => current.kind === "event" ? { kind: "event", event } : current); setEditEvent(null); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
     onError: (error, variables) => { variables.revert?.(); if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const deleteMutation = useMutation({
     mutationFn: (args: { event: EventRecord; scope?: "single" | "following" | "series" }) => deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined }),
-    onSuccess: (result) => { scopePayloadRef.current = null; setSurface({ kind: "none" }); setNotice({ message: mutationNotice("Event deleted", result.warnings), intent: "success" }); invalidateEvents(); },
+    onSuccess: (result) => { scopePayloadRef.current = null; setSurface({ kind: "none" }); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
     onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
   });
 
@@ -217,10 +218,16 @@ export default function CalendarPage() {
     refreshCalendarIds(degraded);
   }
 
+  function showAllCalendars() {
+    const next = calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id);
+    setSelectedCalendarIds(next);
+    try { localStorage.setItem("calendar:selected", JSON.stringify(next)); } catch { /* persistence is optional */ }
+  }
+
   const sheetOpen = compactLayout && (surface.kind === "filters" || surface.kind === "event");
   const persistentSidebar = !compactLayout;
   return <div className={`calendar-screen ${persistentSidebar || surface.kind === "filters" ? "with-sidebar" : "wide"} ${surface.kind === "event" ? "with-drawer" : ""}`}>
-    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
+    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
     {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
     <main className="calendar-main" inert={sheetOpen} aria-hidden={sheetOpen || undefined}>
       <div className="calendar-toolbar">
@@ -230,18 +237,31 @@ export default function CalendarPage() {
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
       {eventStatus && <div className={`event-status-strip event-status-row event-status-row--${eventStatus.kind}`} role={eventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{eventStatus.label}</span>{(eventStatus.kind === "failed" || eventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{eventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}
       {notice && <div className={`notice notice--${notice.intent}`} role={notice.intent === "error" ? "alert" : "status"}><span>{notice.message}</span><button className="icon-button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16} /></button></div>}
-      {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={() => setSelectedCalendarIds(calendars.filter((calendar) => calendar.capability.read).map((calendar) => calendar.id))}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
+      {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
         <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() })} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
-    {surface.kind === "event" && <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></SurfaceSheet>}
+    {surface.kind === "event" && (compactLayout ? <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></SurfaceSheet> : <aside className="event-drawer is-open" aria-label="Event details"><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></aside>)}
     {surface.kind === "create" && <EventModal mode="create" preset={surface.preset} calendars={calendars} onClose={() => setSurface({ kind: "none" })} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
     {editEvent && <EventModal mode="edit" event={editEvent} calendars={calendars} onClose={() => setEditEvent(null)} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
     {surface.kind === "scope" && <ScopeDialog event={surface.event} action={surface.action} scopes={calendarById.get(surface.event.calendarId)?.capability.recurrenceScopes} onCancel={() => { scopePayloadRef.current?.revert?.(); scopePayloadRef.current = null; setSurface({ kind: "none" }); }} onConfirm={confirmScope} />}
     {deleteConfirm && <ConfirmDialog event={deleteConfirm} busy={deleteMutation.isPending} onCancel={() => setDeleteConfirm(null)} onConfirm={() => { const event = deleteConfirm; setDeleteConfirm(null); deleteMutation.mutate({ event }); }} />}
   </div>;
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches ?? false);
+  useEffect(() => {
+    const media = window.matchMedia?.(query);
+    if (!media) return;
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, [query]);
+  return matches;
 }
 
 function safeError(error: unknown) {
@@ -260,8 +280,8 @@ function safeError(error: unknown) {
   }
 }
 
-function mutationNotice(success: string, warnings?: string[]) {
-  return warnings?.length ? `${success}. ${warnings.join(" ")}` : success;
+function mutationNotice(success: string, warnings?: string[]): Notice {
+  return { message: warnings?.length ? `${success}. ${warnings.join(" ")}` : success, intent: warnings?.length ? "warning" : "success" };
 }
 
 function SurfaceSheet({ children, className, labelledBy, onClose }: { children: ReactNode; className: string; labelledBy: string; onClose: () => void }) {
@@ -293,7 +313,7 @@ function SurfaceSheet({ children, className, labelledBy, onClose }: { children: 
   return <><button className="sidebar-scrim" type="button" aria-label="Close panel" onClick={onClose} /><aside ref={sheetRef} className={`${className} is-open`} role="dialog" aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>{children}</aside></>;
 }
 
-function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJumpToDate }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void }) {
+function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJumpToDate, showClose = true }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean }) {
   const groups = useMemo(() => Array.from(new Set(calendars.map((calendar) => calendar.group || "Calendars"))), [calendars]);
   const navigation = [{ to: "/app", label: "Calendar", icon: CalendarDays }, { to: "/connections", label: "Connections", icon: Link2 }, { to: "/rules", label: "Sync Rules", icon: ListChecks }, { to: "/runs", label: "Runs", icon: PlayCircle }, { to: "/settings", label: "Settings", icon: Settings2 }];
   const today = new Date();
@@ -305,7 +325,7 @@ function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJ
     const day = index - firstWeekday + 1;
     return day > 0 && day <= daysInMonth ? day : null;
   });
-  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1><button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button></div><nav className="calendar-navigation" aria-label="Primary navigation">{navigation.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/app"} className={({ isActive }) => `calendar-navigation-link ${isActive ? "is-active" : ""}`}><Icon size={17} /><span>{label}</span></NavLink>)}</nav><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(today)}</strong></div><div className="mini-weekdays">{["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() ? "is-today" : ""} aria-current={day === today.getDate() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => (calendar.group || "Calendars") === group).map((calendar) => <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={calendar.id} title={calendar.name}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${calendar.name} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={calendar.name}>{calendar.name}</span><span className="calendar-provider">{providerLabel(calendar.provider)}</span></label>)}</div>)}</div></>;
+  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1>{showClose && <button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button>}</div><nav className="calendar-navigation" aria-label="Primary navigation">{navigation.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/app"} className={({ isActive }) => `calendar-navigation-link ${isActive ? "is-active" : ""}`}><Icon size={17} /><span>{label}</span></NavLink>)}</nav><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(today)}</strong></div><div className="mini-weekdays">{["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() ? "is-today" : ""} aria-current={day === today.getDate() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => (calendar.group || "Calendars") === group).map((calendar) => <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={calendar.id} title={calendar.name}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${calendar.name} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={calendar.name}>{calendar.name}</span><span className="calendar-provider">{providerLabel(calendar.provider)}</span></label>)}</div>)}</div></>;
 }
 
 function providerLabel(provider: string) { return provider === "microsoft" ? "Microsoft 365" : provider === "google" ? "Google" : provider === "apple" ? "Apple" : provider; }
