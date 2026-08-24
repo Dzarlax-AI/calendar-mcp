@@ -69,8 +69,12 @@ type EventSyncWarning struct {
 	ETag string
 	// Diagnostic is retained only by the encrypted quarantine artifact store;
 	// it must never be serialized into UI responses or errors.
-	Diagnostic *EventSyncDiagnostic
+	Diagnostic *EventSyncDiagnostic `json:"-"`
 }
+
+// MaxEventSyncDiagnosticBytes bounds provider bytes retained for operator
+// diagnostics before they cross the adapter/storage boundary.
+const MaxEventSyncDiagnosticBytes = 256 << 10
 
 // EventSyncDiagnostic carries bounded provider bytes across the adapter/storage
 // boundary. Storage encrypts RawPayload before persistence.

@@ -14,8 +14,6 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const maxRawEventArtifactBytes = 256 << 10
-
 var ErrCalendarSyncLeaseLost = errors.New("calendar sync lease is no longer owned by this worker")
 
 // ListDueEventSyncQuarantine returns at most limit active repairable objects
@@ -861,8 +859,8 @@ func upsertEventSyncWarning(ctx context.Context, s *Store, tx *sql.Tx, calendarI
 func upsertRawEventArtifact(ctx context.Context, s *Store, tx *sql.Tx, calendarID, objectID, etag string, diagnostic calendar.EventSyncDiagnostic, now time.Time) error {
 	payload := diagnostic.RawPayload
 	truncated := diagnostic.Truncated
-	if len(payload) > maxRawEventArtifactBytes {
-		payload = payload[:maxRawEventArtifactBytes]
+	if len(payload) > calendar.MaxEventSyncDiagnosticBytes {
+		payload = payload[:calendar.MaxEventSyncDiagnosticBytes]
 		truncated = true
 	}
 	hash := sha256.Sum256(diagnostic.RawPayload)
@@ -874,7 +872,7 @@ func upsertRawEventArtifact(ctx context.Context, s *Store, tx *sql.Tx, calendarI
 	_, err = tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_raw_artifacts
 		(calendar_id, object_id, etag, payload_ciphertext, payload_sha256, content_type, provider_status, provider_reason, truncated, captured_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(calendar_id, object_id, etag) DO UPDATE SET payload_ciphertext=excluded.payload_ciphertext,
+		ON CONFLICT(calendar_id, object_id) DO UPDATE SET etag=excluded.etag, payload_ciphertext=excluded.payload_ciphertext,
 		payload_sha256=excluded.payload_sha256, content_type=excluded.content_type, provider_status=excluded.provider_status,
 		provider_reason=excluded.provider_reason, truncated=excluded.truncated, captured_at=excluded.captured_at, expires_at=excluded.expires_at`),
 		calendarID, objectID, etag, encrypted, hex.EncodeToString(hash[:]), diagnostic.ContentType, diagnostic.ProviderStatus, diagnostic.ProviderReason, truncated, now, expires)

@@ -22,6 +22,14 @@ import (
 
 const maxDAVErrorBody = 32 << 10
 
+func readEventSyncDiagnosticBody(r io.Reader) ([]byte, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(r, calendar.MaxEventSyncDiagnosticBytes+1))
+	if len(data) > calendar.MaxEventSyncDiagnosticBytes {
+		return data[:calendar.MaxEventSyncDiagnosticBytes], true, err
+	}
+	return data, false, err
+}
+
 // EventSyncPolicy supplies conservative defaults for Apple CalDAV. Sync
 // collection availability varies by calendar, so polling remains slower than
 // the API-native Google and Microsoft delta feeds.
@@ -382,6 +390,7 @@ func (p *Provider) fetchSyncObjects(ctx context.Context, calendarID string, inve
 				return
 			}
 			results[i].object = *object
+			results[i].diagnostic = diagnostic
 		}(i, path, item.etag)
 	}
 	wg.Wait()
@@ -426,7 +435,7 @@ func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) 
 		responseETag = etag
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, truncated, err := readEventSyncDiagnosticBody(resp.Body)
 	if err != nil {
 		return nil, false, false, nil, appleEventSyncError(calendar.EventSyncTransient)
 	}
@@ -436,13 +445,13 @@ func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) 
 		// a protocol failure, not malformed iCalendar. Treating it as a
 		// recoverable object would hide HTML/login/proxy responses and could
 		// silently discard a valid resource whose representation was wrong.
-		return nil, false, false, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data}, appleEventSyncError(calendar.EventSyncProtocol)
+		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data, Truncated: truncated}, nil
 	}
 	container, valid := decodeAppleEventSyncCalendar(data)
 	if !valid {
-		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data}, nil
+		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data, Truncated: truncated}, nil
 	}
-	return &caldav.CalendarObject{Path: path, ETag: responseETag, Data: container}, false, false, nil, nil
+	return &caldav.CalendarObject{Path: path, ETag: responseETag, Data: container}, false, false, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data, Truncated: truncated}, nil
 }
 
 // RepairEventSyncObject isolates one CalDAV resource. The ETag belongs to the
@@ -468,7 +477,7 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	}
 	members, err := appleSyncMembers(*object, calendar.EventSyncRequest{CalendarID: request.CalendarID, Window: request.Window})
 	if err != nil {
-		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag}}, nil
+		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag, Diagnostic: diagnostic}}, nil
 	}
 	identity := calendar.SyncObject{ObjectID: path, ETag: object.ETag}
 	if len(members) == 0 {
@@ -508,7 +517,7 @@ func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObje
 		}
 		members, err := appleSyncMembers(fetched.object, request)
 		if err != nil {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path, ETag: fetched.object.ETag})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path, ETag: fetched.object.ETag, Diagnostic: fetched.diagnostic})
 			continue
 		}
 		if len(members) == 0 {
@@ -650,7 +659,7 @@ func appleReplacementPage(request calendar.EventSyncRequest, fetched []appleFetc
 		}
 		members, err := appleSyncMembers(item.object, request)
 		if err != nil {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.object.Path})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.object.Path, ETag: item.object.ETag, Diagnostic: item.diagnostic})
 			continue
 		}
 		object := calendar.SyncObject{ObjectID: item.object.Path, ETag: item.object.ETag}

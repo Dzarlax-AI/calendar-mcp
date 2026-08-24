@@ -10,7 +10,7 @@ CREATE TABLE calendar_sync_raw_artifacts (
   truncated INTEGER NOT NULL DEFAULT 0,
   captured_at TIMESTAMP NOT NULL,
   expires_at TIMESTAMP NOT NULL,
-  PRIMARY KEY (calendar_id, object_id, etag),
+  PRIMARY KEY (calendar_id, object_id),
   FOREIGN KEY (calendar_id, object_id) REFERENCES calendar_sync_quarantine(calendar_id, object_id) ON DELETE CASCADE
 );
 CREATE INDEX calendar_sync_raw_artifacts_expiry_idx ON calendar_sync_raw_artifacts(expires_at);

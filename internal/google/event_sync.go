@@ -148,7 +148,17 @@ func googleEventDiagnostic(item *gcal.Event) *calendar.EventSyncDiagnostic {
 	if item == nil {
 		return nil
 	}
-	payload, err := json.Marshal(item)
+	type diagnosticEvent struct {
+		ID      string `json:"id,omitempty"`
+		Status  string `json:"status,omitempty"`
+		ETag    string `json:"etag,omitempty"`
+		Summary string `json:"summary,omitempty"`
+	}
+	summary := item.Summary
+	if len(summary) > 4096 {
+		summary = summary[:4096]
+	}
+	payload, err := json.Marshal(diagnosticEvent{ID: item.Id, Status: item.Status, ETag: item.Etag, Summary: summary})
 	if err != nil {
 		return nil
 	}
