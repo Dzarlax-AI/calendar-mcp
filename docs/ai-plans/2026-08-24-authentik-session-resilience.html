@@ -64,7 +64,7 @@
       <tbody>
         <tr><td>Client session-loss handling</td><td>Luna (<code>gpt-5.6-luna</code>)</td><td>medium</td><td><code>frontend/src/lib/api.ts</code>, focused frontend tests</td><td>frontend test suite, build</td><td>Root checks redirect safety and API contract</td></tr>
         <tr><td>Refresh result aggregation and UX copy</td><td>Luna (<code>gpt-5.6-luna</code>)</td><td>medium</td><td><code>frontend/src/features/calendar/CalendarPage.tsx</code>, tests</td><td>focused mutation tests, build</td><td>Root verifies no regression in cached-event fallback</td></tr>
-        <tr><td>Backend/API observability contract</td><td>Terra (<code>gpt-5.6-terra</code>)</td><td>medium</td><td><code>internal/web/api.go</code>, <code>internal/web/server.go</code>, backend tests</td><td><code>go test ./...</code>, <code>go vet ./...</code></td><td>Only if a safe server-side response is possible without weakening ForwardAuth</td></tr>
+        <tr><td>Backend/API observability contract</td><td>Terra (<code>gpt-5.6-terra</code>)</td><td>medium</td><td><code>internal/web/api.go</code>, <code>internal/web/server.go</code>, backend tests</td><td><code>go test -race -count=1 ./...</code>, <code>go vet ./...</code></td><td>Only if a safe server-side response is possible without weakening ForwardAuth</td></tr>
         <tr><td>Integration and release review</td><td>Root coordinator</td><td>low</td><td>all changed files</td><td>diff audit, full checks, browser smoke</td><td>Sol is not required by default; use Sol only for an unresolved cross-cutting auth/security decision</td></tr>
       </tbody>
     </table>
@@ -97,7 +97,7 @@
     <ul>
       <li><code>npm test</code> (or the repository’s configured frontend test command) — all existing tests pass plus new API/session and refresh aggregation cases.</li>
       <li><code>npm run build</code> — production frontend build succeeds.</li>
-      <li><code>go test ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code> — backend and repository checks pass.</li>
+      <li><code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code> — backend and repository checks pass.</li>
       <li>Browser QA: authenticated bootstrap/events; expired Authentik session during refresh; one calendar returning 202 while another redirects; cached events remain visible; top-level re-authentication returns to the calendar.</li>
       <li>Production verification, only after explicit deploy approval: inspect Traefik status codes, application health, and one real refresh path without changing credentials or deleting cached data.</li>
     </ul>
@@ -135,7 +135,7 @@
   <section>
     <h2>Implementation record</h2>
     <p>The approved client and application slices are implemented locally. API requests now use manual redirect handling and classify an opaque Authentik redirect as <code>session_expired</code>; refresh requests preserve queued, session-expired, and failed outcomes per calendar. Application-generated UI JSON errors carry <code>origin: "application"</code> and only sanitized enum/status fields are logged. ForwardAuth/Traefik behavior was intentionally not changed.</p>
-    <p><strong>Checks:</strong> frontend 24 tests and production build passed; <code>go test ./... -count=1</code>, <code>go vet ./...</code>, and <code>git diff --check</code> passed outside the sandbox. The sandbox-only Go run could not bind IPv6 <code>httptest</code> listeners.</p>
+    <p><strong>Checks:</strong> frontend 24 tests and production build passed; <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, and <code>git diff --check</code> passed outside the sandbox. The sandbox-only Go run could not bind IPv6 <code>httptest</code> listeners.</p>
     <p><strong>Remaining limitation:</strong> if ForwardAuth intercepts a request before it reaches the application, only the client can recover by top-level navigation; changing the proxy policy remains a separate, higher-blast-radius decision.</p>
   </section>
 </main>
