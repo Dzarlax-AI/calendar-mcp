@@ -162,7 +162,7 @@ func webRuntimeConfigAt(cfg *config.Config, appService *application.Service, onP
 		window = eventReadModelWindow(cfg, anchor)
 	}
 	return web.Config{
-		PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated,
+		PublicURL: cfg.PublicURL, TrustForwardAuth: cfg.TrustForwardAuth, AllowUnauthenticated: cfg.UIAllowUnauthenticated, RawArtifactOperators: cfg.UIRawArtifactUsers,
 		MCPAPIKey: cfg.APIKey, LegacyAPIKeyConfigured: cfg.LegacyAPIKey != "",
 		GoogleConfigured: cfg.GoogleClientID != "", MicrosoftConfigured: cfg.MS365ClientID != "", AppleCalDAVURL: cfg.AppleCalDAVURL,
 		ApplicationService: appService, EventReadModelEnabled: &eventReadModelEnabled, EventReadModelWindow: window,

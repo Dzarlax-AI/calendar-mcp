@@ -38,6 +38,7 @@ type Config struct {
 	PublicURL              string
 	TrustForwardAuth       bool
 	AllowUnauthenticated   bool
+	RawArtifactOperators   []string
 	MCPAPIKey              string
 	LegacyAPIKeyConfigured bool
 	GoogleConfigured       bool

@@ -229,6 +229,11 @@ func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, err)
 		return
 	}
+	username := strings.TrimSpace(r.Header.Get("X-authentik-username"))
+	if username == "" || !containsString(s.config.RawArtifactOperators, username) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	if s.store == nil {
 		writeUIAPIError(w, errors.New("raw sync artifacts are unavailable"))
 		return
@@ -245,6 +250,15 @@ func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, uiRawSyncArtifact{CalendarID: artifact.CalendarID, ObjectID: artifact.ObjectID, ETag: artifact.ETag, PayloadBase64: base64.StdEncoding.EncodeToString(artifact.RawPayload), PayloadSHA256: artifact.PayloadSHA256, ContentType: artifact.ContentType, ProviderStatus: artifact.ProviderStatus, ProviderReason: artifact.ProviderReason, Truncated: artifact.Truncated, CapturedAt: artifact.CapturedAt, ExpiresAt: artifact.ExpiresAt})
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
