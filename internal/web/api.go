@@ -94,6 +94,11 @@ type uiRawSyncArtifact struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
+type rawSyncArtifactRequest struct {
+	CalendarID string `json:"calendar_id"`
+	ObjectID   string `json:"object_id"`
+}
+
 type uiOperationResult struct {
 	Status        string    `json:"status"`
 	Event         *uiEvent  `json:"event,omitempty"`
@@ -238,8 +243,13 @@ func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 		writeUIAPIError(w, errors.New("raw sync artifacts are unavailable"))
 		return
 	}
-	calendarID := strings.TrimSpace(r.URL.Query().Get("calendar_id"))
-	objectID := strings.TrimSpace(r.URL.Query().Get("object_id"))
+	var request rawSyncArtifactRequest
+	if err := decodeUIJSON(r, &request); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	calendarID := strings.TrimSpace(request.CalendarID)
+	objectID := strings.TrimSpace(request.ObjectID)
 	artifact, err := s.store.GetRawEventSyncArtifact(r.Context(), calendarID, objectID)
 	if errors.Is(err, storage.ErrNotFound) {
 		http.NotFound(w, r)
@@ -671,6 +681,19 @@ func decodeUIInput(w http.ResponseWriter, r *http.Request, target *uiCreateEvent
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid event input")
+	}
+	return nil
+}
+
+func decodeUIJSON(r *http.Request, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxUIRequestBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid JSON request")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "request body must contain one JSON value")
 	}
 	return nil
 }
