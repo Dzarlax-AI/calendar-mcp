@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Calendar Native Responsive UX</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fb; color: #182033; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #dfe3eb; border-radius: 14px; padding: 22px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; } h1 { margin-bottom: 8px; } h2 { margin-top: 0; }
+    code { background: #f0f2f6; padding: 2px 5px; border-radius: 5px; }
+    .badge { display: inline-block; padding: 5px 10px; border-radius: 999px; background: #fff3cd; color: #805b00; font-size: 12px; font-weight: 700; }
+    .approval { border-left: 5px solid #d97706; } .risk { border-left: 5px solid #dc2626; }
+    .model { border-left: 5px solid #4456ee; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; } th, td { padding: 10px; border-bottom: 1px solid #e7eaf0; text-align: left; vertical-align: top; } th { background: #f8fafc; }
+    li { margin: 6px 0; } .muted { color: #687287; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Calendar Native Responsive UX</h1>
+  <p class="badge" style="background:#dcfce7;color:#166534">Implemented locally; PR prepared</p>
+
+  <section><h2>Task summary</h2><p>Make the unified calendar native-feeling and predictable on mobile, tablet, and desktop. Preserve full calendar names, add correct sheet/overlay behavior, keep <code>New event</code> discoverable, and protect the FullCalendar canvas from responsive collapse.</p><p class="muted">Baseline: <code>8b850b9</code>, branch <code>fix/calendar-sync-protocol-isolation</code>. No production data or credentials are in scope.</p></section>
+
+  <section><h2>Confirmed current behavior</h2><ul><li>Mobile filters cover the calendar without a scrim, leaving the underlying UI visible and apparently actionable.</li><li>Current-source browser evidence measured <code>.calendar-filter</code> as <code>15px 10px 189px 0px</code>; the name is trapped in a 10px grid track because the checkbox is absolutely positioned.</li><li>The date chevron visually promises a picker but currently navigates to Today.</li><li>Desktop/tablet fixed panes compete with the center canvas; the primary event action disappears with the sidebar.</li></ul></section>
+
+  <section><h2>Desired responsive model</h2><table><thead><tr><th>Viewport</th><th>Layout</th><th>Surfaces</th><th>Primary action</th></tr></thead><tbody><tr><td><code>&gt;=1280</code></td><td>Left rail + center canvas min 680px + optional inspector</td><td>Inspector optional</td><td>Toolbar New event</td></tr><tr><td><code>821–1279</code></td><td>Center-first</td><td>Filters and inspector overlay, never both</td><td>Toolbar New event</td></tr><tr><td><code>&lt;=820</code></td><td>Full-width canvas + compact two-row header</td><td>Filters full-height sheet; event details bottom/full-screen sheet</td><td>Header action/FAB</td></tr></tbody></table></section>
+
+  <section><h2>Web-first, native-ready constraints</h2><ul><li>Keep calendar/event domain types, capabilities, recurrence scopes, sync statuses, error codes, and mutation outcomes outside FullCalendar-specific callbacks.</li><li>Make surface state serializable and portable: <code>none | filters | event | create | scope</code>.</li><li>Define persistence/deep-link behavior for date, view, selected calendars, and selected event; localStorage must not be the only source of truth.</li><li>Make timezone, DST, all-day exclusive-end, multi-day, and recurring-scope behavior explicit and shared by future clients.</li><li>Use semantic design tokens and preserve cached/stale/degraded/failed read-model semantics.</li><li>Keep invite/notification suppression and mutation warnings in the server outcome contract.</li></ul><p class="muted">Native app, PWA install, push notifications, background refresh, and platform-specific UI are intentionally deferred; this pass keeps them feasible.</p></section>
+
+  <section class="model"><h2>Model-led execution</h2><table><thead><tr><th>Workstream</th><th>Model</th><th>Effort</th><th>Ownership</th><th>Gate</th></tr></thead><tbody><tr><td>Surface/state contract and React structure</td><td><code>gpt-5.6-terra</code></td><td>High</td><td><code>CalendarPage.tsx</code>, types, focused tests</td><td>Root freezes contract</td></tr><tr><td>Responsive visual system</td><td><code>gpt-5.6-luna</code></td><td>Medium</td><td><code>app.css</code>, CSS fixtures if needed</td><td>Must follow Terra contract</td></tr><tr><td>Integration/browser QA</td><td>Root</td><td>Medium</td><td>No initial implementation ownership</td><td>Six viewport evidence matrix</td></tr><tr><td>Final design/integration review</td><td><code>gpt-5.6-sol</code></td><td>Medium, review only</td><td>No implementation lane</td><td>One final approval/correction gate</td></tr></tbody></table><p>At least 90% of delegable implementation effort is assigned to Terra/Luna. Sol is reserved for final cross-cutting review.</p></section>
+
+  <section><h2>Implementation waves</h2><ol><li>Terra freezes the surface state, identity, ARIA, and date-view contract.</li><li>Terra implements React/state behavior; Luna independently implements CSS/layout using the frozen class contract.</li><li>Root integrates, seeds disposable SQLite fixtures, and captures browser evidence at 390, 430, 768, 1024, 1280, and 1440px.</li><li>Sol reviews the integrated diff and evidence. At most one focused correction turn is allowed.</li><li>PR, merge, deploy, and external notifications remain separate approvals.</li></ol></section>
+
+  <section><h2>Concrete implementation scope</h2><ul><li>Introduce one surface state: <code>none | filters | event | create | scope</code>.</li><li>Add scrim, outside/Escape close, focus return, inert background, and modal semantics.</li><li>Fix calendar grid to <code>15px minmax(0,1fr) auto</code>; retain full name and provider/account identity.</li><li>Keep <code>New event</code> visible in the toolbar at every width.</li><li>Use honest date affordance: real date picker or no chevron.</li><li>Move sync status below the toolbar; separate success/info/warning/error visual semantics.</li><li>Use 44px hit areas, <code>100dvh</code>, safe-area insets, synchronized mini-calendar, and <code>aria-pressed</code> view controls.</li></ul></section>
+
+  <section><h2>Verification</h2><ul><li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./...</code></li><li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go vet ./...</code></li><li><code>git diff --check</code></li><li><code>cd frontend &amp;&amp; npm test -- --run</code></li><li><code>cd frontend &amp;&amp; npm run build</code></li><li>Browser matrix with filters/event details open and closed; keyboard, Escape, focus return, outside tap, inert background, safe areas, 200% zoom, local-storage recovery, and CRUD regression checks.</li><li>Domain compatibility: timezone/DST and all-day exclusive-end cases, recurring scopes, stale/degraded/failed states, conflict/permission/rate-limit errors, and notification-suppression warnings.</li></ul></section>
+
+  <section><h2>Implementation outcome</h2><ul><li>Terra updated <code>frontend/src/features/calendar/CalendarPage.tsx</code> with serializable surface state, accessible sheets, persistent toolbar action, honest date label, view persistence, status/notice intent, and calendar accessibility labels.</li><li>Luna updated <code>frontend/src/styles/app.css</code> with the corrected name grid, responsive desktop/tablet/mobile layout, scrim and sheet transitions, 44px targets, <code>100dvh</code>, safe-area handling, status strip, and reduced-motion support.</li><li>Checks passed: frontend 21/21 tests and production build; Go tests and vet; diff check.</li><li>Browser evidence passed at 500x844, 1024x768, and 1440x900: no horizontal overflow; mobile filters open as a dialog with scrim, inert main content, focus management, and Escape close; toolbar retains <code>New event</code>.</li><li>Limitation: the disposable local browser fixture had zero connected providers, so long calendar names were validated through the corrected computed grid/static contract rather than populated provider rows.</li></ul></section>
+
+  <section class="risk"><h2>Risks and rollback</h2><ul><li>Overlay state can interfere with recurrence/create dialogs; cover transitions with tests.</li><li>FullCalendar may need <code>updateSize()</code> after layout changes.</li><li>Safari dynamic chrome can clip sheets; test <code>dvh</code> and safe-area behavior.</li><li>Rollback is a bounded UI revert to the pre-change layout; no database or provider migration is planned.</li></ul></section>
+
+  <section><h2>Open questions</h2><ul><li>Should filters use a side sheet or full-screen sheet on narrow phones?</li><li>Should event details use a bottom sheet or full-screen page on mobile?</li><li>Should the mini-calendar support previous/next month controls in the first pass?</li></ul></section>
+
+  <section class="approval"><h2>Approval gate</h2><p><strong>Approved and implemented locally.</strong> PR preparation was explicitly requested. Merge, deploy, Telegram notification, and any Sol review remain separate explicit approvals.</p></section>
+</main>
+</body>
+</html>

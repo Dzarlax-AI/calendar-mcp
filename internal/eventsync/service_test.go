@@ -23,9 +23,12 @@ func (r fakeResolver) Resolve(string) (calendar.Provider, string, error) {
 
 type fakeProvider struct {
 	calendar.Provider
-	pages    []calendar.EventSyncPage
-	errs     []error
-	requests []calendar.EventSyncRequest
+	pages          []calendar.EventSyncPage
+	errs           []error
+	requests       []calendar.EventSyncRequest
+	repairResults  []calendar.EventSyncObjectRepairResult
+	repairErrs     []error
+	repairRequests []calendar.EventSyncObjectRepairRequest
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
@@ -40,6 +43,18 @@ func (p *fakeProvider) SyncEvents(_ context.Context, request calendar.EventSyncR
 		return calendar.EventSyncPage{}, &calendar.EventSyncError{Class: calendar.EventSyncProtocol}
 	}
 	return p.pages[i], nil
+}
+
+func (p *fakeProvider) RepairEventSyncObject(_ context.Context, request calendar.EventSyncObjectRepairRequest) (calendar.EventSyncObjectRepairResult, error) {
+	p.repairRequests = append(p.repairRequests, request)
+	i := len(p.repairRequests) - 1
+	if i < len(p.repairErrs) && p.repairErrs[i] != nil {
+		return calendar.EventSyncObjectRepairResult{}, p.repairErrs[i]
+	}
+	if i >= len(p.repairResults) {
+		return calendar.EventSyncObjectRepairResult{}, &calendar.EventSyncError{Class: calendar.EventSyncProtocol}
+	}
+	return p.repairResults[i], nil
 }
 
 type legacyProvider struct{ calendar.Provider }
@@ -129,6 +144,69 @@ func newService(store *fakeStore, provider calendar.Provider) *Service {
 		PolicyFor: func(calendar.Provider) calendar.EventSyncPolicy {
 			return calendar.EventSyncPolicy{PollInterval: 10 * time.Minute, RetryBase: time.Minute, RetryMax: 5 * time.Minute, MaxPages: 10, MaxResets: 1}
 		},
+	}
+}
+
+func repairItem(id string) storage.CalendarSyncQuarantine {
+	return storage.CalendarSyncQuarantine{CalendarID: "fake:calendar", ObjectID: id, ETag: "etag-" + id, Active: true}
+}
+
+func repairResult(id string, outcome calendar.EventSyncObjectRepairOutcome) calendar.EventSyncObjectRepairResult {
+	result := calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: id, ETag: "etag-" + id}, Outcome: outcome}
+	if outcome == calendar.EventSyncObjectStillQuarantined {
+		result.Warning = &calendar.EventSyncWarning{ObjectID: id, ETag: "etag-" + id, Code: calendar.EventSyncProtocol}
+	}
+	return result
+}
+
+func TestRepairOneProcessesAllDueObjectsAndPersistsOutcomes(t *testing.T) {
+	provider := &fakeProvider{repairResults: []calendar.EventSyncObjectRepairResult{
+		repairResult("replace", calendar.EventSyncObjectReplaceMembership),
+		repairResult("absent", calendar.EventSyncObjectAbsentFromProjection),
+		repairResult("deleted", calendar.EventSyncObjectProviderDeleted),
+		repairResult("quarantined", calendar.EventSyncObjectStillQuarantined),
+	}}
+	store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{repairItem("replace"), repairItem("absent"), repairItem("deleted"), repairItem("quarantined")}}
+	service := newService(store, provider)
+	policy := service.policy(provider)
+	policy.MaxObjectRepairsPerRun = 4
+	if err := service.repairOne(t.Context(), testState("saved"), provider, "provider-calendar", policy); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.repairRequests) != 4 || len(store.repairs) != 4 {
+		t.Fatalf("repair requests=%d persisted=%d", len(provider.repairRequests), len(store.repairs))
+	}
+	for i, want := range []calendar.EventSyncObjectRepairOutcome{calendar.EventSyncObjectReplaceMembership, calendar.EventSyncObjectAbsentFromProjection, calendar.EventSyncObjectProviderDeleted, calendar.EventSyncObjectStillQuarantined} {
+		if store.repairs[i].Outcome != want {
+			t.Fatalf("repair[%d] outcome=%q, want %q", i, store.repairs[i].Outcome, want)
+		}
+	}
+}
+
+func TestRepairOneSeparatesAuthAndTransientFailures(t *testing.T) {
+	t.Run("auth failure parks run", func(t *testing.T) {
+		provider := &fakeProvider{repairErrs: []error{&calendar.EventSyncError{Class: calendar.EventSyncAuth}}}
+		store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{repairItem("auth")}}
+		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); !errors.Is(err, ErrProviderFailure) || len(store.parks) != 1 || len(store.fails) != 0 {
+			t.Fatalf("err=%v parks=%#v fails=%#v", err, store.parks, store.fails)
+		}
+	})
+	t.Run("transient failure persists repair and continues feed", func(t *testing.T) {
+		provider := &fakeProvider{repairErrs: []error{&calendar.EventSyncError{Class: calendar.EventSyncTransient}}, pages: []calendar.EventSyncPage{terminal("advanced", "event")}}
+		store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{repairItem("transient")}}
+		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.repairs) != 1 || store.repairs[0].Outcome != calendar.EventSyncObjectStillQuarantined || len(store.applied) != 1 {
+			t.Fatalf("repairs=%#v applied=%#v", store.repairs, store.applied)
+		}
+	})
+}
+
+func TestRepairBatchRejectsUnknownOutcome(t *testing.T) {
+	_, err := repairBatch(calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: "object"}, Outcome: ""}, "fake:calendar", repairItem("object"))
+	if !errors.Is(err, ErrInvalidPage) {
+		t.Fatalf("repairBatch() error = %v, want ErrInvalidPage", err)
 	}
 }
 

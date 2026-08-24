@@ -245,7 +245,15 @@ func (s *Service) repairOne(ctx context.Context, state storage.CalendarSyncState
 	if len(due) == 0 {
 		return nil
 	}
-	item := due[0]
+	for _, item := range due {
+		if err := s.repairObject(ctx, state, providerCalendarID, policy, repairer, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncState, providerCalendarID string, policy calendar.EventSyncPolicy, repairer calendar.EventSyncObjectRepairProvider, item storage.CalendarSyncQuarantine) error {
 	result, repairErr := repairer.RepairEventSyncObject(ctx, calendar.EventSyncObjectRepairRequest{
 		CalendarID: providerCalendarID,
 		Window:     calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
@@ -295,6 +303,14 @@ func repairBatch(result calendar.EventSyncObjectRepairResult, calendarID string,
 		objectID = item.ObjectID
 	}
 	if objectID != item.ObjectID {
+		return storage.EventSyncRepairBatch{}, ErrInvalidPage
+	}
+	switch result.Outcome {
+	case calendar.EventSyncObjectReplaceMembership,
+		calendar.EventSyncObjectAbsentFromProjection,
+		calendar.EventSyncObjectProviderDeleted,
+		calendar.EventSyncObjectStillQuarantined:
+	default:
 		return storage.EventSyncRepairBatch{}, ErrInvalidPage
 	}
 	batch := storage.EventSyncRepairBatch{ObjectID: objectID, ETag: result.Object.ETag, Outcome: result.Outcome}
