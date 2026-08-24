@@ -113,7 +113,7 @@
     <ul>
       <li>Added schema version 4 with encrypted raw-artifact tables for PostgreSQL and SQLite.</li>
       <li>Apple and Google protocol warnings now carry bounded diagnostics into storage; AES-GCM encryption, SHA-256, 256 KiB cap, and seven-day expiry are enforced.</li>
-      <li>Worker cleanup removes expired artifacts. An authenticated <code>GET /api/ui/sync-artifact?calendar_id=...&amp;object_id=...</code> diagnostic read path returns base64 payload plus metadata; ordinary event APIs are unchanged.</li>
+      <li>Worker cleanup removes expired artifacts. A CSRF-protected <code>POST /api/ui/sync-artifact</code> diagnostic read path accepts identifiers in the JSON body, requires an explicit <code>UI_RAW_ARTIFACT_USERS</code> allowlist, and returns base64 payload plus metadata; ordinary event APIs are unchanged.</li>
       <li>Added provider and storage regression coverage. No provider CRUD, production database cleanup, commit, push, merge, or deploy was performed.</li>
       <li>Checks passed: <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code>.</li>
     </ul>
