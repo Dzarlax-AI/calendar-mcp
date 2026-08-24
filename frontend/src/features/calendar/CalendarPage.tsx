@@ -11,7 +11,7 @@ import type { EventResizeDoneArg } from "@fullcalendar/interaction";
 import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, Link2, ListChecks, ListFilter, MapPin, PlayCircle, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
-import { APIError, createEvent, deleteEvent, getEvents, refreshCalendar, updateEvent } from "../../lib/api";
+import { APIError, createEvent, deleteEvent, getEvents, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
 import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, eventStatusPollInterval, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
@@ -97,8 +97,22 @@ export default function CalendarPage() {
     lastPolledDataUpdatedAtRef.current = 0;
   }, [range?.start, range?.end, sortedSelectedCalendarIds]);
   const refreshMutation = useMutation({
-    mutationFn: (calendarIds: string[]) => Promise.all(calendarIds.map((calendarId) => refreshCalendar(csrfToken, calendarId))),
-    onSuccess: () => setNotice({ message: "Calendar refresh queued", intent: "success" }),
+    mutationFn: (calendarIds: string[]) => refreshCalendars(csrfToken, calendarIds),
+    onSuccess: (result) => {
+      if (result.sessionExpired.length) {
+        const queued = result.queued.length ? `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued. ` : "";
+        setNotice({ message: `${queued}Your session expired; returning to sign in.`, intent: "error" });
+        navigateToApp();
+        return;
+      }
+      if (result.queued.length && result.failed.length) {
+        setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued; ${result.failed.length} could not be queued.`, intent: "warning" });
+      } else if (result.queued.length) {
+        setNotice({ message: `${result.queued.length} calendar refresh${result.queued.length === 1 ? "" : "es"} queued.`, intent: "success" });
+      } else if (result.failed.length) {
+        setNotice({ message: "Calendar refresh could not be queued.", intent: "error" });
+      }
+    },
     onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
     onSettled: invalidateEvents,
   });

@@ -166,6 +166,15 @@ func TestUIAPIBootstrapIsProtectedSafeAndFlat(t *testing.T) {
 	if !strings.Contains(unauthenticated.Body.String(), `"code":"permission_denied"`) {
 		t.Fatalf("unauthenticated response = %s", unauthenticated.Body.String())
 	}
+	var sessionError struct {
+		Error uiError `json:"error"`
+	}
+	if err := json.Unmarshal(unauthenticated.Body.Bytes(), &sessionError); err != nil {
+		t.Fatal(err)
+	}
+	if sessionError.Error.Origin != uiErrorOriginApplication {
+		t.Fatalf("session error origin = %q, want %q", sessionError.Error.Origin, uiErrorOriginApplication)
+	}
 
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/bootstrap", nil)
 	request.Header.Set("X-authentik-username", "alexey")
@@ -705,8 +714,17 @@ func TestSafeUIErrorDoesNotExposeProviderDetails(t *testing.T) {
 	if converted.Message != "The event changed elsewhere; refresh and try again" {
 		t.Fatalf("message = %q", converted.Message)
 	}
-	if converted.Provider != "" || converted.CalendarID != "" || converted.EventID != "" {
-		t.Fatalf("safe error preserves provider metadata: %#v", converted)
+	if converted.Origin != uiErrorOriginApplication {
+		t.Fatalf("error origin = %q, want %q", converted.Origin, uiErrorOriginApplication)
+	}
+	encoded, err := json.Marshal(map[string]uiError{"error": converted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"provider secret", "private-provider", "private-calendar", "private-event"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("safe error exposes %q: %s", secret, encoded)
+		}
 	}
 }
 

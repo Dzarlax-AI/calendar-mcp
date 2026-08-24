@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEvent, deleteEvent, getBootstrap, getEvents, refreshCalendar } from "./api";
+import { createEvent, deleteEvent, getBootstrap, getEvents, navigateToApp, refreshCalendar, refreshCalendars } from "./api";
 
 describe("browser API client", () => {
   it("normalizes the flat bootstrap contract", async () => {
@@ -65,5 +65,29 @@ describe("browser API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/ui/calendars/google%3Aprimary%2Fcalendar/refresh", expect.objectContaining({ method: "POST", credentials: "same-origin" }));
     expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-CSRF-Token")).toBe("csrf-token");
     vi.unstubAllGlobals();
+  });
+
+  it("classifies an Authentik redirect as session loss without following it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 0, type: "opaqueredirect", text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(refreshCalendar("csrf-token", "c1")).rejects.toMatchObject({ code: "session_expired", status: 401 });
+    expect(fetchMock).toHaveBeenCalledWith("/api/ui/calendars/c1/refresh", expect.objectContaining({ redirect: "manual", method: "POST" }));
+    vi.unstubAllGlobals();
+  });
+
+  it("aggregates queued, session-expired, and failed refresh outcomes", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 202 }))
+      .mockResolvedValueOnce({ ok: false, status: 0, type: "opaqueredirect", text: async () => "" })
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(refreshCalendars("csrf-token", ["queued", "expired", "failed"])).resolves.toEqual({ queued: ["queued"], sessionExpired: ["expired"], failed: ["failed"] });
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps top-level navigation testable", () => {
+    const navigate = vi.fn();
+    navigateToApp(navigate);
+    expect(navigate).toHaveBeenCalledWith("/app");
   });
 });

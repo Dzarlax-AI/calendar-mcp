@@ -28,13 +28,15 @@ const (
 )
 
 type uiError struct {
-	Code       calendar.ErrorCode `json:"code"`
-	Message    string             `json:"message"`
-	Provider   string             `json:"provider,omitempty"`
-	CalendarID string             `json:"calendar_id,omitempty"`
-	EventID    string             `json:"event_id,omitempty"`
-	Retryable  bool               `json:"retryable,omitempty"`
+	Code      calendar.ErrorCode `json:"code"`
+	Message   string             `json:"message"`
+	Retryable bool               `json:"retryable,omitempty"`
+	// Origin lets the browser distinguish an application JSON error from a
+	// session redirect or proxy response that did not reach this service.
+	Origin string `json:"origin"`
 }
+
+const uiErrorOriginApplication = "application"
 
 type uiEvent struct {
 	ID               string              `json:"id"`
@@ -807,8 +809,6 @@ func toUISource(source calendar.SourceStatus) uiSourceStatus {
 	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Complete: source.Complete, Status: status}
 	if source.Error != nil {
 		converted := safeUIError(source.Error)
-		converted.Provider = source.Provider
-		converted.CalendarID = source.CalendarID
 		result.Error = &converted
 	}
 	return result
@@ -819,9 +819,7 @@ func failedUISource(provider, calendarID string, err error) uiSourceStatus {
 		provider = uiCalendarProvider(calendarID)
 	}
 	converted := safeUIError(err)
-	converted.Provider = provider
-	converted.CalendarID = calendarID
-	return uiSourceStatus{Provider: converted.Provider, CalendarID: calendarID, Complete: false, Error: &converted, Status: "failed"}
+	return uiSourceStatus{Provider: provider, CalendarID: calendarID, Complete: false, Error: &converted, Status: "failed"}
 }
 
 func toCachedUISource(source storage.CachedSourceStatus) uiSourceStatus {
@@ -881,7 +879,7 @@ func uiCalendarProvider(calendarID string) string {
 func safeUIError(err error) uiError {
 	apiErr := &calendar.APIError{}
 	if !errors.As(err, &apiErr) {
-		return uiError{Code: calendar.ErrorProviderUnavailable, Message: "Calendar provider is temporarily unavailable", Retryable: true}
+		return uiError{Code: calendar.ErrorProviderUnavailable, Message: "Calendar provider is temporarily unavailable", Retryable: true, Origin: uiErrorOriginApplication}
 	}
 	message := "Calendar operation could not be completed"
 	switch apiErr.Code {
@@ -904,7 +902,7 @@ func safeUIError(err error) uiError {
 	case calendar.ErrorPartialFailure:
 		message = "Some calendar sources could not be loaded"
 	}
-	return uiError{Code: apiErr.Code, Message: message, Retryable: apiErr.Retryable}
+	return uiError{Code: apiErr.Code, Message: message, Retryable: apiErr.Retryable, Origin: uiErrorOriginApplication}
 }
 
 func writeUIAPIError(w http.ResponseWriter, err error) {
@@ -924,11 +922,18 @@ func writeUIAPIError(w http.ResponseWriter, err error) {
 	case calendar.ErrorRateLimited:
 		status = http.StatusTooManyRequests
 	}
-	writeUIError(w, status, err)
+	writeUISafeError(w, status, apiErr)
 }
 
 func writeUIError(w http.ResponseWriter, status int, err error) {
-	writeUIJSON(w, status, map[string]uiError{"error": safeUIError(err)})
+	writeUISafeError(w, status, safeUIError(err))
+}
+
+func writeUISafeError(w http.ResponseWriter, status int, apiErr uiError) {
+	// Log only the normalized, public contract. Raw provider errors may contain
+	// credentials, calendar paths, or event identifiers and must not reach logs.
+	log.Printf("calendar_ui_error error_origin=%s http_status=%d error_code=%s retryable=%t", apiErr.Origin, status, apiErr.Code, apiErr.Retryable)
+	writeUIJSON(w, status, map[string]uiError{"error": apiErr})
 }
 
 func writeUIJSON(w http.ResponseWriter, status int, value any) {

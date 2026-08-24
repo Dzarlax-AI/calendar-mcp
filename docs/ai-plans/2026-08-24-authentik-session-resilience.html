@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Authentik session resilience</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5b6475; --line:#dfe4ec; --panel:#fff; --bg:#f4f6fa; --blue:#3558d8; --amber:#b56b00; --red:#bd2c2c; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1080px; margin:0 auto; padding:32px 20px 56px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin:16px 0; box-shadow:0 2px 8px #1720330a; }
+    h1,h2,h3 { line-height:1.2; margin-top:0; }
+    h1 { font-size:32px; margin-bottom:8px; }
+    h2 { font-size:21px; }
+    code { background:#eef1f6; border-radius:4px; padding:2px 5px; overflow-wrap:anywhere; }
+    .badge { display:inline-block; padding:4px 10px; border-radius:99px; color:#fff; background:var(--blue); font-size:12px; font-weight:700; }
+    .callout { border-left:4px solid var(--blue); background:#f0f4ff; padding:12px 15px; border-radius:6px; }
+    .risk { border-left:4px solid var(--red); }
+    .approval { border-left:4px solid var(--amber); }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 8px; }
+    th { font-size:13px; color:var(--muted); }
+    li { margin:6px 0; }
+    .muted { color:var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Authentik session resilience</h1>
+  <p><span class="badge">Approval required before implementation</span></p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Make the calendar SPA handle an expired Authentik session predictably instead of turning an API redirect into a cross-origin/CORS error and the generic message “The request could not be completed.”</p>
+    <div class="callout"><strong>Observed evidence:</strong> production access logs show a refresh POST for Google returning <code>202</code> while the Apple refresh POST receives <code>302</code> from the Authentik ForwardAuth layer. The calendar data and quarantine state remain intact.</div>
+  </section>
+
+  <section>
+    <h2>Current behavior and architecture</h2>
+    <ul>
+      <li>Traefik applies <code>authentik-auth</code> to the calendar UI host; an unauthenticated request is redirected to <code>auth.dzarlax.dev</code>.</li>
+      <li>The SPA calls same-origin <code>/api/ui/*</code> using <code>fetch</code> with credentials and expects JSON.</li>
+      <li><code>frontend/src/lib/api.ts</code> parses non-2xx JSON errors but does not identify an Authentik redirect or an opaque cross-origin redirect.</li>
+      <li><code>CalendarPage.tsx</code> refreshes several calendars concurrently with <code>Promise.all</code>, so one redirected request obscures the outcome of the other calendars.</li>
+      <li>Backend calendar refresh itself is eligible and queueable for the affected Apple and Google calendars; this plan does not alter event quarantine, provider tokens, or cached events.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ul>
+      <li>When Authentik redirects an API request, the client detects session loss and navigates the top-level page to <code>/app</code> (which safely starts Authentik login), rather than surfacing a CORS-shaped generic error.</li>
+      <li>Concurrent calendar refreshes report per-calendar outcomes. A successful Google queue is not presented as a total failure because Apple re-authentication is needed.</li>
+      <li>After re-authentication, the calendar reloads and the user can retry repair without losing cached events.</li>
+      <li>Normal API errors (provider, permission, conflict, validation) keep their existing safe messages and do not trigger a login redirect.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Model-led execution strategy</h2>
+    <table>
+      <thead><tr><th>Workstream</th><th>Primary model</th><th>Effort</th><th>Owned files</th><th>Required checks</th><th>Coordinator gate</th></tr></thead>
+      <tbody>
+        <tr><td>Client session-loss handling</td><td>Luna (<code>gpt-5.6-luna</code>)</td><td>medium</td><td><code>frontend/src/lib/api.ts</code>, focused frontend tests</td><td>frontend test suite, build</td><td>Root checks redirect safety and API contract</td></tr>
+        <tr><td>Refresh result aggregation and UX copy</td><td>Luna (<code>gpt-5.6-luna</code>)</td><td>medium</td><td><code>frontend/src/features/calendar/CalendarPage.tsx</code>, tests</td><td>focused mutation tests, build</td><td>Root verifies no regression in cached-event fallback</td></tr>
+        <tr><td>Backend/API observability contract</td><td>Terra (<code>gpt-5.6-terra</code>)</td><td>medium</td><td><code>internal/web/api.go</code>, <code>internal/web/server.go</code>, backend tests</td><td><code>go test ./...</code>, <code>go vet ./...</code></td><td>Only if a safe server-side response is possible without weakening ForwardAuth</td></tr>
+        <tr><td>Integration and release review</td><td>Root coordinator</td><td>low</td><td>all changed files</td><td>diff audit, full checks, browser smoke</td><td>Sol is not required by default; use Sol only for an unresolved cross-cutting auth/security decision</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Allocation target: at least 90% of delegable implementation effort stays on Luna/Terra. No Sol implementation lane is planned.</p>
+  </section>
+
+  <section>
+    <h2>Execution waves</h2>
+    <ol>
+      <li><strong>Contract freeze — Terra:</strong> confirm the browser-visible distinction between ordinary API errors and Authentik redirect/session loss; no credentials or redirect payloads may be logged.</li>
+      <li><strong>Parallel implementation — Luna/Luna/Terra:</strong> implement the two frontend lanes and the optional backend observability lane with disjoint file ownership.</li>
+      <li><strong>Integration — root coordinator:</strong> inspect the actual diff, combine the user-facing messages, and run all checks. Allow at most two focused correction turns per lane before reassessing with Terra.</li>
+      <li><strong>Production gate:</strong> no commit, push, deploy, Traefik change, or Authentik policy change is included until separately authorized after local evidence.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Add a narrow API response classification for opaque/cross-origin redirects and an explicit session-expired error path. Preserve same-origin JSON error parsing and avoid retrying mutation requests automatically.</li>
+      <li>Change refresh aggregation from fail-fast <code>Promise.all</code> to an outcome-preserving approach. Display “signed in again” for session loss and identify calendars that were queued versus not queued.</li>
+      <li>Add tests for JSON API errors, redirect/session-loss classification, mixed refresh success/failure, and the no-automatic-mutation-retry invariant.</li>
+      <li>If backend changes are warranted, add safe structured logging or a JSON response only at the application boundary; do not bypass ForwardAuth or expose provider tokens, calendar paths, or user credentials.</li>
+      <li>Run local browser smoke checks at mobile and desktop widths with an expired-session simulation, then update this plan with actual changes and limitations.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test and QA plan</h2>
+    <ul>
+      <li><code>npm test</code> (or the repository’s configured frontend test command) — all existing tests pass plus new API/session and refresh aggregation cases.</li>
+      <li><code>npm run build</code> — production frontend build succeeds.</li>
+      <li><code>go test ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code> — backend and repository checks pass.</li>
+      <li>Browser QA: authenticated bootstrap/events; expired Authentik session during refresh; one calendar returning 202 while another redirects; cached events remain visible; top-level re-authentication returns to the calendar.</li>
+      <li>Production verification, only after explicit deploy approval: inspect Traefik status codes, application health, and one real refresh path without changing credentials or deleting cached data.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and edge cases</h2>
+    <ul>
+      <li>A redirect may happen after some concurrent refreshes have already been accepted; the UI must not blindly retry those mutations.</li>
+      <li>Top-level navigation can discard unsaved event-form state; session-loss messaging must make that tradeoff explicit.</li>
+      <li>Changing Traefik or Authentik behavior could affect every protected service; this plan defaults to a client-side fix and treats infrastructure changes as out of scope.</li>
+      <li>Browser extensions, service workers, and mobile WebViews may expose redirects differently; tests must include the supported browser path.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <p>Revert the client/API changes as one release unit. Do not delete quarantine rows, cached events, sync state, OAuth tokens, or Docker volumes. If a production deploy is made later, redeploy the previously verified immutable image digest.</p>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <ul>
+      <li>Should session expiry always navigate to <code>/app</code>, or should the UI first show a confirmation when an edit form is dirty?</li>
+      <li>Do we want a backend JSON <code>401</code> contract through a separate API route, or is client-side redirect classification sufficient for this single-user deployment?</li>
+      <li>Should refresh results show calendar names, provider names, or both on mobile?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p><strong>Gate approved by the user on 2026-08-24.</strong> The implementation record below captures the local changes and checks. No commit, push, Traefik/Authentik change, or deployment is authorized by this plan alone.</p>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <p>The approved client and application slices are implemented locally. API requests now use manual redirect handling and classify an opaque Authentik redirect as <code>session_expired</code>; refresh requests preserve queued, session-expired, and failed outcomes per calendar. Application-generated UI JSON errors carry <code>origin: "application"</code> and only sanitized enum/status fields are logged. ForwardAuth/Traefik behavior was intentionally not changed.</p>
+    <p><strong>Checks:</strong> frontend 24 tests and production build passed; <code>go test ./... -count=1</code>, <code>go vet ./...</code>, and <code>git diff --check</code> passed outside the sandbox. The sandbox-only Go run could not bind IPv6 <code>httptest</code> listeners.</p>
+    <p><strong>Remaining limitation:</strong> if ForwardAuth intercepts a request before it reaches the application, only the client can recover by top-level navigation; changing the proxy policy remains a separate, higher-blast-radius decision.</p>
+  </section>
+</main>
+</body>
+</html>
