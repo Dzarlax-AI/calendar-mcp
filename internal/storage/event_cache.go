@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 
 	"calendar-mcp/internal/calendar"
 )
+
+const maxRawEventArtifactBytes = 256 << 10
 
 var ErrCalendarSyncLeaseLost = errors.New("calendar sync lease is no longer owned by this worker")
 
@@ -845,6 +849,72 @@ func upsertEventSyncWarning(ctx context.Context, s *Store, tx *sql.Tx, calendarI
 			repair_attempts=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN 0 ELSE calendar_sync_quarantine.repair_attempts END,
 			active=excluded.active`), calendarID, warning.ObjectID, warning.ETag, warning.ErrorCode, now, now, now, true); err != nil {
 		return fmt.Errorf("upsert event sync quarantine: %w", err)
+	}
+	if warning.Diagnostic != nil && s.artifactCipher != nil {
+		if err := upsertRawEventArtifact(ctx, s, tx, calendarID, warning.ObjectID, warning.ETag, *warning.Diagnostic, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func upsertRawEventArtifact(ctx context.Context, s *Store, tx *sql.Tx, calendarID, objectID, etag string, diagnostic calendar.EventSyncDiagnostic, now time.Time) error {
+	payload := diagnostic.RawPayload
+	truncated := diagnostic.Truncated
+	if len(payload) > maxRawEventArtifactBytes {
+		payload = payload[:maxRawEventArtifactBytes]
+		truncated = true
+	}
+	hash := sha256.Sum256(diagnostic.RawPayload)
+	encrypted, err := s.artifactCipher.Encrypt(payload, []byte("calendar-sync-artifact\x00"+calendarID+"\x00"+objectID+"\x00"+etag))
+	if err != nil {
+		return fmt.Errorf("encrypt raw event artifact: %w", err)
+	}
+	expires := now.Add(7 * 24 * time.Hour)
+	_, err = tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_raw_artifacts
+		(calendar_id, object_id, etag, payload_ciphertext, payload_sha256, content_type, provider_status, provider_reason, truncated, captured_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(calendar_id, object_id, etag) DO UPDATE SET payload_ciphertext=excluded.payload_ciphertext,
+		payload_sha256=excluded.payload_sha256, content_type=excluded.content_type, provider_status=excluded.provider_status,
+		provider_reason=excluded.provider_reason, truncated=excluded.truncated, captured_at=excluded.captured_at, expires_at=excluded.expires_at`),
+		calendarID, objectID, etag, encrypted, hex.EncodeToString(hash[:]), diagnostic.ContentType, diagnostic.ProviderStatus, diagnostic.ProviderReason, truncated, now, expires)
+	if err != nil {
+		return fmt.Errorf("upsert raw event artifact: %w", err)
+	}
+	return nil
+}
+
+// GetRawEventSyncArtifact is an operator-only diagnostic read. The database
+// stores ciphertext; decryption happens only after the caller supplies the
+// exact calendar/object identity used as AES-GCM associated data.
+func (s *Store) GetRawEventSyncArtifact(ctx context.Context, calendarID, objectID string) (*RawEventSyncArtifact, error) {
+	if s.artifactCipher == nil || calendarID == "" || objectID == "" {
+		return nil, ErrNotFound
+	}
+	var artifact RawEventSyncArtifact
+	var encrypted []byte
+	var truncated bool
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT calendar_id, object_id, etag, payload_ciphertext, payload_sha256, content_type, provider_status, provider_reason, truncated, captured_at, expires_at
+		FROM calendar_sync_raw_artifacts WHERE calendar_id=? AND object_id=? AND expires_at>? ORDER BY captured_at DESC LIMIT 1`), calendarID, objectID, time.Now().UTC()).Scan(
+		&artifact.CalendarID, &artifact.ObjectID, &artifact.ETag, &encrypted, &artifact.PayloadSHA256, &artifact.ContentType, &artifact.ProviderStatus, &artifact.ProviderReason, &truncated, &artifact.CapturedAt, &artifact.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read raw event artifact: %w", err)
+	}
+	decoded, err := s.artifactCipher.Decrypt(encrypted, []byte("calendar-sync-artifact\x00"+calendarID+"\x00"+objectID+"\x00"+artifact.ETag))
+	if err != nil {
+		return nil, fmt.Errorf("decrypt raw event artifact: %w", err)
+	}
+	artifact.RawPayload, artifact.Truncated = decoded, truncated
+	return &artifact, nil
+}
+
+func (s *Store) DeleteExpiredRawEventArtifacts(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, s.query(`DELETE FROM calendar_sync_raw_artifacts WHERE expires_at<=?`), now)
+	if err != nil {
+		return fmt.Errorf("delete expired raw event artifacts: %w", err)
 	}
 	return nil
 }

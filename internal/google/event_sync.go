@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	gcal "google.golang.org/api/calendar/v3"
 	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
@@ -83,6 +85,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 			// coordinator retries it on the bounded degraded cadence.
 			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{
 				Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag,
+				Diagnostic: googleEventDiagnostic(item),
 			})
 			continue
 		}
@@ -133,12 +136,23 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	event := fromGoogleEventV2(item, request.CalendarID, "")
 	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
 	if windowErr != nil {
-		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag}}, nil
+		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item)}}, nil
 	}
 	if !inWindow {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
 	}
 	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
+}
+
+func googleEventDiagnostic(item *gcal.Event) *calendar.EventSyncDiagnostic {
+	if item == nil {
+		return nil
+	}
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return nil
+	}
+	return &calendar.EventSyncDiagnostic{ContentType: "application/json", RawPayload: payload}
 }
 
 func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWindow) (bool, error) {
