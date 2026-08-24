@@ -30,6 +30,30 @@ func readEventSyncDiagnosticBody(r io.Reader) ([]byte, bool, error) {
 	return data, false, err
 }
 
+type diagnosticCaptureReader struct {
+	r         io.Reader
+	data      []byte
+	truncated bool
+}
+
+func (r *diagnosticCaptureReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		remaining := calendar.MaxEventSyncDiagnosticBytes - len(r.data)
+		if remaining > 0 {
+			keep := n
+			if keep > remaining {
+				keep = remaining
+			}
+			r.data = append(r.data, p[:keep]...)
+		}
+		if len(r.data) == calendar.MaxEventSyncDiagnosticBytes && n > remaining {
+			r.truncated = true
+		}
+	}
+	return n, err
+}
+
 // EventSyncPolicy supplies conservative defaults for Apple CalDAV. Sync
 // collection availability varies by calendar, so polling remains slower than
 // the API-native Google and Microsoft delta feeds.
@@ -435,19 +459,21 @@ func (p *Provider) fetchEventSyncObject(ctx context.Context, path, etag string) 
 		responseETag = etag
 	}
 
-	data, truncated, err := readEventSyncDiagnosticBody(resp.Body)
-	if err != nil {
-		return nil, false, false, nil, appleEventSyncError(calendar.EventSyncTransient)
-	}
 	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || !strings.EqualFold(mediaType, ical.MIMEType) {
 		// A successful HTTP response with an absent or unrelated media type is
 		// a protocol failure, not malformed iCalendar. Treating it as a
 		// recoverable object would hide HTML/login/proxy responses and could
 		// silently discard a valid resource whose representation was wrong.
+		data, truncated, readErr := readEventSyncDiagnosticBody(resp.Body)
+		if readErr != nil {
+			return nil, false, false, nil, appleEventSyncError(calendar.EventSyncTransient)
+		}
 		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data, Truncated: truncated}, nil
 	}
-	container, valid := decodeAppleEventSyncCalendar(data)
+	capture := &diagnosticCaptureReader{r: resp.Body}
+	container, valid := decodeAppleEventSyncCalendarReader(capture)
+	data, truncated := capture.data, capture.truncated
 	if !valid {
 		return &caldav.CalendarObject{Path: path, ETag: responseETag}, false, true, &calendar.EventSyncDiagnostic{ProviderStatus: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), RawPayload: data, Truncated: truncated}, nil
 	}
@@ -494,13 +520,17 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 // also reach one of its parser panics. An individual remote resource must not
 // take down an otherwise valid sync page.
 func decodeAppleEventSyncCalendar(data []byte) (container *ical.Calendar, valid bool) {
+	return decodeAppleEventSyncCalendarReader(bytes.NewReader(data))
+}
+
+func decodeAppleEventSyncCalendarReader(reader io.Reader) (container *ical.Calendar, valid bool) {
 	defer func() {
 		if recover() != nil {
 			container = nil
 			valid = false
 		}
 	}()
-	container, err := ical.NewDecoder(bytes.NewReader(data)).Decode()
+	container, err := ical.NewDecoder(reader).Decode()
 	return container, err == nil
 }
 
