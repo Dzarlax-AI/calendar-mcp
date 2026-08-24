@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -122,9 +122,10 @@ type EventSyncBatch struct {
 // EventSyncWarning is the storage-safe representation of an object-scoped
 // protocol degradation. It deliberately contains no provider payload.
 type EventSyncWarning struct {
-	ObjectID  string
-	ETag      string
-	ErrorCode string
+	ObjectID   string
+	ETag       string
+	ErrorCode  string
+	Diagnostic *calendar.EventSyncDiagnostic
 }
 
 // CalendarSyncQuarantine persists an unresolved, repairable provider object.
@@ -135,6 +136,14 @@ type CalendarSyncQuarantine struct {
 	FirstSeenAt, LastSeenAt, NextRepairAt time.Time
 	RepairAttempts                        int
 	Active                                bool
+}
+
+type RawEventSyncArtifact struct {
+	CalendarID, ObjectID, ETag, PayloadSHA256, ContentType, ProviderReason string
+	ProviderStatus                                                         int
+	RawPayload                                                             []byte
+	Truncated                                                              bool
+	CapturedAt, ExpiresAt                                                  time.Time
 }
 
 // EventSyncRepairBatch is one already-fetched repair result. Outcome is kept

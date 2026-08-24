@@ -54,6 +54,7 @@ func Serve(_ context.Context) error {
 		if err := platformStore.Migrate(context.Background()); err != nil {
 			return fmt.Errorf("migrate storage: %w", err)
 		}
+		platformStore.SetArtifactCipher(cipher)
 		connectionService = connections.New(platformStore, cipher)
 	}
 

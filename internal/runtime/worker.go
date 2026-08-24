@@ -54,6 +54,7 @@ func Worker(ctx context.Context) error {
 	if err := store.CheckSchema(ctx); err != nil {
 		return err
 	}
+	store.SetArtifactCipher(cipher)
 	var listenConfig net.ListenConfig
 	healthListener, err := listenConfig.Listen(ctx, "tcp", cfg.WorkerHealthAddr)
 	if err != nil {
@@ -114,6 +115,9 @@ func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory
 		if err := cfg.ValidateEventReadModel(); err != nil {
 			return fmt.Errorf("event read-model configuration: %w", err)
 		}
+	}
+	if err := store.DeleteExpiredRawEventArtifacts(ctx, now); err != nil {
+		return err
 	}
 	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
 		// EventSyncError.Error exposes only bounded provider status/reason fields;

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Calendar Sync Raw Artifacts</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; } code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; } .approval { border-left: 4px solid #d97706; }
+    table { width: 100%; border-collapse: collapse; } th, td { text-align: left; vertical-align: top; border-bottom: 1px solid #e5e7eb; padding: 9px; }
+    li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Calendar Sync Raw Artifacts</h1>
+  <p class="badge">Approval required before implementation</p>
+
+  <section><h2>Task summary</h2>
+    <p>Add a bounded, encrypted raw-artifact store for object-level calendar sync failures so malformed Apple <code>.ics</code> and Google event responses can be inspected and repaired without losing the existing cached read model.</p>
+  </section>
+
+  <section><h2>Current behavior</h2>
+    <ul>
+      <li><code>cached_events.payload_json</code> contains only normalized <code>EventV2</code>; it is not raw provider data.</li>
+      <li><code>calendar_sync_quarantine</code> stores object ID, ETag, error code, timestamps, and retry counters, but no payload or provider reason.</li>
+      <li>Apple reads the response body in <code>internal/apple/event_sync.go</code>, then discards it when media type or iCalendar parsing fails. The current production Apple calendar reproduces 11 such objects.</li>
+      <li>Google warnings similarly preserve only a bounded object identity and protocol code.</li>
+    </ul>
+  </section>
+
+  <section><h2>Desired behavior and boundaries</h2>
+    <ul>
+      <li>On an object-scoped protocol failure, retain a diagnostic artifact linked to the quarantine row.</li>
+      <li>Store raw bytes encrypted with the existing <code>CALENDAR_ENCRYPTION_KEY</code>; never put raw provider payload into ordinary event JSON or logs.</li>
+      <li>Cap raw payload size at 256 KiB. Persist a SHA-256, content type, HTTP status, bounded provider reason, truncation flag, and capture/expiry timestamps.</li>
+      <li>Keep normal event reads and cached-event behavior unchanged. Existing quarantined rows are populated on their next repair attempt; no production data rewrite is required.</li>
+      <li>Provide an internal, authenticated diagnostic read path or operator query that decrypts one artifact only after explicit authorization; do not expose it in the normal calendar UI.</li>
+    </ul>
+  </section>
+
+  <section><h2>Likely files</h2>
+    <ul>
+      <li><code>internal/calendar/event_sync.go</code> — extend the internal warning/diagnostic contract without exposing raw payload in errors.</li>
+      <li><code>internal/apple/event_sync.go</code>, <code>internal/google/event_sync.go</code> — attach bounded raw bytes and provider metadata at the failure boundary.</li>
+      <li><code>internal/credentials/crypto.go</code> or a small adjacent helper — use AES-GCM with artifact-specific associated data.</li>
+      <li><code>internal/storage/models.go</code>, <code>internal/storage/event_cache.go</code> — persist, read, expire, and transactionally link artifacts to quarantine.</li>
+      <li><code>internal/storage/migrations/postgres/004_event_sync_raw_artifacts.sql</code> and SQLite equivalent — add the artifact table and indexes.</li>
+      <li><code>internal/web/api.go</code> and focused API tests — authenticated operator-only diagnostic read path, if the existing API surface supports it without widening permissions.</li>
+      <li><code>internal/apple/event_sync_test.go</code>, <code>internal/google/event_sync_test.go</code>, <code>internal/storage/event_cache_test.go</code> — provider fixtures, encryption, truncation, expiry, and quarantine linkage.</li>
+    </ul>
+  </section>
+
+  <section><h2>Implementation steps</h2>
+    <ol>
+      <li>Freeze a provider-neutral diagnostic type: object ID/ETag, status, content type, bounded reason, raw bytes, hash, and truncation state. Keep cursors, credentials, URLs, and response bodies out of errors/logs.</li>
+      <li>Add the encrypted artifact table keyed by <code>(calendar_id, object_id, etag)</code>, with <code>expires_at</code> and a lookup index for active quarantine.</li>
+      <li>Capture raw bytes before parsing in Apple and at the equivalent Google object failure boundary; apply the size cap and hash before storage.</li>
+      <li>Make the quarantine transaction upsert the artifact and quarantine row atomically. On a changed ETag, replace the artifact and reset retry metadata.</li>
+      <li>Add bounded cleanup of expired artifacts and a narrowly authenticated diagnostic read operation. Do not add raw payloads to ordinary list-events responses.</li>
+      <li>Run focused tests, then the repository race suite and vet. Update this plan with actual changes and limitations after implementation.</li>
+    </ol>
+  </section>
+
+  <section><h2>Model-led execution strategy</h2>
+    <table>
+      <tr><th>Workstream</th><th>Primary model</th><th>Effort</th><th>Ownership</th><th>Gate</th></tr>
+      <tr><td>Contract, migration, storage encryption</td><td>gpt-5.6-terra</td><td>high</td><td>calendar sync types, credentials helper, storage models/queries, migrations</td><td>Coordinator checks schema invariants and privacy boundaries</td></tr>
+      <tr><td>Provider capture fixtures</td><td>gpt-5.6-luna</td><td>medium</td><td>Apple/Google adapter tests and bounded-payload fixtures only</td><td>Must compile against the frozen contract; no production access</td></tr>
+      <tr><td>Diagnostic read path and focused QA</td><td>gpt-5.6-terra</td><td>medium</td><td>web handler/tests and integration checks</td><td>Coordinator verifies authorization and no raw leakage in normal UI</td></tr>
+      <tr><td>Cross-cutting integration/release decision</td><td>Root coordinator</td><td>low</td><td>diff review, full tests, PR preparation</td><td>Sol is not required for implementation; use only if an unresolved security or data-contract ambiguity remains</td></tr>
+    </table>
+    <p>Target allocation: at least 90% of delegable implementation work to Terra/Luna; Sol owns no implementation lane by default.</p>
+  </section>
+
+  <section><h2>Tests and QA</h2>
+    <ul>
+      <li>Provider fixture proves malformed/non-<code>text/calendar</code> responses retain bounded diagnostics while valid events still sync.</li>
+      <li>Storage test proves ciphertext is not plaintext, decrypts with the correct associated data, rejects tampering, replaces on ETag change, and expires after retention.</li>
+      <li>Quarantine test proves artifact and quarantine state commit together and retry behavior remains unchanged.</li>
+      <li>API test proves only the authenticated operator path can read one artifact and normal event endpoints never include raw data.</li>
+      <li><code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, and <code>git diff --check</code>.</li>
+      <li>Manual QA uses the local read-only Apple harness and verifies the 11 current objects become inspectable without mutating provider events.</li>
+    </ul>
+  </section>
+
+  <section class="risk"><h2>Risks and rollback</h2>
+    <ul>
+      <li>Raw calendar data is sensitive. Encryption, size limits, retention, and strict authorization are mandatory; plaintext logging is forbidden.</li>
+      <li>Provider payloads can be HTML/proxy errors rather than iCalendar/JSON. Store bounded bytes plus metadata, never assume the media type.</li>
+      <li>Artifact storage must not block or fail an otherwise valid sync page. If artifact persistence fails, preserve the existing safe quarantine path and surface a storage error.</li>
+      <li>Rollback is a code/image rollback; the additive table may remain unused. A follow-up migration can delete expired artifacts, but no cached events or provider objects should be deleted.</li>
+    </ul>
+  </section>
+
+  <section><h2>Open questions</h2>
+    <ul>
+      <li>Should the diagnostic read path be a backend-only admin endpoint, or is SQL/operator tooling sufficient for this PR?</li>
+      <li>Is a 7-day or 30-day raw retention period acceptable?</li>
+      <li>Should the 256 KiB cap be configurable, or fixed to keep the security review small?</li>
+    </ul>
+  </section>
+
+  <section class="approval"><h2>Approval gate</h2>
+    <p>Implementation was approved and completed in the working tree. The change is additive, read-only with respect to providers, and does not include deployment or production data cleanup.</p>
+  </section>
+
+  <section><h2>Implementation result</h2>
+    <ul>
+      <li>Added schema version 4 with encrypted raw-artifact tables for PostgreSQL and SQLite.</li>
+      <li>Apple and Google protocol warnings now carry bounded diagnostics into storage; AES-GCM encryption, SHA-256, 256 KiB cap, and seven-day expiry are enforced.</li>
+      <li>Worker cleanup removes expired artifacts. An authenticated <code>GET /api/ui/sync-artifact?calendar_id=...&amp;object_id=...</code> diagnostic read path returns base64 payload plus metadata; ordinary event APIs are unchanged.</li>
+      <li>Added provider and storage regression coverage. No provider CRUD, production database cleanup, commit, push, merge, or deploy was performed.</li>
+      <li>Checks passed: <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code>.</li>
+    </ul>
+    <p>Known limitation: currently captured provider reason is populated only when an adapter has a bounded reason available; Apple malformed iCalendar failures expose status/content-type/raw bytes but not a fabricated human title.</p>
+  </section>
+</main>
+</body>
+</html>

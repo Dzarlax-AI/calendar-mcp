@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,20 @@ type uiEventsResponse struct {
 	Items    []uiEvent        `json:"items"`
 	Complete bool             `json:"complete"`
 	Sources  []uiSourceStatus `json:"sources"`
+}
+
+type uiRawSyncArtifact struct {
+	CalendarID     string    `json:"calendar_id"`
+	ObjectID       string    `json:"object_id"`
+	ETag           string    `json:"etag,omitempty"`
+	PayloadBase64  string    `json:"payload_base64"`
+	PayloadSHA256  string    `json:"payload_sha256"`
+	ContentType    string    `json:"content_type,omitempty"`
+	ProviderStatus int       `json:"provider_status,omitempty"`
+	ProviderReason string    `json:"provider_reason,omitempty"`
+	Truncated      bool      `json:"truncated"`
+	CapturedAt     time.Time `json:"captured_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 type uiOperationResult struct {
@@ -207,6 +222,29 @@ func (s *Server) controlPlane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, control)
+}
+
+func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireApplication(); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	if s.store == nil {
+		writeUIAPIError(w, errors.New("raw sync artifacts are unavailable"))
+		return
+	}
+	calendarID := strings.TrimSpace(r.URL.Query().Get("calendar_id"))
+	objectID := strings.TrimSpace(r.URL.Query().Get("object_id"))
+	artifact, err := s.store.GetRawEventSyncArtifact(r.Context(), calendarID, objectID)
+	if errors.Is(err, storage.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	writeUIJSON(w, http.StatusOK, uiRawSyncArtifact{CalendarID: artifact.CalendarID, ObjectID: artifact.ObjectID, ETag: artifact.ETag, PayloadBase64: base64.StdEncoding.EncodeToString(artifact.RawPayload), PayloadSHA256: artifact.PayloadSHA256, ContentType: artifact.ContentType, ProviderStatus: artifact.ProviderStatus, ProviderReason: artifact.ProviderReason, Truncated: artifact.Truncated, CapturedAt: artifact.CapturedAt, ExpiresAt: artifact.ExpiresAt})
 }
 
 func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
