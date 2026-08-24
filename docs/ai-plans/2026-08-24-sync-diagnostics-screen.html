@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Sync diagnostics screen</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5b6578; --line:#dfe4ec; --card:#fff; --bg:#f5f7fb; --blue:#315ee8; --amber:#b45309; --red:#c2413a; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1080px; margin:0 auto; padding:32px 20px 56px; } section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:22px 24px; margin:16px 0; box-shadow:0 2px 8px #17203308; }
+    h1,h2 { line-height:1.2; } h1 { margin-bottom:6px; } h2 { margin-top:0; } code { background:#eef1f6; border-radius:4px; padding:2px 5px; } li { margin:7px 0; }
+    .badge { display:inline-block; background:#fff3d6; color:#8a4b08; border:1px solid #f4d49a; border-radius:999px; padding:4px 10px; font-weight:650; font-size:12px; }
+    .callout { border-left:4px solid var(--blue); background:#f0f4ff; padding:12px 15px; border-radius:6px; } .risk { border-left:4px solid var(--red); } .approval { border-left:4px solid var(--amber); background:#fffaf0; }
+    table { width:100%; border-collapse:collapse; } th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 8px; } th { color:var(--muted); font-size:13px; }
+  </style>
+</head>
+<body><main>
+  <h1>Sync diagnostics screen</h1>
+  <span class="badge">Approval required before implementation</span>
+
+  <section><h2>Task summary</h2><p>Add a protected, read-only-first diagnostics area for calendar sync degradation. It should let the operator identify failed calendars, inspect quarantine metadata and bounded raw provider payloads, then optionally request a bounded repair retry without exposing diagnostics to ordinary users or ordinary calendar APIs.</p></section>
+
+  <section><h2>Current behavior</h2><ul>
+    <li>The React UI is under <code>frontend/src/</code> and receives calendar/source status through <code>GET /api/ui/bootstrap</code>.</li>
+    <li>Raw artifacts are encrypted in <code>calendar_sync_raw_artifacts</code>; storage already exposes <code>GetRawEventSyncArtifact</code>.</li>
+    <li><code>POST /api/ui/sync-artifact</code> exists, accepts identifiers in the JSON body, and is fail-closed against <code>RawArtifactOperators</code> plus UI CSRF/auth middleware. There is no diagnostics screen or quarantine-list endpoint.</li>
+    <li>The trusted identity comes from Authentik's <code>X-authentik-username</code>; direct access around the reverse proxy must remain impossible.</li>
+  </ul></section>
+
+  <section><h2>Desired behavior</h2><ul>
+    <li>Add an authenticated <code>/diagnostics</code> route visible only to the configured diagnostics operator (prefer an explicit username allowlist first; group-based access is a later option).</li>
+    <li>Show summary counts and a table grouped by calendar: display name, provider, status, active quarantine count, last successful sync, last error, and next repair.</li>
+    <li>Show object details on demand: opaque object ID, ETag, error class, capture time, provider status/content type, truncation flag, and a redacted/escaped raw payload viewer.</li>
+    <li>Keep raw payload retrieval on a dedicated no-store API. Do not put calendar/object identifiers in URLs, ordinary bootstrap JSON, logs, or client analytics.</li>
+    <li>For the first version, make repair an explicit, bounded action that requeues or schedules one object and reports confirmed/failed outcomes. Do not add bulk delete or automatic mutation controls.</li>
+  </ul></section>
+
+  <section><h2>Scope and likely files</h2><table><thead><tr><th>Area</th><th>Likely files</th><th>Purpose</th></tr></thead><tbody>
+    <tr><td>React UI</td><td><code>frontend/src/app/App.tsx</code>, <code>frontend/src/features/diagnostics/*</code>, <code>frontend/src/lib/api.ts</code>, <code>frontend/src/lib/types.ts</code>, <code>frontend/src/styles/app.css</code></td><td>Route, navigation item, list/detail states, responsive payload viewer, safe error/loading/empty states.</td></tr>
+    <tr><td>HTTP API</td><td><code>internal/web/server.go</code>, <code>internal/web/api.go</code></td><td>Operator authorization, quarantine summary/detail endpoints, explicit repair endpoint, no-store and CSRF policy.</td></tr>
+    <tr><td>Storage</td><td><code>internal/storage/event_cache.go</code>, <code>internal/storage/models.go</code></td><td>Read-only list/detail queries with bounded pagination; preserve encrypted payload handling.</td></tr>
+    <tr><td>Configuration/deploy</td><td><code>internal/config/config.go</code>, <code>internal/runtime/serve.go</code>, <code>personal_ai_stack/deploy/calendar-mcp/.env.example</code></td><td>Document and pass the explicit operator allowlist; never print or overwrite secrets.</td></tr>
+  </tbody></table></section>
+
+  <section><h2>Implementation steps</h2><ol>
+    <li>Confirm the Authentik username delivered for the operator and document the exact <code>UI_RAW_ARTIFACT_USERS</code> value; keep the allowlist fail-closed.</li>
+    <li>Add storage queries for paginated active quarantine rows joined to calendar names, plus one-object artifact metadata/detail lookup.</li>
+    <li>Add protected GET endpoints for summaries/details and a CSRF-protected POST endpoint for one explicit repair request. Use opaque body fields, strict limits, and no-store headers.</li>
+    <li>Add the React diagnostics route and navigation entry. Render payload as escaped text with clear truncated/expired/not-found states; never execute HTML or JavaScript from provider data.</li>
+    <li>Add operator-only tests for missing/incorrect identity, allowed identity, CSRF failures, pagination, empty results, expired artifacts, and repair outcomes.</li>
+    <li>Build the frontend, run Go/TypeScript tests, deploy the reviewed immutable image, and verify the authenticated diagnostics path with a real browser session.</li>
+  </ol></section>
+
+  <section><h2>Model allocation and review gates</h2><p>The default is to minimize Sol usage while keeping explicit security and architecture gates.</p><table><thead><tr><th>Lane</th><th>Model / effort</th><th>Scope</th><th>Exit evidence</th></tr></thead><tbody>
+    <tr><td>UI implementation</td><td><strong>Luna / medium</strong></td><td>React route, responsive diagnostics list/detail, loading/error/empty states, escaped payload viewer.</td><td>Frontend typecheck, unit tests, desktop/mobile smoke checklist.</td></tr>
+    <tr><td>Backend and storage</td><td><strong>Terra / medium</strong></td><td>Paginated quarantine queries, operator-only endpoints, CSRF/no-store enforcement, bounded repair request, Go tests.</td><td>Targeted Go tests, migration/query review, no secret or identifier leakage.</td></tr>
+    <tr><td>Integration and deployment checks</td><td><strong>Terra / low</strong></td><td>Config wiring, compose/env.example updates, local API contract checks, immutable-image deployment checklist.</td><td>Go vet, frontend build, diff scan, sanitized production smoke evidence.</td></tr>
+    <tr><td>Final security/architecture review</td><td><strong>Sol / medium, one pass</strong></td><td>Review only the cumulative diff and test evidence: Authentik trust boundary, raw payload exposure, repair idempotency, and rollback.</td><td>Sol verdict; fix only actionable blockers, then one final verification pass.</td></tr>
+  </tbody></table><div class="callout"><strong>Coordination rule:</strong> Luna and Terra may work in parallel on disjoint files. The root agent integrates and verifies. Sol is not used for routine implementation or repeated re-review unless a material security/architecture blocker appears.</div></section>
+
+  <section><h2>Security, data, and UX impact</h2><div class="callout"><strong>Trust boundary:</strong> Authentik/Traefik must strip any client-supplied identity header and set the authenticated value. The application must remain unreachable directly from the public network.</div><ul>
+    <li>Raw artifacts may contain private event data; access is operator-only, responses are no-store, and payloads remain encrypted at rest.</li>
+    <li>Identifiers stay in POST bodies or server-rendered state, not query strings or links.</li>
+    <li>Mobile layout should prioritize calendar health and a short “why degraded” summary; raw payload is a collapsible secondary view.</li>
+    <li>Repair is not a blind retry: the UI must display the exact target and confirmed enqueue/repair result.</li>
+  </ul></section>
+
+  <section><h2>Test and manual QA plan</h2><ul>
+    <li><code>go test ./internal/web ./internal/storage ./internal/runtime ./internal/eventsync</code></li>
+    <li><code>npm --prefix frontend run typecheck</code> and <code>npm --prefix frontend test</code></li>
+    <li><code>go vet ./...</code> and <code>git diff --check</code></li>
+    <li>Unauthenticated request redirects through Authentik; non-allowlisted authenticated user receives no data.</li>
+    <li>Allowlisted user sees degraded calendars, opens one object, views escaped payload metadata, and sees truncation/expiry states correctly.</li>
+    <li>Mobile and desktop smoke checks; verify refresh does not expose identifiers in the address bar or browser history.</li>
+    <li>After deployment: verify container health, sanitized logs, authenticated diagnostics route, and unchanged calendar/MCP paths.</li>
+  </ul></section>
+
+  <section class="risk"><h2>Risks and rollback</h2><ul>
+    <li><strong>Overexposure:</strong> a broad allowlist or bypassed proxy could reveal private events. Mitigation: explicit identity, fail-closed tests, ForwardAuth-only route.</li>
+    <li><strong>Payload rendering:</strong> provider content must be treated as untrusted text. Mitigation: escaped preformatted output and strict response limits.</li>
+    <li><strong>Repair amplification:</strong> repeated manual retries could worsen provider throttling. Mitigation: one-object cooldown and server-side rate limits.</li>
+    <li><strong>Rollback:</strong> remove the diagnostics navigation/route and API handlers, keep existing encrypted artifacts and quarantine rows, and redeploy the previous immutable image. No destructive data migration is required for the first version.</li>
+  </ul></section>
+
+  <section><h2>Open questions</h2><ul>
+    <li>What exact Authentik username should be placed in <code>UI_RAW_ARTIFACT_USERS</code>?</li>
+    <li>Should the first release include the repair button, or remain strictly read-only until the event-specific failure policy is clearer?</li>
+    <li>Should diagnostics be linked from the existing Dashboard “Needs attention” card or remain a separate navigation item?</li>
+  </ul></section>
+
+  <section class="approval"><h2>Approval gate</h2><p>Implementation must not start until you explicitly approve this plan. Reply with approval plus answers to any open questions, or request changes to scope.</p></section>
+
+  <section><h2>Implementation status</h2>
+    <p><strong>Implemented locally in commit <code>378843b</code>.</strong> The operator-only diagnostics API and responsive React screen are complete; production deployment and the final Sol medium security review remain pending.</p>
+    <ul>
+      <li>Added bounded quarantine list/detail endpoints, encrypted artifact metadata access, and one-object repair scheduling without a provider call.</li>
+      <li>Added fail-closed Authentik username allowlisting, CSRF/no-store protections, and a responsive diagnostics route.</li>
+      <li>Passed Go tests, frontend typecheck/tests/build, <code>go vet ./...</code>, and <code>git diff --check</code>.</li>
+      <li>Before production visibility, configure the intended operator username in <code>UI_RAW_ARTIFACT_USERS</code>.</li>
+    </ul>
+  </section>
+</main></body></html>
