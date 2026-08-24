@@ -45,7 +45,7 @@
   <section><h2>Implementation steps</h2><ol>
     <li>Confirm the Authentik username delivered for the operator and document the exact <code>UI_RAW_ARTIFACT_USERS</code> value; keep the allowlist fail-closed.</li>
     <li>Add storage queries for paginated active quarantine rows joined to calendar names, plus one-object artifact metadata/detail lookup.</li>
-    <li>Add protected GET endpoints for summaries/details and a CSRF-protected POST endpoint for one explicit repair request. Use opaque body fields, strict limits, and no-store headers.</li>
+    <li>Add a protected GET endpoint for the paginated diagnostics list plus CSRF-protected POST endpoints with JSON bodies for detail and one explicit repair request. Keep opaque identifiers out of URLs, enforce strict limits, and use no-store headers.</li>
     <li>Add the React diagnostics route and navigation entry. Render payload as escaped text with clear truncated/expired/not-found states; never execute HTML or JavaScript from provider data.</li>
     <li>Add operator-only tests for missing/incorrect identity, allowed identity, CSRF failures, pagination, empty results, expired artifacts, and repair outcomes.</li>
     <li>Build the frontend, run Go/TypeScript tests, deploy the reviewed immutable image, and verify the authenticated diagnostics path with a real browser session.</li>
@@ -78,7 +78,7 @@
   <section class="risk"><h2>Risks and rollback</h2><ul>
     <li><strong>Overexposure:</strong> a broad allowlist or bypassed proxy could reveal private events. Mitigation: explicit identity, fail-closed tests, ForwardAuth-only route.</li>
     <li><strong>Payload rendering:</strong> provider content must be treated as untrusted text. Mitigation: escaped preformatted output and strict response limits.</li>
-    <li><strong>Repair amplification:</strong> repeated manual retries could worsen provider throttling. Mitigation: one-object cooldown and server-side rate limits.</li>
+    <li><strong>Repair amplification:</strong> repeated manual retries could worsen provider throttling. Mitigation: idempotent one-object repair scheduling.</li>
     <li><strong>Rollback:</strong> remove the diagnostics navigation/route and API handlers, keep existing encrypted artifacts and quarantine rows, and redeploy the previous immutable image. No destructive data migration is required for the first version.</li>
   </ul></section>
 
@@ -88,7 +88,7 @@
     <li>Should diagnostics be linked from the existing Dashboard “Needs attention” card or remain a separate navigation item?</li>
   </ul></section>
 
-  <section class="approval"><h2>Approval gate</h2><p>Implementation must not start until you explicitly approve this plan. Reply with approval plus answers to any open questions, or request changes to scope.</p></section>
+  <section class="approval"><h2>Approval gate</h2><p>Implementation is complete locally. Before production deployment, explicitly approve the deployment and complete the final Sol security/architecture review. Reply with approval or request changes to scope.</p></section>
 
   <section><h2>Implementation status</h2>
     <p><strong>Implemented locally in commit <code>378843b</code>.</strong> The operator-only diagnostics API and responsive React screen are complete; production deployment and the final Sol medium security review remain pending.</p>

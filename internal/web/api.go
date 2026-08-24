@@ -296,7 +296,16 @@ func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	calendarID := strings.TrimSpace(request.CalendarID)
 	objectID := strings.TrimSpace(request.ObjectID)
-	artifact, err := s.store.GetRawEventSyncArtifact(r.Context(), calendarID, objectID)
+	diagnostic, err := s.store.GetActiveEventSyncQuarantineDiagnostic(r.Context(), calendarID, objectID)
+	if errors.Is(err, storage.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	artifact, err := s.store.GetRawEventSyncArtifact(r.Context(), calendarID, objectID, diagnostic.ETag)
 	if errors.Is(err, storage.ErrNotFound) {
 		http.NotFound(w, r)
 		return

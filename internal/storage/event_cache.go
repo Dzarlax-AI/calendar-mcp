@@ -65,7 +65,7 @@ func (s *Store) ListActiveEventSyncQuarantineDiagnostics(ctx context.Context, li
 		JOIN calendars c ON c.id=q.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
 		LEFT JOIN calendar_sync_state s ON s.calendar_id=q.calendar_id
-		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.expires_at>?
+		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.etag=q.etag AND a.expires_at>?
 		WHERE q.active=?
 		ORDER BY q.last_seen_at DESC, q.calendar_id, q.object_id LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, s.query(q), time.Now().UTC(), true, limit, offset)
@@ -100,7 +100,7 @@ func (s *Store) GetActiveEventSyncQuarantineDiagnostic(ctx context.Context, cale
 		JOIN calendars c ON c.id=q.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
 		LEFT JOIN calendar_sync_state s ON s.calendar_id=q.calendar_id
-		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.expires_at>?
+		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.etag=q.etag AND a.expires_at>?
 		WHERE q.calendar_id=? AND q.object_id=? AND q.active=?`
 	item, err := scanEventSyncQuarantineDiagnostic(s.db.QueryRowContext(ctx, s.query(q), time.Now().UTC(), calendarID, objectID, true))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -112,13 +112,19 @@ func (s *Store) GetActiveEventSyncQuarantineDiagnostic(ctx context.Context, cale
 	return &item, nil
 }
 
-// ScheduleEventSyncObjectRepair makes one active object due now. A row that is
+// ScheduleEventSyncObjectRepair makes one active object due now and wakes an
+// unleased calendar so the worker can claim it immediately. A row that is
 // already due is left untouched, making repeated operator requests harmless.
 func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, objectID string, now time.Time) (bool, error) {
 	if calendarID == "" || objectID == "" {
 		return false, ErrNotFound
 	}
-	result, err := s.db.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET next_repair_at=?
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin schedule event sync object repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET next_repair_at=?
 		WHERE calendar_id=? AND object_id=? AND active=? AND next_repair_at>?`), now, calendarID, objectID, true, now)
 	if err != nil {
 		return false, fmt.Errorf("schedule event sync object repair: %w", err)
@@ -127,18 +133,24 @@ func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, o
 	if err != nil {
 		return false, fmt.Errorf("read scheduled event sync object repair: %w", err)
 	}
-	if changed == 1 {
-		return true, nil
-	}
 	var active bool
-	err = s.db.QueryRowContext(ctx, s.query(`SELECT active FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=?`), calendarID, objectID).Scan(&active)
+	err = tx.QueryRowContext(ctx, s.query(`SELECT active FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=?`), calendarID, objectID).Scan(&active)
 	if errors.Is(err, sql.ErrNoRows) || !active {
 		return false, ErrNotFound
 	}
 	if err != nil {
 		return false, fmt.Errorf("read event sync object repair: %w", err)
 	}
-	return false, nil
+	// A parked/future calendar is otherwise invisible to ClaimDueCalendarSync.
+	// Do not disturb an active lease; the current worker owns its schedule.
+	if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET next_sync_at=?, updated_at=?
+		WHERE calendar_id=? AND next_sync_at>? AND (lease_owner IS NULL OR lease_until IS NULL OR lease_until<=?)`), now, now, calendarID, now, now); err != nil {
+		return false, fmt.Errorf("wake calendar for event sync repair: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit event sync object repair: %w", err)
+	}
+	return changed == 1, nil
 }
 
 func scanEventSyncQuarantineDiagnostic(row scanner) (EventSyncQuarantineDiagnostic, error) {
@@ -1001,15 +1013,19 @@ func upsertRawEventArtifact(ctx context.Context, s *Store, tx *sql.Tx, calendarI
 // GetRawEventSyncArtifact is an operator-only diagnostic read. The database
 // stores ciphertext; decryption happens only after the caller supplies the
 // exact calendar/object identity used as AES-GCM associated data.
-func (s *Store) GetRawEventSyncArtifact(ctx context.Context, calendarID, objectID string) (*RawEventSyncArtifact, error) {
+func (s *Store) GetRawEventSyncArtifact(ctx context.Context, calendarID, objectID, expectedETag string) (*RawEventSyncArtifact, error) {
 	if s.artifactCipher == nil || calendarID == "" || objectID == "" {
+		return nil, ErrNotFound
+	}
+	if expectedETag == "" {
 		return nil, ErrNotFound
 	}
 	var artifact RawEventSyncArtifact
 	var encrypted []byte
 	var truncated bool
-	err := s.db.QueryRowContext(ctx, s.query(`SELECT calendar_id, object_id, etag, payload_ciphertext, payload_sha256, content_type, provider_status, provider_reason, truncated, captured_at, expires_at
-		FROM calendar_sync_raw_artifacts WHERE calendar_id=? AND object_id=? AND expires_at>? ORDER BY captured_at DESC LIMIT 1`), calendarID, objectID, time.Now().UTC()).Scan(
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT a.calendar_id, a.object_id, a.etag, a.payload_ciphertext, a.payload_sha256, a.content_type, a.provider_status, a.provider_reason, a.truncated, a.captured_at, a.expires_at
+		FROM calendar_sync_raw_artifacts a JOIN calendar_sync_quarantine q ON q.calendar_id=a.calendar_id AND q.object_id=a.object_id AND q.etag=a.etag
+		WHERE a.calendar_id=? AND a.object_id=? AND q.active=? AND a.etag=? AND a.expires_at>? ORDER BY a.captured_at DESC LIMIT 1`), calendarID, objectID, true, expectedETag, time.Now().UTC()).Scan(
 		&artifact.CalendarID, &artifact.ObjectID, &artifact.ETag, &encrypted, &artifact.PayloadSHA256, &artifact.ContentType, &artifact.ProviderStatus, &artifact.ProviderReason, &truncated, &artifact.CapturedAt, &artifact.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

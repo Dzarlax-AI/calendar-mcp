@@ -1,35 +1,36 @@
 import { useState } from "react";
 import { AlertTriangle, ChevronRight, ShieldAlert } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
-import { getSyncArtifact, getSyncDiagnostics } from "../../lib/api";
+import { getSyncArtifact, getSyncDiagnostics, scheduleSyncRepair } from "../../lib/api";
 import type { SyncArtifact, SyncDiagnosticCalendar, SyncDiagnosticObject } from "../../lib/types";
 import { useBootstrapData } from "../../app/App";
 
 export default function DiagnosticsPage() {
   const bootstrap = useBootstrapData();
   const diagnostics = useQuery({ queryKey: ["sync-diagnostics"], queryFn: getSyncDiagnostics, retry: 1 });
+  const repair = useMutation({ mutationFn: ({ calendarId, objectId }: { calendarId: string; objectId: string }) => scheduleSyncRepair(bootstrap.csrf_token, calendarId, objectId), onSuccess: () => void diagnostics.refetch() });
   const [selected, setSelected] = useState<{ calendar: SyncDiagnosticCalendar; object: SyncDiagnosticObject }>();
   const artifact = useQuery({ queryKey: ["sync-artifact", selected?.calendar.calendar_id, selected?.object.object_id], queryFn: () => getSyncArtifact(bootstrap.csrf_token, selected!.calendar.calendar_id, selected!.object.object_id), enabled: Boolean(selected), retry: false });
   if (diagnostics.isPending) return <main className="diagnostics-page"><LoadingState label="Loading sync diagnostics" /></main>;
   if (diagnostics.isError) return <main className="diagnostics-page"><ErrorState message="The diagnostics service is unavailable or you are not authorized to view it." retry={() => void diagnostics.refetch()} /></main>;
   const data = diagnostics.data;
   return <main className="diagnostics-page">
-    <div className="page-heading"><div><div className="page-kicker">Operator view</div><h1>Sync diagnostics</h1><p>Review degraded calendars and inspect bounded provider artifacts. This view is read-only.</p></div><ShieldAlert className="diagnostics-heading-icon" size={28} aria-hidden="true" /></div>
+    <div className="page-heading"><div><div className="page-kicker">Operator view</div><h1>Sync diagnostics</h1><p>Review degraded calendars, inspect bounded provider artifacts, or schedule a one-object repair.</p></div><ShieldAlert className="diagnostics-heading-icon" size={28} aria-hidden="true" /></div>
     <div className="diagnostics-summary" aria-label="Diagnostics summary">
       <SummaryCard label="Degraded calendars" value={data.summary.degraded_calendars} />
       <SummaryCard label="Active objects" value={data.summary.active_objects} />
       <SummaryCard label="Artifacts available" value={data.summary.artifacts_available} />
     </div>
-    {data.calendars.length === 0 ? <section className="surface-panel"><EmptyState title="No degraded calendars" message="No active sync quarantine objects were reported." /></section> : <div className="diagnostics-calendar-list">{data.calendars.map((calendar) => <CalendarCard key={calendar.calendar_id} calendar={calendar} onSelect={(object) => setSelected({ calendar, object })} />)}</div>}
+    {data.calendars.length === 0 ? <section className="surface-panel"><EmptyState title="No degraded calendars" message="No active sync quarantine objects were reported." /></section> : <div className="diagnostics-calendar-list">{data.calendars.map((calendar) => <CalendarCard key={calendar.calendar_id} calendar={calendar} onSelect={(object) => setSelected({ calendar, object })} onRepair={(object) => repair.mutate({ calendarId: calendar.calendar_id, objectId: object.object_id })} repairing={repair.isPending ? repair.variables?.calendarId === calendar.calendar_id && repair.variables?.objectId !== undefined : false} repairStatus={repair.data && repair.variables?.calendarId === calendar.calendar_id ? repair.data.status : undefined} />)}</div>}
     {selected && <ArtifactDrawer calendar={selected.calendar} object={selected.object} artifact={artifact.data} loading={artifact.isPending} error={artifact.error} onClose={() => setSelected(undefined)} />}
   </main>;
 }
 
 function SummaryCard({ label, value }: { label: string; value: number }) { return <div className="diagnostics-summary-card"><span>{label}</span><strong>{value}</strong></div>; }
 
-function CalendarCard({ calendar, onSelect }: { calendar: SyncDiagnosticCalendar; onSelect: (object: SyncDiagnosticObject) => void }) {
-  return <section className="surface-panel diagnostics-calendar-card"><div className="panel-heading"><div><div className="diagnostics-calendar-title"><h2>{calendar.display_name || "Unnamed calendar"}</h2><span className={`status-pill ${calendar.status === "degraded" || calendar.status === "failed" ? "danger" : "muted"}`}>{calendar.status || "unknown"}</span></div><p>{providerLabel(calendar.provider)} · {calendar.active_quarantine_count} active object{calendar.active_quarantine_count === 1 ? "" : "s"}</p></div><AlertTriangle className="diagnostics-alert" size={18} aria-hidden="true" /></div><div className="diagnostics-meta"><div><span>Last successful sync</span><strong>{formatDate(calendar.last_success_at)}</strong></div><div><span>Last error</span><strong>{calendar.last_error || "No error detail"}</strong></div><div><span>Next repair</span><strong>{formatDate(calendar.next_repair_at)}</strong></div></div><div className="diagnostics-object-list">{calendar.objects.map((object) => <button className="diagnostics-object-row" key={object.object_id} type="button" onClick={() => onSelect(object)}><span><strong>{object.object_id}</strong><small>{object.error_code || "protocol error"} · {object.etag ? `ETag ${object.etag}` : "ETag unavailable"}</small></span><span className="diagnostics-object-action">Inspect <ChevronRight size={15} /></span></button>)}</div></section>;
+function CalendarCard({ calendar, onSelect, onRepair, repairing, repairStatus }: { calendar: SyncDiagnosticCalendar; onSelect: (object: SyncDiagnosticObject) => void; onRepair: (object: SyncDiagnosticObject) => void; repairing: boolean; repairStatus?: string }) {
+  return <section className="surface-panel diagnostics-calendar-card"><div className="panel-heading"><div><div className="diagnostics-calendar-title"><h2>{calendar.display_name || "Unnamed calendar"}</h2><span className={`status-pill ${calendar.status === "degraded" || calendar.status === "failed" ? "danger" : "muted"}`}>{calendar.status || "unknown"}</span></div><p>{providerLabel(calendar.provider)} · {calendar.active_quarantine_count} active object{calendar.active_quarantine_count === 1 ? "" : "s"}</p></div><AlertTriangle className="diagnostics-alert" size={18} aria-hidden="true" /></div><div className="diagnostics-meta"><div><span>Last successful sync</span><strong>{formatDate(calendar.last_success_at)}</strong></div><div><span>Last error</span><strong>{calendar.last_error || "No error detail"}</strong></div><div><span>Next repair</span><strong>{formatDate(calendar.next_repair_at)}</strong></div></div><div className="diagnostics-object-list">{calendar.objects.map((object) => <div className="diagnostics-object-row" key={object.object_id}><button className="diagnostics-object-inspect" type="button" onClick={() => onSelect(object)}><span><strong>{object.object_id}</strong><small>{object.error_code || "protocol error"} · {object.etag ? `ETag ${object.etag}` : "ETag unavailable"}</small></span><span className="diagnostics-object-action">Inspect <ChevronRight size={15} /></span></button><button className="button secondary diagnostics-repair-button" type="button" disabled={repairing} onClick={() => onRepair(object)}>{repairing ? "Scheduling…" : "Repair"}</button></div>)}</div>{repairStatus && <p className="diagnostics-repair-status" role="status">{repairStatus === "scheduled" ? "Repair scheduled." : "Repair was already queued."}</p>}</section>;
 }
 
 function ArtifactDrawer({ calendar, object, artifact, loading, error, onClose }: { calendar: SyncDiagnosticCalendar; object: SyncDiagnosticObject; artifact?: SyncArtifact; loading: boolean; error: Error | null; onClose: () => void }) {
