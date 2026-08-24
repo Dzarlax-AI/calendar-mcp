@@ -77,6 +77,7 @@ export default function CalendarPage() {
     queryKey: ["events", range?.start, range?.end, sortedSelectedCalendarIds],
     queryFn: () => getEvents(range!.start, range!.end, sortedSelectedCalendarIds),
     enabled: Boolean(range && sortedSelectedCalendarIds.length),
+    retry: (failureCount, error) => !isSessionExpiredError(error) && failureCount < 1,
     placeholderData: (previous) => previous,
     refetchInterval: (query) => {
       return eventStatusPollInterval(query.state.data?.sources, pollingAttempts);
