@@ -1,0 +1,42 @@
+import { useState } from "react";
+import { AlertTriangle, ChevronRight, ShieldAlert } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
+import { getSyncArtifact, getSyncDiagnostics } from "../../lib/api";
+import type { SyncArtifact, SyncDiagnosticCalendar, SyncDiagnosticObject } from "../../lib/types";
+import { useBootstrapData } from "../../app/App";
+
+export default function DiagnosticsPage() {
+  const bootstrap = useBootstrapData();
+  const diagnostics = useQuery({ queryKey: ["sync-diagnostics"], queryFn: getSyncDiagnostics, retry: 1 });
+  const [selected, setSelected] = useState<{ calendar: SyncDiagnosticCalendar; object: SyncDiagnosticObject }>();
+  const artifact = useQuery({ queryKey: ["sync-artifact", selected?.calendar.calendar_id, selected?.object.object_id], queryFn: () => getSyncArtifact(bootstrap.csrf_token, selected!.calendar.calendar_id, selected!.object.object_id), enabled: Boolean(selected), retry: false });
+  if (diagnostics.isPending) return <main className="diagnostics-page"><LoadingState label="Loading sync diagnostics" /></main>;
+  if (diagnostics.isError) return <main className="diagnostics-page"><ErrorState message="The diagnostics service is unavailable or you are not authorized to view it." retry={() => void diagnostics.refetch()} /></main>;
+  const data = diagnostics.data;
+  return <main className="diagnostics-page">
+    <div className="page-heading"><div><div className="page-kicker">Operator view</div><h1>Sync diagnostics</h1><p>Review degraded calendars and inspect bounded provider artifacts. This view is read-only.</p></div><ShieldAlert className="diagnostics-heading-icon" size={28} aria-hidden="true" /></div>
+    <div className="diagnostics-summary" aria-label="Diagnostics summary">
+      <SummaryCard label="Degraded calendars" value={data.summary.degraded_calendars} />
+      <SummaryCard label="Active objects" value={data.summary.active_objects} />
+      <SummaryCard label="Artifacts available" value={data.summary.artifacts_available} />
+    </div>
+    {data.calendars.length === 0 ? <section className="surface-panel"><EmptyState title="No degraded calendars" message="No active sync quarantine objects were reported." /></section> : <div className="diagnostics-calendar-list">{data.calendars.map((calendar) => <CalendarCard key={calendar.calendar_id} calendar={calendar} onSelect={(object) => setSelected({ calendar, object })} />)}</div>}
+    {selected && <ArtifactDrawer calendar={selected.calendar} object={selected.object} artifact={artifact.data} loading={artifact.isPending} error={artifact.error} onClose={() => setSelected(undefined)} />}
+  </main>;
+}
+
+function SummaryCard({ label, value }: { label: string; value: number }) { return <div className="diagnostics-summary-card"><span>{label}</span><strong>{value}</strong></div>; }
+
+function CalendarCard({ calendar, onSelect }: { calendar: SyncDiagnosticCalendar; onSelect: (object: SyncDiagnosticObject) => void }) {
+  return <section className="surface-panel diagnostics-calendar-card"><div className="panel-heading"><div><div className="diagnostics-calendar-title"><h2>{calendar.display_name || "Unnamed calendar"}</h2><span className={`status-pill ${calendar.status === "degraded" || calendar.status === "failed" ? "danger" : "muted"}`}>{calendar.status || "unknown"}</span></div><p>{providerLabel(calendar.provider)} · {calendar.active_quarantine_count} active object{calendar.active_quarantine_count === 1 ? "" : "s"}</p></div><AlertTriangle className="diagnostics-alert" size={18} aria-hidden="true" /></div><div className="diagnostics-meta"><div><span>Last successful sync</span><strong>{formatDate(calendar.last_success_at)}</strong></div><div><span>Last error</span><strong>{calendar.last_error || "No error detail"}</strong></div><div><span>Next repair</span><strong>{formatDate(calendar.next_repair_at)}</strong></div></div><div className="diagnostics-object-list">{calendar.objects.map((object) => <button className="diagnostics-object-row" key={object.object_id} type="button" onClick={() => onSelect(object)}><span><strong>{object.object_id}</strong><small>{object.error_code || "protocol error"} · {object.etag ? `ETag ${object.etag}` : "ETag unavailable"}</small></span><span className="diagnostics-object-action">Inspect <ChevronRight size={15} /></span></button>)}</div></section>;
+}
+
+function ArtifactDrawer({ calendar, object, artifact, loading, error, onClose }: { calendar: SyncDiagnosticCalendar; object: SyncDiagnosticObject; artifact?: SyncArtifact; loading: boolean; error: Error | null; onClose: () => void }) {
+  return <div className="diagnostics-backdrop" role="presentation" onClick={onClose}><aside className="diagnostics-drawer" aria-label="Sync object details" role="dialog" onClick={(event) => event.stopPropagation()}><div className="drawer-header"><span>Object details</span><button className="icon-button bordered" type="button" onClick={onClose} aria-label="Close object details">×</button></div><div className="drawer-content"><div className="diagnostics-object-context"><strong>{calendar.display_name}</strong><span>{object.object_id}</span></div><div className="diagnostics-detail-grid"><Detail label="ETag" value={artifact?.etag ?? object.etag} /><Detail label="Error class" value={object.error_code} /><Detail label="Provider status" value={artifact?.provider_status?.toString()} /><Detail label="Content type" value={artifact?.content_type} /><Detail label="Captured" value={formatDate(artifact?.captured_at)} /><Detail label="Expires" value={formatDate(artifact?.expires_at)} /></div>{loading && <LoadingState label="Loading artifact" />}{error && <ErrorState message={error.message || "Artifact is unavailable or expired."} />}{artifact && <><div className="diagnostics-artifact-note">{artifact.truncated ? "Payload truncated to the server safety limit." : "Payload is displayed as escaped text."}</div><pre className="diagnostics-payload" aria-label="Escaped provider payload">{decodePayload(artifact.payload_base64)}</pre>{artifact.provider_reason && <div className="diagnostics-provider-reason"><strong>Provider reason</strong><span>{artifact.provider_reason}</span></div>}</>}</div></aside></div>;
+}
+
+function Detail({ label, value }: { label: string; value?: string }) { return <div><span>{label}</span><strong>{value || "Unavailable"}</strong></div>; }
+function providerLabel(provider: string) { return provider === "microsoft" ? "Microsoft 365" : provider === "google" ? "Google Calendar" : provider === "apple" ? "Apple Calendar" : provider || "Unknown provider"; }
+function formatDate(value?: string | null) { if (!value) return "Unavailable"; const date = new Date(value); return Number.isNaN(date.getTime()) ? "Unavailable" : date.toLocaleString(); }
+function decodePayload(value: string) { try { const bytes = Uint8Array.from(atob(value), (char) => char.charCodeAt(0)); return new TextDecoder().decode(bytes); } catch { return "Payload could not be decoded safely."; } }

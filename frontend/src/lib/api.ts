@@ -1,4 +1,4 @@
-import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncRule } from "./types";
+import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncArtifact, SyncDiagnosticCalendar, SyncDiagnostics, SyncRule } from "./types";
 
 const API_ROOT = "/api/ui";
 const MAX_BROWSER_WARNINGS = 3;
@@ -61,6 +61,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function getBootstrap(): Promise<Bootstrap> {
   return request<RawBootstrap>("/bootstrap").then(normalizeBootstrap);
+}
+
+export function getSyncDiagnostics(): Promise<SyncDiagnostics> {
+  return request<{ items: Array<{ calendar_id: string; object_id: string; etag?: string; error_code?: string; calendar_name?: string; provider?: string; sync_status?: string; last_error_code?: string; first_seen_at?: string; last_seen_at?: string; next_repair_at?: string; repair_attempts?: number; last_success_at?: string | null; artifact?: { etag?: string } | null }> }>("/diagnostics/quarantine?limit=100").then((raw) => {
+    const grouped = new Map<string, SyncDiagnosticCalendar>();
+    for (const item of raw.items ?? []) {
+      const calendar = grouped.get(item.calendar_id) ?? { calendar_id: item.calendar_id, display_name: item.calendar_name ?? item.calendar_id, provider: item.provider ?? "", status: item.sync_status ?? "degraded", active_quarantine_count: 0, last_success_at: item.last_success_at, last_error: item.last_error_code, next_repair_at: item.next_repair_at, objects: [] };
+      calendar.active_quarantine_count += 1;
+      calendar.objects.push({ object_id: item.object_id, etag: item.etag, error_code: item.error_code, first_seen_at: item.first_seen_at, last_seen_at: item.last_seen_at, next_repair_at: item.next_repair_at, repair_attempts: item.repair_attempts, artifact_available: Boolean(item.artifact) });
+      grouped.set(item.calendar_id, calendar);
+    }
+    const calendars = [...grouped.values()];
+    return { summary: { degraded_calendars: calendars.length, active_objects: raw.items?.length ?? 0, artifacts_available: calendars.reduce((count, calendar) => count + calendar.objects.filter((object) => object.artifact_available).length, 0) }, calendars };
+  });
+}
+
+export function getSyncArtifact(csrfToken: string, calendarId: string, objectId: string): Promise<SyncArtifact> {
+  return request<SyncArtifact>("/sync-artifact", { method: "POST", headers: csrfHeaders(csrfToken), body: JSON.stringify({ calendar_id: calendarId, object_id: objectId }) });
 }
 
 export function getEvents(start: string, end: string, calendarIds: string[]): Promise<EventListResponse> {

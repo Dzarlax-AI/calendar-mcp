@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,10 +23,11 @@ import (
 // API. In particular, it never serializes attendee, conferencing, reminder,
 // attachment, credential, or MCP key data.
 const (
-	maxUIEventPages       = 100
-	maxUIRequestBodyBytes = 64 << 10
-	maxUIEventRange       = 93 * 24 * time.Hour
-	uiEventSourceTimeout  = 20 * time.Second
+	maxUIEventPages        = 100
+	maxUIRequestBodyBytes  = 64 << 10
+	maxUIEventRange        = 93 * 24 * time.Hour
+	uiEventSourceTimeout   = 20 * time.Second
+	maxDiagnosticsPageSize = 100
 )
 
 type uiError struct {
@@ -97,6 +99,49 @@ type uiRawSyncArtifact struct {
 type rawSyncArtifactRequest struct {
 	CalendarID string `json:"calendar_id"`
 	ObjectID   string `json:"object_id"`
+}
+
+type diagnosticsQuarantineRequest struct {
+	CalendarID string `json:"calendar_id"`
+	ObjectID   string `json:"object_id"`
+}
+
+type uiDiagnosticsQuarantine struct {
+	CalendarID     string                     `json:"calendar_id"`
+	ObjectID       string                     `json:"object_id"`
+	ETag           string                     `json:"etag,omitempty"`
+	ErrorCode      string                     `json:"error_code"`
+	CalendarName   string                     `json:"calendar_name"`
+	Provider       string                     `json:"provider"`
+	SyncStatus     string                     `json:"sync_status"`
+	LastErrorCode  string                     `json:"last_error_code,omitempty"`
+	FirstSeenAt    time.Time                  `json:"first_seen_at"`
+	LastSeenAt     time.Time                  `json:"last_seen_at"`
+	NextRepairAt   time.Time                  `json:"next_repair_at"`
+	RepairAttempts int                        `json:"repair_attempts"`
+	LastSuccessAt  *time.Time                 `json:"last_success_at,omitempty"`
+	Artifact       *uiRawSyncArtifactMetadata `json:"artifact,omitempty"`
+}
+
+type uiRawSyncArtifactMetadata struct {
+	ETag           string    `json:"etag,omitempty"`
+	PayloadSHA256  string    `json:"payload_sha256"`
+	ContentType    string    `json:"content_type,omitempty"`
+	ProviderReason string    `json:"provider_reason,omitempty"`
+	ProviderStatus int       `json:"provider_status,omitempty"`
+	Truncated      bool      `json:"truncated"`
+	CapturedAt     time.Time `json:"captured_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type uiDiagnosticsQuarantineResponse struct {
+	Items  []uiDiagnosticsQuarantine `json:"items"`
+	Offset int                       `json:"offset"`
+	Limit  int                       `json:"limit"`
+}
+
+type uiDiagnosticsRepairResponse struct {
+	Status string `json:"status"`
 }
 
 type uiOperationResult struct {
@@ -180,6 +225,7 @@ type uiControlPlane struct {
 
 type uiBootstrap struct {
 	Username               string                                   `json:"username,omitempty"`
+	DiagnosticsOperator    bool                                     `json:"diagnostics_operator"`
 	CSRFToken              string                                   `json:"csrf_token"`
 	Connections            []uiConnection                           `json:"connections"`
 	Calendars              []uiCalendar                             `json:"calendars"`
@@ -213,7 +259,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		capabilities[item.ID] = capability
 	}
 	writeUIJSON(w, http.StatusOK, uiBootstrap{
-		Username: r.Header.Get("X-authentik-username"), CSRFToken: s.csrfToken(w, r),
+		Username: r.Header.Get("X-authentik-username"), DiagnosticsOperator: containsString(s.config.RawArtifactOperators, r.Header.Get("X-authentik-username")), CSRFToken: s.csrfToken(w, r),
 		Connections: control.Connections, Calendars: control.Calendars, Rules: control.Rules, Runs: control.Runs, Settings: control.Settings,
 		MCPEndpoint: control.Settings.MCPEndpoint, LegacyAPIKeyConfigured: control.Settings.LegacyAPIKeyConfigured,
 		Capabilities: capabilities, Sources: sources,
@@ -260,6 +306,125 @@ func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, uiRawSyncArtifact{CalendarID: artifact.CalendarID, ObjectID: artifact.ObjectID, ETag: artifact.ETag, PayloadBase64: base64.StdEncoding.EncodeToString(artifact.RawPayload), PayloadSHA256: artifact.PayloadSHA256, ContentType: artifact.ContentType, ProviderStatus: artifact.ProviderStatus, ProviderReason: artifact.ProviderReason, Truncated: artifact.Truncated, CapturedAt: artifact.CapturedAt, ExpiresAt: artifact.ExpiresAt})
+}
+
+func (s *Server) requireDiagnosticsOperator(w http.ResponseWriter, r *http.Request) bool {
+	username := strings.TrimSpace(r.Header.Get("X-authentik-username"))
+	if username == "" || !containsString(s.config.RawArtifactOperators, username) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
+	if s.store == nil {
+		writeUIAPIError(w, errors.New("sync diagnostics are unavailable"))
+		return false
+	}
+	return true
+}
+
+func (s *Server) listDiagnosticsQuarantine(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDiagnosticsOperator(w, r) {
+		return
+	}
+	limit, offset, err := parseDiagnosticsPage(r)
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	items, err := s.store.ListActiveEventSyncQuarantineDiagnostics(r.Context(), limit, offset)
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	result := uiDiagnosticsQuarantineResponse{Items: make([]uiDiagnosticsQuarantine, 0, len(items)), Limit: limit, Offset: offset}
+	for _, item := range items {
+		result.Items = append(result.Items, uiDiagnosticsQuarantineFromStorage(item))
+	}
+	writeUIJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) diagnosticsQuarantineDetail(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDiagnosticsOperator(w, r) {
+		return
+	}
+	request, err := decodeDiagnosticsQuarantineRequest(r)
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	item, err := s.store.GetActiveEventSyncQuarantineDiagnostic(r.Context(), request.CalendarID, request.ObjectID)
+	if errors.Is(err, storage.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	writeUIJSON(w, http.StatusOK, uiDiagnosticsQuarantineFromStorage(*item))
+}
+
+func (s *Server) scheduleDiagnosticsRepair(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDiagnosticsOperator(w, r) {
+		return
+	}
+	request, err := decodeDiagnosticsQuarantineRequest(r)
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	scheduled, err := s.store.ScheduleEventSyncObjectRepair(r.Context(), request.CalendarID, request.ObjectID, time.Now().UTC())
+	if errors.Is(err, storage.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	status := "already_queued"
+	if scheduled {
+		status = "scheduled"
+	}
+	writeUIJSON(w, http.StatusOK, uiDiagnosticsRepairResponse{Status: status})
+}
+
+func parseDiagnosticsPage(r *http.Request) (int, int, error) {
+	limit, offset := 50, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > maxDiagnosticsPageSize {
+			return 0, 0, calendar.NewAPIError(calendar.ErrorInvalidArgument, "limit must be between 1 and 100")
+		}
+		limit = value
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return 0, 0, calendar.NewAPIError(calendar.ErrorInvalidArgument, "offset must not be negative")
+		}
+		offset = value
+	}
+	return limit, offset, nil
+}
+
+func decodeDiagnosticsQuarantineRequest(r *http.Request) (diagnosticsQuarantineRequest, error) {
+	var request diagnosticsQuarantineRequest
+	if err := decodeUIJSON(r, &request); err != nil {
+		return request, err
+	}
+	request.CalendarID, request.ObjectID = strings.TrimSpace(request.CalendarID), strings.TrimSpace(request.ObjectID)
+	if request.CalendarID == "" || request.ObjectID == "" {
+		return request, calendar.NewAPIError(calendar.ErrorInvalidArgument, "calendar_id and object_id are required")
+	}
+	return request, nil
+}
+
+func uiDiagnosticsQuarantineFromStorage(item storage.EventSyncQuarantineDiagnostic) uiDiagnosticsQuarantine {
+	result := uiDiagnosticsQuarantine{CalendarID: item.CalendarID, ObjectID: item.ObjectID, ETag: item.ETag, ErrorCode: item.ErrorCode, CalendarName: item.CalendarName, Provider: item.Provider, SyncStatus: item.SyncStatus, LastErrorCode: item.LastErrorCode, FirstSeenAt: item.FirstSeenAt, LastSeenAt: item.LastSeenAt, NextRepairAt: item.NextRepairAt, RepairAttempts: item.RepairAttempts, LastSuccessAt: item.LastSuccessAt}
+	if item.Artifact != nil {
+		result.Artifact = &uiRawSyncArtifactMetadata{ETag: item.Artifact.ETag, PayloadSHA256: item.Artifact.PayloadSHA256, ContentType: item.Artifact.ContentType, ProviderStatus: item.Artifact.ProviderStatus, ProviderReason: item.Artifact.ProviderReason, Truncated: item.Artifact.Truncated, CapturedAt: item.Artifact.CapturedAt, ExpiresAt: item.Artifact.ExpiresAt}
+	}
+	return result
 }
 
 func containsString(values []string, target string) bool {

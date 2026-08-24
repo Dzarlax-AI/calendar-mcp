@@ -48,6 +48,122 @@ func (s *Store) ListDueEventSyncQuarantine(ctx context.Context, state CalendarSy
 	return items, nil
 }
 
+// ListActiveEventSyncQuarantineDiagnostics returns a bounded, paginated
+// operator view. The raw payload is deliberately excluded; callers must use
+// GetRawEventSyncArtifact with the exact object identity after authorization.
+func (s *Store) ListActiveEventSyncQuarantineDiagnostics(ctx context.Context, limit, offset int) ([]EventSyncQuarantineDiagnostic, error) {
+	if limit <= 0 {
+		return []EventSyncQuarantineDiagnostic{}, nil
+	}
+	if offset < 0 {
+		return nil, errors.New("event sync quarantine offset must not be negative")
+	}
+	q := `SELECT q.calendar_id, q.object_id, q.etag, q.error_code, q.first_seen_at, q.last_seen_at, q.next_repair_at, q.repair_attempts, q.active,
+		c.name, conn.provider, s.status, s.last_success_at, s.last_error_code,
+		a.etag, a.payload_sha256, a.content_type, a.provider_status, a.provider_reason, a.truncated, a.captured_at, a.expires_at
+		FROM calendar_sync_quarantine q
+		JOIN calendars c ON c.id=q.calendar_id
+		JOIN connections conn ON conn.id=c.connection_id
+		LEFT JOIN calendar_sync_state s ON s.calendar_id=q.calendar_id
+		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.expires_at>?
+		WHERE q.active=?
+		ORDER BY q.last_seen_at DESC, q.calendar_id, q.object_id LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, s.query(q), time.Now().UTC(), true, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list active event sync quarantine diagnostics: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]EventSyncQuarantineDiagnostic, 0, limit)
+	for rows.Next() {
+		item, err := scanEventSyncQuarantineDiagnostic(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active event sync quarantine diagnostics: %w", err)
+	}
+	return items, nil
+}
+
+// GetActiveEventSyncQuarantineDiagnostic returns one active object plus safe
+// artifact metadata. It never decrypts the artifact payload.
+func (s *Store) GetActiveEventSyncQuarantineDiagnostic(ctx context.Context, calendarID, objectID string) (*EventSyncQuarantineDiagnostic, error) {
+	if calendarID == "" || objectID == "" {
+		return nil, ErrNotFound
+	}
+	q := `SELECT q.calendar_id, q.object_id, q.etag, q.error_code, q.first_seen_at, q.last_seen_at, q.next_repair_at, q.repair_attempts, q.active,
+		c.name, conn.provider, s.status, s.last_success_at, s.last_error_code,
+		a.etag, a.payload_sha256, a.content_type, a.provider_status, a.provider_reason, a.truncated, a.captured_at, a.expires_at
+		FROM calendar_sync_quarantine q
+		JOIN calendars c ON c.id=q.calendar_id
+		JOIN connections conn ON conn.id=c.connection_id
+		LEFT JOIN calendar_sync_state s ON s.calendar_id=q.calendar_id
+		LEFT JOIN calendar_sync_raw_artifacts a ON a.calendar_id=q.calendar_id AND a.object_id=q.object_id AND a.expires_at>?
+		WHERE q.calendar_id=? AND q.object_id=? AND q.active=?`
+	item, err := scanEventSyncQuarantineDiagnostic(s.db.QueryRowContext(ctx, s.query(q), time.Now().UTC(), calendarID, objectID, true))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get active event sync quarantine diagnostic: %w", err)
+	}
+	return &item, nil
+}
+
+// ScheduleEventSyncObjectRepair makes one active object due now. A row that is
+// already due is left untouched, making repeated operator requests harmless.
+func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, objectID string, now time.Time) (bool, error) {
+	if calendarID == "" || objectID == "" {
+		return false, ErrNotFound
+	}
+	result, err := s.db.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET next_repair_at=?
+		WHERE calendar_id=? AND object_id=? AND active=? AND next_repair_at>?`), now, calendarID, objectID, true, now)
+	if err != nil {
+		return false, fmt.Errorf("schedule event sync object repair: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read scheduled event sync object repair: %w", err)
+	}
+	if changed == 1 {
+		return true, nil
+	}
+	var active bool
+	err = s.db.QueryRowContext(ctx, s.query(`SELECT active FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=?`), calendarID, objectID).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) || !active {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("read event sync object repair: %w", err)
+	}
+	return false, nil
+}
+
+func scanEventSyncQuarantineDiagnostic(row scanner) (EventSyncQuarantineDiagnostic, error) {
+	var item EventSyncQuarantineDiagnostic
+	var lastSuccess sql.NullTime
+	var syncStatus, lastError sql.NullString
+	var artifactETag, hash, contentType, providerReason sql.NullString
+	var providerStatus sql.NullInt64
+	var truncated sql.NullBool
+	var captured, expires sql.NullTime
+	if err := row.Scan(&item.CalendarID, &item.ObjectID, &item.ETag, &item.ErrorCode, &item.FirstSeenAt, &item.LastSeenAt, &item.NextRepairAt, &item.RepairAttempts, &item.Active,
+		&item.CalendarName, &item.Provider, &syncStatus, &lastSuccess, &lastError,
+		&artifactETag, &hash, &contentType, &providerStatus, &providerReason, &truncated, &captured, &expires); err != nil {
+		return item, err
+	}
+	item.SyncStatus, item.LastErrorCode = syncStatus.String, lastError.String
+	if lastSuccess.Valid {
+		item.LastSuccessAt = &lastSuccess.Time
+	}
+	if artifactETag.Valid {
+		item.Artifact = &RawEventSyncArtifactMetadata{ETag: artifactETag.String, PayloadSHA256: hash.String, ContentType: contentType.String, ProviderStatus: int(providerStatus.Int64), ProviderReason: providerReason.String, Truncated: truncated.Bool, CapturedAt: captured.Time, ExpiresAt: expires.Time}
+	}
+	return item, nil
+}
+
 // ApplyEventSyncObjectRepair applies a single repair outcome while the same
 // calendar lease remains current. It never changes the opaque main cursor.
 func (s *Store) ApplyEventSyncObjectRepair(ctx context.Context, state CalendarSyncState, batch EventSyncRepairBatch, now time.Time) error {
