@@ -240,7 +240,8 @@ a { color: inherit; text-decoration: none; }
 .calendar-provider { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon-button { min-width: 44px; min-height: 44px; padding: 8px; }
 .calendar-navigation-link { min-height: 44px; }
-.mini-days span, .mini-days button { width: 36px; height: 36px; }
+/* Keep the visual day circle compact while giving touch users a 36px hit area. */
+.mini-days span, .mini-days button { width: 100%; max-width: 36px; height: 36px; }
 .event-status-strip { position: relative; top: auto; left: auto; z-index: 1; display: flex; flex-wrap: wrap; width: calc(100% - 32px); max-width: none; margin: 9px 16px 0; padding: 8px 10px; line-height: 1.35; }
 .status-action { min-height: 36px; padding: 6px 9px; }
 .notice--success { color: #17643d; background: #f0fbf5; border-color: #a9dfc1; }
@@ -294,7 +295,7 @@ a { color: inherit; text-decoration: none; }
   .drawer-content { padding: 20px 18px; }
   .drawer-actions { padding-inline: 18px; }
   .calendar-navigation-link, .calendar-filter { min-height: 44px; }
-  .mini-days span, .mini-days button { width: 40px; height: 40px; }
+  .mini-days span, .mini-days button { width: 100%; max-width: 40px; height: 40px; }
 }
 
 @media (max-width: 560px) {
@@ -314,4 +315,16 @@ a { color: inherit; text-decoration: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .calendar-sidebar, .event-drawer { transition: none; }
+}
+
+/* Compact calendar sheets remain overlays through tablet widths. */
+@media (min-width: 821px) and (max-width: 1279px) {
+  .calendar-screen, .calendar-screen.with-sidebar, .calendar-screen.with-drawer { display: block; height: 100vh; height: 100dvh; }
+  .calendar-screen > .sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 20; border: 0; background: rgba(22, 30, 48, .36); }
+  .calendar-sidebar, .event-drawer { position: fixed; top: 0; bottom: 0; z-index: 21; display: flex; flex-direction: column; width: min(100vw, 360px); min-width: 0; max-width: 100%; padding-top: max(18px, env(safe-area-inset-top)); padding-bottom: env(safe-area-inset-bottom); overflow-y: auto; overscroll-behavior: contain; }
+  .calendar-sidebar { left: 0; transform: translateX(-102%); transition: transform .2s ease; }
+  .event-drawer { right: 0; transform: translateX(102%); transition: transform .2s ease; }
+  .calendar-sidebar.is-open, .event-drawer.is-open { transform: translateX(0); }
+  .calendar-main { height: 100vh; height: 100dvh; }
+  .calendar-provider { display: inline; }
 }

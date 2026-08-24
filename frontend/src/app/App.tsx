@@ -1,9 +1,9 @@
-import { createContext, lazy, Suspense, useContext, useState } from "react";
+import { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation, useRouteError } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, PlayCircle, Settings2, X } from "lucide-react";
-import { getBootstrap } from "../lib/api";
+import { getBootstrap, isSessionExpiredError, navigateToApp } from "../lib/api";
 import type { Bootstrap } from "../lib/types";
 import "../styles/app.css";
 
@@ -11,7 +11,7 @@ const CalendarPage = lazy(() => import("../features/calendar/CalendarPage"));
 const ControlPlanePage = lazy(() => import("../features/control-plane/ControlPlanePage"));
 
 export function useBootstrap() {
-  return useQuery({ queryKey: ["bootstrap"], queryFn: getBootstrap });
+  return useQuery({ queryKey: ["bootstrap"], queryFn: getBootstrap, retry: (failureCount, error) => !isSessionExpiredError(error) && failureCount < 2 });
 }
 
 const navItems = [
@@ -69,6 +69,9 @@ function Header({ onMenu }: { onMenu: () => void }) {
 
 function BootstrapGate() {
   const bootstrap = useBootstrap();
+  useEffect(() => {
+    if (isSessionExpiredError(bootstrap.error)) navigateToApp();
+  }, [bootstrap.error]);
   if (bootstrap.isPending) return <div className="app-gate" role="status" aria-live="polite"><LoaderCircle className="spin" size={26} aria-hidden="true" /><p>Loading your calendar</p></div>;
   if (bootstrap.isError) return <div className="app-gate"><div className="empty-illustration"><CalendarDays size={30} /></div><h1>Calendar is unavailable</h1><p>We couldn't load the authenticated calendar workspace. Try refreshing the page.</p><button className="button button-primary" onClick={() => void bootstrap.refetch()}>Try again</button></div>;
   return <Workspace bootstrap={bootstrap.data} />;

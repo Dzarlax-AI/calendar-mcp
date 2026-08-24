@@ -15,11 +15,34 @@ export class APIError extends Error {
   }
 }
 
+export type CalendarRefreshResult = {
+  queued: string[];
+  sessionExpired: string[];
+  rejected: string[];
+  unknown: string[];
+};
+
+let appNavigationStarted = false;
+
+export function isSessionExpiredError(error: unknown): error is APIError {
+  return error instanceof APIError && error.code === "session_expired";
+}
+
+export function navigateToApp(navigate: (url: string) => void = (url) => window.location.assign(url)): boolean {
+  if (appNavigationStarted) return false;
+  appNavigationStarted = true;
+  navigate("/app");
+  return true;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API_ROOT}${path}`, { ...init, headers, credentials: "same-origin" });
+  const response = await fetch(`${API_ROOT}${path}`, { ...init, headers, credentials: "same-origin", redirect: "manual" });
+  if (response.type === "opaqueredirect") {
+    throw new APIError("Your session expired. Sign in again.", 401, "session_expired");
+  }
   const raw = await response.text();
   let payload: unknown;
   try {
@@ -51,6 +74,25 @@ export function refreshCalendar(csrfToken: string, calendarId: string): Promise<
     method: "POST",
     headers: csrfHeaders(csrfToken),
   });
+}
+
+export async function refreshCalendars(csrfToken: string, calendarIds: string[]): Promise<CalendarRefreshResult> {
+  const outcomes = await Promise.all(calendarIds.map(async (calendarId) => {
+    try {
+      await refreshCalendar(csrfToken, calendarId);
+      return { calendarId, outcome: "queued" as const };
+    } catch (error) {
+      if (error instanceof APIError && error.code === "session_expired") return { calendarId, outcome: "session_expired" as const };
+      if (error instanceof APIError) return { calendarId, outcome: "rejected" as const };
+      return { calendarId, outcome: "unknown" as const };
+    }
+  }));
+  return {
+    queued: outcomes.filter((item) => item.outcome === "queued").map((item) => item.calendarId),
+    sessionExpired: outcomes.filter((item) => item.outcome === "session_expired").map((item) => item.calendarId),
+    rejected: outcomes.filter((item) => item.outcome === "rejected").map((item) => item.calendarId),
+    unknown: outcomes.filter((item) => item.outcome === "unknown").map((item) => item.calendarId),
+  };
 }
 
 export function getEvent(calendarId: string, eventId: string): Promise<EventRecord> {

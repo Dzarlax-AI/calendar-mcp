@@ -11,7 +11,7 @@ import type { EventResizeDoneArg } from "@fullcalendar/interaction";
 import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, Link2, ListChecks, ListFilter, MapPin, PlayCircle, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
-import { APIError, createEvent, deleteEvent, getEvents, refreshCalendar, updateEvent } from "../../lib/api";
+import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
 import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, eventStatusPollInterval, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
@@ -29,7 +29,7 @@ type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toResched
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
-const COMPACT_LAYOUT_QUERY = "(max-width: 1080px)";
+const COMPACT_LAYOUT_QUERY = "(max-width: 1279px)";
 
 const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
   { value: "timeGridDay", label: "Day" },
@@ -43,6 +43,7 @@ export default function CalendarPage() {
   const calendarRef = useRef<FullCalendar>(null);
   const queryClient = useQueryClient();
   const [range, setRange] = useState<Range>(null);
+  const [miniCalendarDate, setMiniCalendarDate] = useState(() => new Date());
   const [view, setView] = useState<ViewName>(() => {
     try {
       const saved = localStorage.getItem(CALENDAR_VIEW_STORAGE_KEY);
@@ -76,6 +77,7 @@ export default function CalendarPage() {
     queryKey: ["events", range?.start, range?.end, sortedSelectedCalendarIds],
     queryFn: () => getEvents(range!.start, range!.end, sortedSelectedCalendarIds),
     enabled: Boolean(range && sortedSelectedCalendarIds.length),
+    retry: (failureCount, error) => !isSessionExpiredError(error) && failureCount < 1,
     placeholderData: (previous) => previous,
     refetchInterval: (query) => {
       return eventStatusPollInterval(query.state.data?.sources, pollingAttempts);
@@ -97,9 +99,27 @@ export default function CalendarPage() {
     lastPolledDataUpdatedAtRef.current = 0;
   }, [range?.start, range?.end, sortedSelectedCalendarIds]);
   const refreshMutation = useMutation({
-    mutationFn: (calendarIds: string[]) => Promise.all(calendarIds.map((calendarId) => refreshCalendar(csrfToken, calendarId))),
-    onSuccess: () => setNotice({ message: "Calendar refresh queued", intent: "success" }),
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    mutationFn: (calendarIds: string[]) => refreshCalendars(csrfToken, calendarIds),
+    onSuccess: (result) => {
+      if (result.sessionExpired.length) {
+        const queued = result.queued.length ? `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued. ` : "";
+        setNotice({ message: `${queued}Your session expired; returning to sign in.`, intent: "error" });
+        navigateToApp();
+        return;
+      }
+      if (result.queued.length && (result.rejected.length || result.unknown.length)) {
+        const rejected = result.rejected.length ? ` ${result.rejected.length} rejected.` : "";
+        const unknown = result.unknown.length ? ` ${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
+        setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued.${rejected}${unknown} No automatic retry was attempted.`, intent: "warning" });
+      } else if (result.queued.length) {
+        setNotice({ message: `${result.queued.length} calendar refresh${result.queued.length === 1 ? "" : "es"} queued.`, intent: "success" });
+      } else if (result.rejected.length || result.unknown.length) {
+        const rejected = result.rejected.length ? `${result.rejected.length} refresh${result.rejected.length === 1 ? "" : "es"} rejected.` : "";
+        const unknown = result.unknown.length ? `${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
+        setNotice({ message: `${rejected} ${unknown} No automatic retry was attempted.`.trim(), intent: "error" });
+      }
+    },
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
     onSettled: invalidateEvents,
   });
   useEffect(() => {
@@ -121,18 +141,21 @@ export default function CalendarPage() {
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
     onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const updateMutation = useMutation({
     mutationFn: (args: { event: EventRecord; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload),
     onSuccess: (event) => { setSurface((current) => current.kind === "event" ? { kind: "event", event } : current); setEditEvent(null); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
-    onError: (error, variables) => { variables.revert?.(); if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
+    onError: (error, variables) => { variables.revert?.(); if (isSessionExpiredError(error)) navigateToApp(); else if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const deleteMutation = useMutation({
     mutationFn: (args: { event: EventRecord; scope?: "single" | "following" | "series" }) => deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined }),
     onSuccess: (result) => { scopePayloadRef.current = null; setSurface({ kind: "none" }); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
   });
+  useEffect(() => {
+    if (isSessionExpiredError(eventsQuery.error)) navigateToApp();
+  }, [eventsQuery.error]);
 
   function changeView(nextView: ViewName) {
     setView(nextView);
@@ -189,7 +212,7 @@ export default function CalendarPage() {
   }
   function askDelete(event: EventRecord) {
     if (event.recurrence?.isRecurring) setSurface({ kind: "scope", event, action: "delete" });
-    else setDeleteConfirm(event);
+    else { setSurface({ kind: "none" }); setDeleteConfirm(event); }
   }
   function saveDraft(draft: EventDraft, calendarId: string) {
     if (surface.kind === "create") createMutation.mutate(toCreatePayload(calendarId, draft));
@@ -227,8 +250,8 @@ export default function CalendarPage() {
   const sheetOpen = compactLayout && (surface.kind === "filters" || surface.kind === "event");
   const persistentSidebar = !compactLayout;
   return <div className={`calendar-screen ${persistentSidebar || surface.kind === "filters" ? "with-sidebar" : "wide"} ${surface.kind === "event" ? "with-drawer" : ""}`}>
-    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
-    {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
+    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
+    {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
     <main className="calendar-main" inert={sheetOpen} aria-hidden={sheetOpen || undefined}>
       <div className="calendar-toolbar">
         <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><span className="date-title" aria-live="polite">{calendarRef.current?.getApi().view.title ?? "Calendar"}</span></div>
@@ -240,7 +263,7 @@ export default function CalendarPage() {
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
-        <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() })} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
+        <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => { setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() }); setMiniCalendarDate(arg.view.calendar.getDate()); }} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
     {surface.kind === "event" && (compactLayout ? <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></SurfaceSheet> : <aside className="event-drawer is-open" aria-label="Event details"><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></aside>)}
@@ -313,19 +336,19 @@ function SurfaceSheet({ children, className, labelledBy, onClose }: { children: 
   return <><button className="sidebar-scrim" type="button" aria-label="Close panel" onClick={onClose} /><aside ref={sheetRef} className={`${className} is-open`} role="dialog" aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>{children}</aside></>;
 }
 
-function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJumpToDate, showClose = true }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean }) {
+function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJumpToDate, showClose = true, visibleDate = new Date() }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean; visibleDate?: Date }) {
   const groups = useMemo(() => Array.from(new Set(calendars.map((calendar) => calendar.group || "Calendars"))), [calendars]);
   const navigation = [{ to: "/app", label: "Calendar", icon: CalendarDays }, { to: "/connections", label: "Connections", icon: Link2 }, { to: "/rules", label: "Sync Rules", icon: ListChecks }, { to: "/runs", label: "Runs", icon: PlayCircle }, { to: "/settings", label: "Settings", icon: Settings2 }];
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+  const year = visibleDate.getFullYear();
+  const month = visibleDate.getMonth();
   const firstWeekday = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const miniDays = Array.from({ length: 42 }, (_, index) => {
     const day = index - firstWeekday + 1;
     return day > 0 && day <= daysInMonth ? day : null;
   });
-  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1>{showClose && <button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button>}</div><nav className="calendar-navigation" aria-label="Primary navigation">{navigation.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/app"} className={({ isActive }) => `calendar-navigation-link ${isActive ? "is-active" : ""}`}><Icon size={17} /><span>{label}</span></NavLink>)}</nav><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(today)}</strong></div><div className="mini-weekdays">{["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() ? "is-today" : ""} aria-current={day === today.getDate() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => (calendar.group || "Calendars") === group).map((calendar) => <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={calendar.id} title={calendar.name}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${calendar.name} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={calendar.name}>{calendar.name}</span><span className="calendar-provider">{providerLabel(calendar.provider)}</span></label>)}</div>)}</div></>;
+  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1>{showClose && <button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button>}</div><nav className="calendar-navigation" aria-label="Primary navigation">{navigation.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === "/app"} className={({ isActive }) => `calendar-navigation-link ${isActive ? "is-active" : ""}`}><Icon size={17} /><span>{label}</span></NavLink>)}</nav><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(visibleDate)}</strong></div><div className="mini-weekdays">{["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "is-today" : ""} aria-current={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => (calendar.group || "Calendars") === group).map((calendar) => { const identity = `${calendar.name} (${calendar.accountLabel ?? providerLabel(calendar.provider)})`; return <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={`${calendar.id}:${calendar.accountLabel ?? calendar.provider}`} title={identity}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${identity} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={identity}>{calendar.name}</span><span className="calendar-provider">{calendar.accountLabel ?? providerLabel(calendar.provider)}</span></label>; })}</div>)}</div></>;
 }
 
 function providerLabel(provider: string) { return provider === "microsoft" ? "Microsoft 365" : provider === "google" ? "Google" : provider === "apple" ? "Apple" : provider; }
@@ -337,7 +360,8 @@ function CalendarEventContent({ arg }: { arg: EventContentArg }) {
 
 function EventDrawer({ event, calendar, onClose, onEdit, onDelete }: { event: EventRecord; calendar?: CalendarRecord; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
   const editable = !event.readOnly && Boolean(calendar?.capability.write);
-  return <><div className="drawer-header"><span id="event-details-title">Event details</span><button className="icon-button" onClick={onClose} aria-label="Close event details"><X size={20} /></button></div><div className="drawer-content"><div className="drawer-title-row"><h2>{event.title || "Untitled event"}</h2></div><div className="event-source"><span className="source-swatch" style={{ backgroundColor: calendar?.color }} /><span>{calendar?.name ?? event.calendarId}</span><span className="source-provider">{providerLabel(calendar?.provider ?? event.source ?? "calendar")}</span>{event.readOnly && <span className="readonly-label">Read only</span>}</div><div className="drawer-divider" /><div className="detail-row"><Clock3 className="detail-icon" size={18} /><div><strong>{formatEventDate(event)}</strong><span>{formatEventTime(event)}</span>{event.recurrence?.isRecurring && <span>Repeats</span>}</div></div>{event.location && <div className="detail-row"><MapPin className="detail-icon" size={18} /><div><strong>Location</strong><span>{event.location}</span></div></div>}{event.description && <div className="detail-row"><AlignLeft className="detail-icon" size={18} /><div><strong>Description</strong><span className="description-text">{event.description}</span></div></div>}<div className="drawer-meta"><span>Calendar</span><strong>{calendar?.name ?? event.calendarId}</strong></div></div><div className="drawer-actions"><button className="button button-outline" disabled={!editable} onClick={onEdit}>Edit</button><button className="button button-danger" disabled={!editable || !calendar?.capability.delete} onClick={onDelete}>Delete</button></div></>;
+  const calendarIdentity = calendar ? `${calendar.name} (${calendar.accountLabel ?? providerLabel(calendar.provider)})` : event.calendarId;
+  return <><div className="drawer-header"><span id="event-details-title">Event details</span><button className="icon-button" onClick={onClose} aria-label="Close event details"><X size={20} /></button></div><div className="drawer-content"><div className="drawer-title-row"><h2>{event.title || "Untitled event"}</h2></div><div className="event-source"><span className="source-swatch" style={{ backgroundColor: calendar?.color }} /><span>{calendar?.name ?? event.calendarId}</span><span className="source-provider">{calendar?.accountLabel ?? providerLabel(calendar?.provider ?? event.source ?? "calendar")}</span>{event.readOnly && <span className="readonly-label">Read only</span>}</div><div className="drawer-divider" /><div className="detail-row"><Clock3 className="detail-icon" size={18} /><div><strong>{formatEventDate(event)}</strong><span>{formatEventTime(event)}</span>{event.recurrence?.isRecurring && <span>Repeats</span>}</div></div>{event.location && <div className="detail-row"><MapPin className="detail-icon" size={18} /><div><strong>Location</strong><span>{event.location}</span></div></div>}{event.description && <div className="detail-row"><AlignLeft className="detail-icon" size={18} /><div><strong>Description</strong><span className="description-text">{event.description}</span></div></div>}<div className="drawer-meta"><span>Calendar</span><strong title={calendarIdentity}>{calendarIdentity}</strong></div></div><div className="drawer-actions"><button className="button button-outline" disabled={!editable} onClick={onEdit}>Edit</button><button className="button button-danger" disabled={!editable || !calendar?.capability.delete} onClick={onDelete}>Delete</button></div></>;
 }
 
 function Dialog({ children, onClose, labelledBy, role = "dialog", className = "" }: { children: ReactNode; onClose: () => void; labelledBy: string; role?: "dialog" | "alertdialog"; className?: string }) {
