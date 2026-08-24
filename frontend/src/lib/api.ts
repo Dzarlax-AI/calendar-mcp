@@ -18,11 +18,21 @@ export class APIError extends Error {
 export type CalendarRefreshResult = {
   queued: string[];
   sessionExpired: string[];
-  failed: string[];
+  rejected: string[];
+  unknown: string[];
 };
 
-export function navigateToApp(navigate: (url: string) => void = (url) => window.location.assign(url)) {
+let appNavigationStarted = false;
+
+export function isSessionExpiredError(error: unknown): error is APIError {
+  return error instanceof APIError && error.code === "session_expired";
+}
+
+export function navigateToApp(navigate: (url: string) => void = (url) => window.location.assign(url)): boolean {
+  if (appNavigationStarted) return false;
+  appNavigationStarted = true;
   navigate("/app");
+  return true;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -73,13 +83,15 @@ export async function refreshCalendars(csrfToken: string, calendarIds: string[])
       return { calendarId, outcome: "queued" as const };
     } catch (error) {
       if (error instanceof APIError && error.code === "session_expired") return { calendarId, outcome: "session_expired" as const };
-      return { calendarId, outcome: "failed" as const };
+      if (error instanceof APIError) return { calendarId, outcome: "rejected" as const };
+      return { calendarId, outcome: "unknown" as const };
     }
   }));
   return {
     queued: outcomes.filter((item) => item.outcome === "queued").map((item) => item.calendarId),
     sessionExpired: outcomes.filter((item) => item.outcome === "session_expired").map((item) => item.calendarId),
-    failed: outcomes.filter((item) => item.outcome === "failed").map((item) => item.calendarId),
+    rejected: outcomes.filter((item) => item.outcome === "rejected").map((item) => item.calendarId),
+    unknown: outcomes.filter((item) => item.outcome === "unknown").map((item) => item.calendarId),
   };
 }
 

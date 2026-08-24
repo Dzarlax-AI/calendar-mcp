@@ -79,9 +79,10 @@ describe("browser API client", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 202 }))
       .mockResolvedValueOnce({ ok: false, status: 0, type: "opaqueredirect", text: async () => "" })
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "conflict", message: "already running" }), { status: 409 }))
       .mockRejectedValueOnce(new Error("offline"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(refreshCalendars("csrf-token", ["queued", "expired", "failed"])).resolves.toEqual({ queued: ["queued"], sessionExpired: ["expired"], failed: ["failed"] });
+    await expect(refreshCalendars("csrf-token", ["queued", "expired", "rejected", "unknown"])).resolves.toEqual({ queued: ["queued"], sessionExpired: ["expired"], rejected: ["rejected"], unknown: ["unknown"] });
     vi.unstubAllGlobals();
   });
 

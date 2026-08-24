@@ -11,7 +11,7 @@ import type { EventResizeDoneArg } from "@fullcalendar/interaction";
 import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, Link2, ListChecks, ListFilter, MapPin, PlayCircle, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
-import { APIError, createEvent, deleteEvent, getEvents, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
+import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
 import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, eventStatusPollInterval, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
@@ -105,15 +105,19 @@ export default function CalendarPage() {
         navigateToApp();
         return;
       }
-      if (result.queued.length && result.failed.length) {
-        setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued; ${result.failed.length} could not be queued.`, intent: "warning" });
+      if (result.queued.length && (result.rejected.length || result.unknown.length)) {
+        const rejected = result.rejected.length ? ` ${result.rejected.length} rejected.` : "";
+        const unknown = result.unknown.length ? ` ${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
+        setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued.${rejected}${unknown} No automatic retry was attempted.`, intent: "warning" });
       } else if (result.queued.length) {
         setNotice({ message: `${result.queued.length} calendar refresh${result.queued.length === 1 ? "" : "es"} queued.`, intent: "success" });
-      } else if (result.failed.length) {
-        setNotice({ message: "Calendar refresh could not be queued.", intent: "error" });
+      } else if (result.rejected.length || result.unknown.length) {
+        const rejected = result.rejected.length ? `${result.rejected.length} refresh${result.rejected.length === 1 ? "" : "es"} rejected.` : "";
+        const unknown = result.unknown.length ? `${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
+        setNotice({ message: `${rejected} ${unknown} No automatic retry was attempted.`.trim(), intent: "error" });
       }
     },
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
     onSettled: invalidateEvents,
   });
   useEffect(() => {
@@ -135,18 +139,21 @@ export default function CalendarPage() {
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
     onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const updateMutation = useMutation({
     mutationFn: (args: { event: EventRecord; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload),
     onSuccess: (event) => { setSurface((current) => current.kind === "event" ? { kind: "event", event } : current); setEditEvent(null); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
-    onError: (error, variables) => { variables.revert?.(); if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
+    onError: (error, variables) => { variables.revert?.(); if (isSessionExpiredError(error)) navigateToApp(); else if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const deleteMutation = useMutation({
     mutationFn: (args: { event: EventRecord; scope?: "single" | "following" | "series" }) => deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined }),
     onSuccess: (result) => { scopePayloadRef.current = null; setSurface({ kind: "none" }); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
-    onError: (error) => setNotice({ message: safeError(error), intent: "error" }),
+    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
   });
+  useEffect(() => {
+    if (isSessionExpiredError(eventsQuery.error)) navigateToApp();
+  }, [eventsQuery.error]);
 
   function changeView(nextView: ViewName) {
     setView(nextView);
