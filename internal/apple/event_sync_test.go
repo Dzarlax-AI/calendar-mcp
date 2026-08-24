@@ -218,7 +218,7 @@ func TestAppleEventSyncCalendarQueryMalformedObjectFallsBackToIsolatedFetch(t *t
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if reports.Load() != 2 || !page.Complete || page.NextCursor != "current-token" || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+	if reports.Load() != 2 || !page.Complete || page.NextCursor != "current-token" || len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "/calendar/bad.ics" || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
 		t.Fatalf("query fallback page=%#v reports=%d", page, reports.Load())
 	}
 }
@@ -328,7 +328,7 @@ func TestAppleEventSyncAllMalformedObjectsWarnWithoutMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics"}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "/calendar/bad.ics" || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
 		t.Fatalf("malformed object page = %#v", page)
 	}
 }
@@ -377,7 +377,7 @@ func TestAppleEventSyncIsolatesMalformedObjectsFromValidSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || len(page.Inventory) != 1 || len(page.ReplacedObjectIDs) != 1 || len(page.DeletedObjectIDs) != 0 || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/bad.ics", ETag: `"bad"`}) {
+	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || len(page.Inventory) != 1 || len(page.ReplacedObjectIDs) != 1 || len(page.DeletedObjectIDs) != 0 || len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "/calendar/bad.ics" || page.Warnings[0].ETag != `"bad"` || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 {
 		t.Fatalf("page = %#v", page)
 	}
 }
@@ -399,7 +399,7 @@ func TestAppleEventSyncTreatsOrphanRecurrenceExceptionAsMalformed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("SyncEvents() error = %v", err)
 	}
-	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "/calendar/orphan.ics", ETag: `"orphan"`}) || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
+	if !page.Complete || len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "/calendar/orphan.ics" || page.Warnings[0].ETag != `"orphan"` || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 || len(page.Inventory) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.DeletedObjectIDs) != 0 {
 		t.Fatalf("orphan exception page = %#v", page)
 	}
 }
@@ -460,8 +460,10 @@ func TestAppleEventSyncFetchFailuresStayHard(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
-			assertAppleEventSyncError(t, err, calendar.EventSyncProtocol, 0)
+			page, err := eventSyncProvider(t, server).SyncEvents(context.Background(), eventSyncRequest(calendar.EventSyncIncremental))
+			if err != nil || len(page.Warnings) != 1 || page.Warnings[0].Diagnostic == nil {
+				t.Fatalf("invalid media type should quarantine one object with diagnostics: page=%#v err=%v", page, err)
+			}
 		})
 	}
 

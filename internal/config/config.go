@@ -28,6 +28,7 @@ type Config struct {
 	PublicURL              string
 	TrustForwardAuth       bool
 	UIAllowUnauthenticated bool
+	UIRawArtifactUsers     []string
 
 	// Event read model is deliberately opt-in. It only reads provider event
 	// data; event mutations continue to use the existing notification-safe
@@ -75,6 +76,7 @@ func Load() *Config {
 		PublicURL:              envStr("CALENDAR_PUBLIC_URL", ""),
 		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", false),
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
+		UIRawArtifactUsers:     envList("UI_RAW_ARTIFACT_USERS"),
 
 		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
 		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),

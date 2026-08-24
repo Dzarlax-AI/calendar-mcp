@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,25 @@ type uiEventsResponse struct {
 	Items    []uiEvent        `json:"items"`
 	Complete bool             `json:"complete"`
 	Sources  []uiSourceStatus `json:"sources"`
+}
+
+type uiRawSyncArtifact struct {
+	CalendarID     string    `json:"calendar_id"`
+	ObjectID       string    `json:"object_id"`
+	ETag           string    `json:"etag,omitempty"`
+	PayloadBase64  string    `json:"payload_base64"`
+	PayloadSHA256  string    `json:"payload_sha256"`
+	ContentType    string    `json:"content_type,omitempty"`
+	ProviderStatus int       `json:"provider_status,omitempty"`
+	ProviderReason string    `json:"provider_reason,omitempty"`
+	Truncated      bool      `json:"truncated"`
+	CapturedAt     time.Time `json:"captured_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type rawSyncArtifactRequest struct {
+	CalendarID string `json:"calendar_id"`
+	ObjectID   string `json:"object_id"`
 }
 
 type uiOperationResult struct {
@@ -207,6 +227,48 @@ func (s *Server) controlPlane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, control)
+}
+
+func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireApplication(); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	username := strings.TrimSpace(r.Header.Get("X-authentik-username"))
+	if username == "" || !containsString(s.config.RawArtifactOperators, username) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if s.store == nil {
+		writeUIAPIError(w, errors.New("raw sync artifacts are unavailable"))
+		return
+	}
+	var request rawSyncArtifactRequest
+	if err := decodeUIJSON(r, &request); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	calendarID := strings.TrimSpace(request.CalendarID)
+	objectID := strings.TrimSpace(request.ObjectID)
+	artifact, err := s.store.GetRawEventSyncArtifact(r.Context(), calendarID, objectID)
+	if errors.Is(err, storage.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	writeUIJSON(w, http.StatusOK, uiRawSyncArtifact{CalendarID: artifact.CalendarID, ObjectID: artifact.ObjectID, ETag: artifact.ETag, PayloadBase64: base64.StdEncoding.EncodeToString(artifact.RawPayload), PayloadSHA256: artifact.PayloadSHA256, ContentType: artifact.ContentType, ProviderStatus: artifact.ProviderStatus, ProviderReason: artifact.ProviderReason, Truncated: artifact.Truncated, CapturedAt: artifact.CapturedAt, ExpiresAt: artifact.ExpiresAt})
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
@@ -619,6 +681,19 @@ func decodeUIInput(w http.ResponseWriter, r *http.Request, target *uiCreateEvent
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid event input")
+	}
+	return nil
+}
+
+func decodeUIJSON(r *http.Request, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxUIRequestBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid JSON request")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return calendar.NewAPIError(calendar.ErrorInvalidArgument, "request body must contain one JSON value")
 	}
 	return nil
 }

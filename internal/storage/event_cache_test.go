@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,7 +13,45 @@ import (
 	"time"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/credentials"
 )
+
+func TestRawEventArtifactIsEncryptedAndLinkedToQuarantine(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetArtifactCipher(cipher)
+	tx, err := store.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("BEGIN:VCALENDAR\r\nBROKEN\r\nEND:VCALENDAR\r\n")
+	if err := upsertEventSyncWarning(context.Background(), store, tx, "calendar", EventSyncWarning{
+		ObjectID: "broken.ics", ETag: "etag-1", ErrorCode: "protocol",
+		Diagnostic: &calendar.EventSyncDiagnostic{ContentType: "text/calendar", RawPayload: raw},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var encrypted []byte
+	if err := store.db.QueryRow("SELECT payload_ciphertext FROM calendar_sync_raw_artifacts WHERE calendar_id=? AND object_id=?", "calendar", "broken.ics").Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encrypted, raw) {
+		t.Fatal("raw payload persisted in plaintext")
+	}
+	decoded, err := cipher.Decrypt(encrypted, []byte("calendar-sync-artifact\x00calendar\x00broken.ics\x00etag-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, raw) {
+		t.Fatalf("decrypted payload = %q, want %q", decoded, raw)
+	}
+}
 
 func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 	ctx := context.Background()
@@ -33,7 +73,7 @@ func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertSchemaVersion(t, store, 3)
+	assertSchemaVersion(t, store, SchemaVersion)
 	for _, table := range []string{"cached_events", "calendar_sync_state", "calendar_sync_objects"} {
 		var name string
 		if err := store.db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
@@ -44,11 +84,11 @@ func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 
 func TestMigrateFreshAndIdempotentEventReadModel(t *testing.T) {
 	store := newSQLiteStore(t)
-	assertSchemaVersion(t, store, 3)
+	assertSchemaVersion(t, store, SchemaVersion)
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	assertSchemaVersion(t, store, 3)
+	assertSchemaVersion(t, store, SchemaVersion)
 }
 
 func TestPostgresEventReadModelIntegration(t *testing.T) {

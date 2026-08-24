@@ -169,7 +169,7 @@ func TestSyncEventsIsolatesMalformedEventFromValidPage(t *testing.T) {
 	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || page.Upserts[0].Event.ID != "valid" {
 		t.Fatalf("page = %#v", page)
 	}
-	if len(page.Warnings) != 1 || page.Warnings[0] != (calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: "malformed"}) {
+	if len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "malformed" || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 {
 		t.Fatalf("warnings = %#v", page.Warnings)
 	}
 }

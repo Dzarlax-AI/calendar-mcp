@@ -328,7 +328,7 @@ func repairBatch(result calendar.EventSyncObjectRepairResult, calendarID string,
 		if result.Warning == nil || result.Warning.ObjectID != objectID || result.Warning.Code != calendar.EventSyncProtocol {
 			return storage.EventSyncRepairBatch{}, ErrInvalidPage
 		}
-		batch.Warning = &storage.EventSyncWarning{ObjectID: objectID, ETag: result.Warning.ETag, ErrorCode: string(result.Warning.Code)}
+		batch.Warning = &storage.EventSyncWarning{ObjectID: objectID, ETag: result.Warning.ETag, ErrorCode: string(result.Warning.Code), Diagnostic: result.Warning.Diagnostic}
 		if batch.Warning.ETag == "" {
 			batch.Warning.ETag = batch.ETag
 		}
@@ -525,7 +525,7 @@ func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, ful
 		}
 	}
 	for _, warning := range page.Warnings {
-		batch.Warnings = append(batch.Warnings, storage.EventSyncWarning{ObjectID: warning.ObjectID, ETag: warning.ETag, ErrorCode: string(warning.Code)})
+		batch.Warnings = append(batch.Warnings, storage.EventSyncWarning{ObjectID: warning.ObjectID, ETag: warning.ETag, ErrorCode: string(warning.Code), Diagnostic: warning.Diagnostic})
 	}
 	batch.Objects = make([]storage.SyncObject, 0, len(objects))
 	for _, object := range objects {

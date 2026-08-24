@@ -67,6 +67,23 @@ type EventSyncWarning struct {
 	// object. It lets storage reset repair backoff only when the provider has
 	// actually changed that object; it must never be exposed publicly.
 	ETag string
+	// Diagnostic is retained only by the encrypted quarantine artifact store;
+	// it must never be serialized into UI responses or errors.
+	Diagnostic *EventSyncDiagnostic `json:"-"`
+}
+
+// MaxEventSyncDiagnosticBytes bounds provider bytes retained for operator
+// diagnostics before they cross the adapter/storage boundary.
+const MaxEventSyncDiagnosticBytes = 256 << 10
+
+// EventSyncDiagnostic carries bounded provider bytes across the adapter/storage
+// boundary. Storage encrypts RawPayload before persistence.
+type EventSyncDiagnostic struct {
+	ProviderStatus int
+	ContentType    string
+	ProviderReason string
+	RawPayload     []byte
+	Truncated      bool
 }
 
 // EventSyncPage is a provider-neutral, single-page delta. Inventory is the

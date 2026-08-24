@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"calendar-mcp/internal/credentials"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -37,9 +38,14 @@ var (
 var migrations embed.FS
 
 type Store struct {
-	db      *sql.DB
-	dialect Dialect
+	db             *sql.DB
+	dialect        Dialect
+	artifactCipher *credentials.Cipher
 }
+
+// SetArtifactCipher enables encrypted persistence of provider diagnostics.
+// It is configured by the runtime after validating CALENDAR_ENCRYPTION_KEY.
+func (s *Store) SetArtifactCipher(cipher *credentials.Cipher) { s.artifactCipher = cipher }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	dialect, driver, dsn, err := parseDatabaseURL(databaseURL)
@@ -142,6 +148,8 @@ func migrationName(version int) string {
 		return "event_read_model"
 	case 3:
 		return "event_sync_quarantine"
+	case 4:
+		return "event_sync_raw_artifacts"
 	default:
 		return ""
 	}
