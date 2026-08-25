@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -169,8 +170,19 @@ func TestSyncEventsIsolatesMalformedEventFromValidPage(t *testing.T) {
 	if !page.Complete || page.NextCursor != "next" || len(page.Upserts) != 1 || page.Upserts[0].Event.ID != "valid" {
 		t.Fatalf("page = %#v", page)
 	}
-	if len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "malformed" || page.Warnings[0].Diagnostic == nil || len(page.Warnings[0].Diagnostic.RawPayload) == 0 {
+	if len(page.Warnings) != 1 || page.Warnings[0].Code != calendar.EventSyncProtocol || page.Warnings[0].ObjectID != "malformed" || page.Warnings[0].Diagnostic == nil || page.Warnings[0].Diagnostic.ProviderReason != "invalid_start" || len(page.Warnings[0].Diagnostic.RawPayload) == 0 {
 		t.Fatalf("warnings = %#v", page.Warnings)
+	}
+	var diagnostic struct {
+		Start struct {
+			DateTime string `json:"dateTime"`
+		} `json:"start"`
+		End struct {
+			DateTime string `json:"dateTime"`
+		} `json:"end"`
+	}
+	if err := json.Unmarshal(page.Warnings[0].Diagnostic.RawPayload, &diagnostic); err != nil || diagnostic.Start.DateTime != "not-a-time" || diagnostic.End.DateTime != "not-a-time" {
+		t.Fatalf("diagnostic payload = %s, err = %v", page.Warnings[0].Diagnostic.RawPayload, err)
 	}
 }
 

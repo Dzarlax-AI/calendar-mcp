@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 			// coordinator retries it on the bounded degraded cadence.
 			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{
 				Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag,
-				Diagnostic: googleEventDiagnostic(item),
+				Diagnostic: googleEventDiagnostic(item, googleEventWindowErrorCode(windowErr)),
 			})
 			continue
 		}
@@ -136,7 +137,7 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	event := fromGoogleEventV2(item, request.CalendarID, "")
 	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
 	if windowErr != nil {
-		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item)}}, nil
+		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item, googleEventWindowErrorCode(windowErr))}}, nil
 	}
 	if !inWindow {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
@@ -144,25 +145,38 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
 }
 
-func googleEventDiagnostic(item *gcal.Event) *calendar.EventSyncDiagnostic {
+func googleEventDiagnostic(item *gcal.Event, reason string) *calendar.EventSyncDiagnostic {
 	if item == nil {
 		return nil
 	}
+	type diagnosticEventTime struct {
+		Date     string `json:"date,omitempty"`
+		DateTime string `json:"dateTime,omitempty"`
+		TimeZone string `json:"timeZone,omitempty"`
+	}
 	type diagnosticEvent struct {
-		ID      string `json:"id,omitempty"`
-		Status  string `json:"status,omitempty"`
-		ETag    string `json:"etag,omitempty"`
-		Summary string `json:"summary,omitempty"`
+		ID      string               `json:"id,omitempty"`
+		Status  string               `json:"status,omitempty"`
+		ETag    string               `json:"etag,omitempty"`
+		Summary string               `json:"summary,omitempty"`
+		Start   *diagnosticEventTime `json:"start,omitempty"`
+		End     *diagnosticEventTime `json:"end,omitempty"`
 	}
 	summary := item.Summary
 	if len(summary) > 4096 {
 		summary = summary[:4096]
 	}
-	payload, err := json.Marshal(diagnosticEvent{ID: item.Id, Status: item.Status, ETag: item.Etag, Summary: summary})
+	toDiagnosticTime := func(value *gcal.EventDateTime) *diagnosticEventTime {
+		if value == nil {
+			return nil
+		}
+		return &diagnosticEventTime{Date: value.Date, DateTime: value.DateTime, TimeZone: value.TimeZone}
+	}
+	payload, err := json.Marshal(diagnosticEvent{ID: item.Id, Status: item.Status, ETag: item.Etag, Summary: summary, Start: toDiagnosticTime(item.Start), End: toDiagnosticTime(item.End)})
 	if err != nil {
 		return nil
 	}
-	return &calendar.EventSyncDiagnostic{ContentType: "application/json", RawPayload: payload}
+	return &calendar.EventSyncDiagnostic{ContentType: "application/json", ProviderReason: reason, RawPayload: payload}
 }
 
 func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWindow) (bool, error) {
@@ -171,16 +185,35 @@ func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWi
 	}
 	start, err := event.Start.Instant()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("start: %w", err)
 	}
 	end, err := event.End.Instant()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("end: %w", err)
 	}
 	if !end.After(start) {
 		return false, errors.New("invalid event time range")
 	}
 	return start.Before(window.End) && end.After(window.Start), nil
+}
+
+func googleEventWindowErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	switch {
+	case strings.HasPrefix(message, "start:"):
+		return "invalid_start"
+	case strings.HasPrefix(message, "end:"):
+		return "invalid_end"
+	case strings.Contains(message, "time range"):
+		return "invalid_time_range"
+	case strings.Contains(message, "sync window"):
+		return "invalid_sync_window"
+	default:
+		return "invalid_event_time"
+	}
 }
 
 func validSyncWindow(window calendar.EventSyncWindow) bool {
