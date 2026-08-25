@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CalendarSidebar, ManageMenu } from "./CalendarPage";
+import { CalendarSidebar, ManageMenu, usesCompactCalendarLayout } from "./CalendarPage";
 import type { CalendarRecord } from "../../lib/types";
 
 let container: HTMLDivElement;
@@ -85,5 +85,15 @@ describe("calendar sidebar", () => {
     if (!checkbox) throw new Error("Calendar visibility checkbox was not rendered");
     act(() => checkbox.click());
     expect(onToggle).toHaveBeenCalledWith(calendar);
+  });
+});
+
+describe("calendar responsive layout", () => {
+  it("keeps drawers as overlays through mobile, iPad, and medium desktop widths", () => {
+    expect(usesCompactCalendarLayout(390)).toBe(true);
+    expect(usesCompactCalendarLayout(768)).toBe(true);
+    expect(usesCompactCalendarLayout(1024)).toBe(true);
+    expect(usesCompactCalendarLayout(1280)).toBe(true);
+    expect(usesCompactCalendarLayout(1440)).toBe(false);
   });
 });

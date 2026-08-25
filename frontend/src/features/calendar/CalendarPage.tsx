@@ -30,7 +30,12 @@ type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toResched
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
-const COMPACT_LAYOUT_QUERY = "(max-width: 1279px)";
+export const COMPACT_LAYOUT_MAX_WIDTH = 1439;
+const COMPACT_LAYOUT_QUERY = `(max-width: ${COMPACT_LAYOUT_MAX_WIDTH}px)`;
+
+export function usesCompactCalendarLayout(viewportWidth: number) {
+  return viewportWidth <= COMPACT_LAYOUT_MAX_WIDTH;
+}
 
 const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
   { value: "timeGridDay", label: "Day" },
