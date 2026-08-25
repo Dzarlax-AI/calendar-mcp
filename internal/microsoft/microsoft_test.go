@@ -2,6 +2,7 @@ package microsoft
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,6 +151,38 @@ func TestGraphEventPreservesDescriptionContentType(t *testing.T) {
 	}
 	if event.Description != "<p>Agenda</p>" || event.DescriptionFormat != "html" {
 		t.Fatalf("description metadata = %#v", event)
+	}
+}
+
+func TestMicrosoftUpdatePreservesExistingHTMLDescriptionFormat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = io.WriteString(w, `{"id":"event","body":{"content":"<p>Agenda</p>","contentType":"html"},"start":{"dateTime":"2026-08-10T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-10T10:00:00","timeZone":"UTC"}}`)
+		case http.MethodPatch:
+			var patch struct {
+				Body graphBody `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Fatal(err)
+			}
+			if patch.Body.ContentType != "html" || patch.Body.Content != "<p>Updated agenda</p>" {
+				t.Fatalf("body patch = %#v", patch.Body)
+			}
+			_, _ = io.WriteString(w, `{"id":"event","body":{"content":"<p>Updated agenda</p>","contentType":"html"},"start":{"dateTime":"2026-08-10T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-08-10T10:00:00","timeZone":"UTC"}}`)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	_, err := (&Provider{client: server.Client(), baseURL: server.URL}).UpdateEventV2(context.Background(), calendar.UpdateEventRequestV2{
+		Ref: calendar.EventRef{CalendarID: "calendar", EventID: "event"}, Scope: calendar.ScopeSingle, Notifications: calendar.NotificationsNone,
+		Patch: calendar.EventPatchV2{Description: calendar.PatchField[string]{Present: true, Value: "<p>Updated agenda</p>"}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

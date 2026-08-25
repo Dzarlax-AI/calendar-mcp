@@ -11,11 +11,13 @@ describe("HtmlDescription", () => {
     expect(html).toContain("<br/>");
   });
 
-  it("does not render active content or unsafe URL schemes", () => {
-    const html = renderToStaticMarkup(<HtmlDescription html={'<p onclick="alert(1)">Safe</p><script>alert(1)</script><a href="javascript:alert(1)">Bad link</a>'} />);
+  it("does not render active-content text or unsafe URL schemes", () => {
+    const html = renderToStaticMarkup(<HtmlDescription html={'<p onclick="alert(1)">Safe</p><script>alert(1)</script><style>body { display: none; }</style><a href="javascript:alert(1)">Bad link</a>'} />);
     expect(html).toContain("<p>Safe</p>");
     expect(html).not.toContain("onclick");
     expect(html).not.toContain("<script");
+    expect(html).not.toContain("alert(1)");
+    expect(html).not.toContain("display: none");
     expect(html).not.toContain("javascript:");
     expect(html).toContain("Bad link");
   });

@@ -289,7 +289,11 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		patch["subject"] = request.Patch.Title.Value
 	}
 	if request.Patch.Description.Present {
-		patch["body"] = graphBody{ContentType: "text", Content: request.Patch.Description.Value}
+		descriptionFormat := existing.DescriptionFormat
+		if descriptionFormat != "html" {
+			descriptionFormat = "text"
+		}
+		patch["body"] = graphBody{ContentType: descriptionFormat, Content: request.Patch.Description.Value}
 	}
 	if request.Patch.Location.Present {
 		patch["location"] = graphLocation{DisplayName: request.Patch.Location.Value}

@@ -18,6 +18,7 @@ function renderNode(node: Node, key: string): ReactNode {
 
   const element = node as HTMLElement;
   const tag = element.tagName.toLowerCase();
+  if (tag === "script" || tag === "style") return null;
   const children = Array.from(element.childNodes, (child, index) => renderNode(child, `${key}-${index}`));
   if (!allowedTags.has(tag)) return children;
 
