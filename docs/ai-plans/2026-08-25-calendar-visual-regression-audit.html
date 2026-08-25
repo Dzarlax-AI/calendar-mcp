@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Calendar Visual Regression Audit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color: #182033; background: #f6f7f9; font: 15px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; } main { max-width: 1050px; margin: 0 auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px; border: 1px solid #dfe3eb; border-radius: 10px; background: #fff; }
+    h1 { margin: 0 0 8px; line-height: 1.15; } h2 { margin: 0 0 10px; font-size: 18px; } h3 { margin: 16px 0 6px; font-size: 15px; }
+    p, li { color: #364158; } ul, ol { margin: 8px 0; padding-left: 22px; } code { padding: 2px 5px; border-radius: 4px; background: #f0f2f7; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; } th, td { padding: 9px; border: 1px solid #dfe3eb; text-align: left; vertical-align: top; } th { background: #f5f6fa; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fff1d7; color: #8b5d06; font-size: 12px; font-weight: 700; }
+    .callout { border-left: 4px solid #4456ee; padding: 10px 14px; background: #f5f6ff; } .risk { border-left-color: #d83b4f; background: #fff5f6; } .approval { border-left-color: #b57319; background: #fffaf0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Calendar Visual Regression Audit</h1>
+  <p class="badge">Implemented locally — awaiting PR review</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Add a deterministic, screenshot-backed visual QA suite for Calendar so responsive failures are caught before merge. This follows the separate responsive fix in PR #21; it does not change production Calendar behavior.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior and evidence</h2>
+    <ul>
+      <li><code>frontend</code> has Vite, Vitest, and jsdom unit tests only; there is no browser or screenshot test harness.</li>
+      <li>Production and local Vite both require <code>/api/ui/bootstrap</code>; an unauthenticated local browser shows the Calendar unavailable gate, so it cannot exercise a real Calendar surface.</li>
+      <li>The Calendar has responsive boundaries at 560, 820, 1080, and 1439/1440px, plus a canvas-width container query. The reported 1280px defect crossed the prior drawer breakpoint without a rendered regression test.</li>
+      <li>Current CI runs frontend typecheck, Vitest, build, Docker build, Go tests, and vet, but no Chromium job or visual artifact upload.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired outcome</h2>
+    <p>Every Calendar UI PR runs deterministic browser checks using synthetic data, captures approved screenshots at representative viewport sizes, and fails with inspectable artifacts when layout changes unexpectedly. No test contacts production, Authentik, providers, calendars, or sends notifications.</p>
+  </section>
+
+  <section>
+    <h2>Scope and fixture matrix</h2>
+    <table>
+      <thead><tr><th>Surface/state</th><th>Viewport coverage</th><th>What it catches</th></tr></thead>
+      <tbody>
+        <tr><td>Populated week: six calendars, all-day event, overlaps, long title/location</td><td>390×844, 768×1024, 1024×1366, 1280×800, 1440×900</td><td>Calendar density, clipped labels, sidebar/canvas geometry</td></tr>
+        <tr><td>Long rich event open in Event details</td><td>All five</td><td>Drawer mode, content overflow, close affordance, details readability</td></tr>
+        <tr><td>Toolbar + Manage menu and every view selector</td><td>All five plus 560/561, 820/821, 1080/1081, 1439/1440 probes</td><td>Wrapped/tall controls, disappearing actions, breakpoint drift</td></tr>
+        <tr><td>Create/edit modal, all-day toggle, no writable calendar</td><td>390, 768, 1024, 1280, 1440</td><td>Modal height, field stacking, action visibility</td></tr>
+        <tr><td>Calendar filter sheet/sidebar with long labels and disabled calendar</td><td>390, 768, 1024, 1280, 1440</td><td>Touch targets, scrolling, persistent versus overlay mode</td></tr>
+        <tr><td>Degraded/pending/empty/error states and recurrence/delete dialogs</td><td>Relevant mobile, tablet, desktop samples</td><td>Status strip growth, overlays, focus and destructive-action layout</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Proposed implementation</h2>
+    <ol>
+      <li>Add <code>@playwright/test</code>, a <code>test:e2e</code> script, and <code>frontend/playwright.config.ts</code>. Run against built local Vite preview at <code>/spa/app</code>, with fixed timezone, locale, reduced motion, and deterministic fonts.</li>
+      <li>Add source-owned synthetic fixtures under <code>frontend/e2e/fixtures/</code>: seven capability-varied calendars; long, read-only, all-day, overlapping, and Meet events; sanitized HTML; source states; and mutation outcomes. Fixtures contain no personal calendar data.</li>
+      <li>In Playwright, intercept only <code>/api/ui/*</code> requests per test. Fulfil bootstrap, events, and relevant mutation/refresh requests locally; reset localStorage before each test.</li>
+      <li>Add <code>calendar.visual.spec.ts</code> with screenshots and functional assertions: no document horizontal overflow, visible key controls, event drawer close via Escape/scrim, modal focus/action visibility, and responsive mode at the exact boundaries.</li>
+      <li>Commit reviewed Linux Chromium screenshot baselines. Add CI Chromium installation, <code>npm --prefix frontend run test:e2e</code>, and failure-only uploads for Playwright report, traces, and screenshot diffs.</li>
+      <li>Keep Vitest for domain/unit checks. Add a small live production smoke checklist after deployment, performed in an authenticated user session, but do not automate it against real calendar data.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>frontend/package.json</code> and <code>frontend/package-lock.json</code> — Playwright dependency and scripts.</li>
+      <li><code>frontend/playwright.config.ts</code> — browser, server, screenshot, timezone, and retries policy.</li>
+      <li><code>frontend/e2e/calendar.visual.spec.ts</code> and <code>frontend/e2e/fixtures/calendar.ts</code> — deterministic routes, interactions, assertions, and fixtures.</li>
+      <li><code>frontend/e2e/...-snapshots/</code> — reviewed Chromium baselines.</li>
+      <li><code>.github/workflows/ci.yml</code> — install Chromium, run visual suite, upload failure artifacts.</li>
+      <li>Only if tests expose a real defect: the narrowest affected Calendar component or stylesheet. No production API, storage, provider, auth, or migration changes are planned.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Validation and manual QA</h2>
+    <ul>
+      <li><code>npm --prefix frontend test</code>, <code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend run build</code>, and <code>npm --prefix frontend run test:e2e</code>.</li>
+      <li>CI passes from a clean Ubuntu Chromium environment and produces inspectable artifacts on an intentional failing snapshot rehearsal.</li>
+      <li>Review screenshots at the five primary widths and boundary probes. Confirm no crop, horizontal page scroll, multi-line primary action, inaccessible close control, or hidden destructive action.</li>
+      <li>After a future deployment, manually open the real Calendar, a rich-description event, and Create event in an authenticated session. Treat this as a smoke check, not fixture evidence.</li>
+    </ul>
+  </section>
+
+  <section class="callout risk">
+    <h2>Risks, trade-offs, and safeguards</h2>
+    <ul>
+      <li>Visual baselines are browser/OS-sensitive. Generate and compare them only in Ubuntu Chromium CI, not by mixing local macOS goldens.</li>
+      <li>Browser installation and screenshots increase CI time and artifact storage. Measure the first run; upload reports only on failure and keep the matrix targeted.</li>
+      <li>Fixture drift can hide real UX gaps. Keep fixtures representative and add a state whenever production reveals a new class of issue.</li>
+      <li>No automatic browser test will prove production authentication or provider sync. Those remain bounded manual smoke checks.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Model and execution allocation</h2>
+    <table>
+      <thead><tr><th>Lane</th><th>Model / agents</th><th>Deliverable</th><th>Why this allocation</th></tr></thead>
+      <tbody>
+        <tr><td>Architecture and final integration</td><td>1 × GPT-5.6-Sol (lead)</td><td>Fixture contract, Playwright configuration, CI policy, baseline acceptance, final diff review</td><td>Cross-file testing and CI changes need one accountable high-reasoning owner.</td></tr>
+        <tr><td>Fixture and interaction implementation</td><td>1 × GPT-5.6-Terra</td><td>Deterministic <code>/api/ui/*</code> routes, synthetic calendar data, drawer/modal interaction assertions</td><td>Bounded TypeScript implementation; parallelizable without production access.</td></tr>
+        <tr><td>Viewport/state coverage review</td><td>1 × GPT-5.6-Terra</td><td>Screenshot matrix, boundary probes, accessibility and overflow assertions</td><td>Independent review prevents the test author from approving a blind spot.</td></tr>
+        <tr><td>Baseline and CI evidence triage</td><td>1 × GPT-5.6-Luna</td><td>Classify screenshot diffs, verify artifacts, flag unrelated noise for lead review</td><td>Repetitive comparison work is lower-cost; it cannot approve or alter baselines alone.</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Budget guardrail:</strong> use the two Terra lanes concurrently only after the Sol lead has fixed the fixture contract. Luna is used only for bounded evidence triage. No model sends data externally or receives production credentials. Dollar/token estimates are intentionally not invented; the measurable incremental runtime cost is GitHub Actions Chromium download and screenshot execution.</p>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>Remove the new CI visual-test step and Playwright files in one reverting commit. Production behavior and data are unaffected because the suite runs only against intercepted local responses.</p>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <ul>
+      <li>Should the full screenshot matrix run on every PR, or only when <code>frontend/**</code> changes while boundary/assertion checks run always?</li>
+      <li>Should intentional baseline changes require a dedicated reviewer label or is normal PR review sufficient?</li>
+      <li>Do we want the first PR limited to Calendar, then expand the same harness to Connections/Diagnostics after it proves stable?</li>
+    </ul>
+  </section>
+
+  <section class="callout approval">
+    <h2>Approval gate</h2>
+    <p>Approved by the user on 2026-08-25. Implementation covers Playwright, synthetic fixtures, reviewed visual baselines, and CI; it does not authorize production-data automation.</p>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Added Playwright 1.62, <code>test:e2e</code>/<code>test:e2e:update</code>, deterministic Chromium configuration, and Vitest exclusion for <code>e2e/**</code>.</li>
+      <li>Added 25 browser scenarios using intercepted, raw synthetic <code>/api/ui/*</code> payloads: five primary viewports, eight exact breakpoint probes, rich event details, create/filter, toolbar views, and degraded/pending/empty/error/recurrence/no-writable states.</li>
+      <li>Fixed the harness during the first local baseline run: froze the browser clock to 2026-08-25, placed daily-view test events on that date, and aligned selectors with the current accessibility names. No production Calendar code changed.</li>
+      <li>CI installs Linux Chromium, runs the suite, and uploads Playwright report/test results only when the job fails (seven-day retention).</li>
+    </ul>
+    <p>Verification passed: TypeScript typecheck, 34 Vitest tests, 25 local Playwright interaction tests, 25 Ubuntu Chromium screenshot comparisons in the Playwright Docker image, and <code>git diff --check</code>. Only Linux Chromium baseline PNGs are committed; local macOS screenshots and reports remain disposable artifacts.</p>
+  </section>
+</main>
+</body>
+</html>

@@ -43,6 +43,23 @@ jobs:
       - name: Frontend production build
         run: npm --prefix frontend run build
 
+      - name: Install Chromium for visual regression tests
+        run: npx --prefix frontend playwright install --with-deps chromium
+
+      - name: Frontend visual regression tests
+        run: npm --prefix frontend run test:e2e
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Stage embedded frontend bundle
         run: |
           mkdir -p internal/web/spa/dist
