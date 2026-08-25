@@ -59,6 +59,62 @@ func eventObject(uid string) string {
 	return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:" + uid + "\r\nSUMMARY:" + uid + "\r\nDTSTART:20260820T090000Z\r\nDTEND:20260820T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 }
 
+func fixedOffsetTimezoneEventObject(timezone, offset string, appleRDate bool) string {
+	rdate := ""
+	if appleRDate {
+		rdate = "RDATE:18000101T010000\r\n"
+	}
+	return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:fixed-zone\r\nDTSTART;TZID=" + timezone + ":20260820T120000\r\nDTEND;TZID=" + timezone + ":20260820T123000\r\nEND:VEVENT\r\nBEGIN:VTIMEZONE\r\nTZID:" + timezone + "\r\nBEGIN:STANDARD\r\nDTSTART:18000101T010000\r\n" + rdate + "TZOFFSETFROM:" + offset + "\r\nTZOFFSETTO:" + offset + "\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n"
+}
+
+func TestAppleEventSyncAcceptsEmbeddedFixedTimezone(t *testing.T) {
+	container, valid := decodeAppleEventSyncCalendar([]byte(fixedOffsetTimezoneEventObject("GMT+0100", "+0100", true)))
+	if !valid {
+		t.Fatal("fixture did not decode")
+	}
+	page, err := appleSyncPage(eventSyncRequest(calendar.EventSyncIncremental), []appleFetchedObject{{object: caldav.CalendarObject{Path: "/calendar/fixed.ics", ETag: `"etag"`, Data: container}, diagnostic: &calendar.EventSyncDiagnostic{ContentType: "text/calendar"}}})
+	if err != nil || len(page.Warnings) != 0 || len(page.Upserts) != 1 {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+	event := page.Upserts[0].Event
+	if event.Start.DateTime != "2026-08-20T12:00:00+01:00" || event.End.DateTime != "2026-08-20T12:30:00+01:00" || event.Start.TimeZone != "Etc/GMT-1" {
+		t.Fatalf("event=%#v", event)
+	}
+}
+
+func TestAppleEventSyncQuarantinesUnsupportedCustomTimezone(t *testing.T) {
+	container, valid := decodeAppleEventSyncCalendar([]byte(fixedOffsetTimezoneEventObject("GMT+0130", "+0130", false)))
+	if !valid {
+		t.Fatal("fixture did not decode")
+	}
+	page, err := appleSyncPage(eventSyncRequest(calendar.EventSyncIncremental), []appleFetchedObject{{object: caldav.CalendarObject{Path: "/calendar/unsupported-zone.ics", ETag: `"etag"`, Data: container}, diagnostic: &calendar.EventSyncDiagnostic{ContentType: "text/calendar"}}})
+	if err != nil || len(page.Upserts) != 0 || len(page.Warnings) != 1 || page.Warnings[0].Diagnostic == nil || page.Warnings[0].Diagnostic.ProviderReason != appleUnsupportedCustomTimezoneReason {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
+func TestAppleEventSyncQuarantinesFixedOffsetsOutsideEtcGMT(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		timezone string
+		offset   string
+	}{
+		{name: "positive", timezone: "GMT+1500", offset: "+1500"},
+		{name: "negative", timezone: "GMT-1300", offset: "-1300"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			container, valid := decodeAppleEventSyncCalendar([]byte(fixedOffsetTimezoneEventObject(tc.timezone, tc.offset, false)))
+			if !valid {
+				t.Fatal("fixture did not decode")
+			}
+			page, err := appleSyncPage(eventSyncRequest(calendar.EventSyncIncremental), []appleFetchedObject{{object: caldav.CalendarObject{Path: "/calendar/outside-etc-gmt.ics", ETag: `"etag"`, Data: container}, diagnostic: &calendar.EventSyncDiagnostic{ContentType: "text/calendar"}}})
+			if err != nil || len(page.Upserts) != 0 || len(page.Warnings) != 1 || page.Warnings[0].Diagnostic == nil || page.Warnings[0].Diagnostic.ProviderReason != appleUnsupportedCustomTimezoneReason {
+				t.Fatalf("page=%#v err=%v", page, err)
+			}
+		})
+	}
+}
+
 func TestAppleEventSyncCollectionPagesAndKeepsTokensOutOfErrors(t *testing.T) {
 	var reports atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

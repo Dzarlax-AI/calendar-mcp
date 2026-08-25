@@ -42,6 +42,7 @@ type CalendarResolver interface {
 type CalendarSyncStore interface {
 	ApplyEventSyncPage(context.Context, storage.CalendarSyncState, storage.EventSyncBatch, bool, time.Time) error
 	ListDueEventSyncQuarantine(context.Context, storage.CalendarSyncState, time.Time, int) ([]storage.CalendarSyncQuarantine, error)
+	ConsumeEventSyncProviderMutationAuthorization(context.Context, storage.CalendarSyncState, string, string, string, time.Time) (bool, error)
 	ApplyEventSyncObjectRepair(context.Context, storage.CalendarSyncState, storage.EventSyncRepairBatch, time.Time) error
 	FailCalendarSync(context.Context, storage.CalendarSyncState, string, time.Time, time.Time) error
 	ParkCalendarSync(context.Context, storage.CalendarSyncState, string, time.Time) error
@@ -254,10 +255,22 @@ func (s *Service) repairOne(ctx context.Context, state storage.CalendarSyncState
 }
 
 func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncState, providerCalendarID string, policy calendar.EventSyncPolicy, repairer calendar.EventSyncObjectRepairProvider, item storage.CalendarSyncQuarantine) error {
+	allowProviderMutation := false
+	if item.ProviderMutationAuthorizedETag != "" && item.ProviderMutationAuthorizedETag == item.ETag {
+		consumed, err := s.Store.ConsumeEventSyncProviderMutationAuthorization(ctx, state, item.CalendarID, item.ObjectID, item.ETag, s.now())
+		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+			return err
+		}
+		if err != nil {
+			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+		}
+		allowProviderMutation = consumed
+	}
 	result, repairErr := repairer.RepairEventSyncObject(ctx, calendar.EventSyncObjectRepairRequest{
 		CalendarID: providerCalendarID,
 		Window:     calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
 		Object:     calendar.SyncObject{ObjectID: item.ObjectID, ETag: item.ETag}, Generation: state.Generation,
+		AllowProviderMutation: allowProviderMutation,
 	})
 	if err := ctx.Err(); err != nil {
 		return err
@@ -307,6 +320,7 @@ func repairBatch(result calendar.EventSyncObjectRepairResult, calendarID string,
 	}
 	switch result.Outcome {
 	case calendar.EventSyncObjectReplaceMembership,
+		calendar.EventSyncObjectProviderCorrected,
 		calendar.EventSyncObjectAbsentFromProjection,
 		calendar.EventSyncObjectProviderDeleted,
 		calendar.EventSyncObjectStillQuarantined:

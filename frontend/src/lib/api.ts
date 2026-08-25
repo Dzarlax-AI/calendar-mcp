@@ -1,4 +1,4 @@
-import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncArtifact, SyncDiagnosticCalendar, SyncDiagnostics, SyncRule } from "./types";
+import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncArtifact, SyncDiagnosticCalendar, SyncDiagnostics, SyncProviderCorrection, SyncRule } from "./types";
 
 const API_ROOT = "/api/ui";
 const MAX_BROWSER_WARNINGS = 3;
@@ -83,7 +83,8 @@ export async function getSyncDiagnostics(): Promise<SyncDiagnostics> {
       grouped.set(item.calendar_id, calendar);
   }
   const calendars = [...grouped.values()];
-  return { summary: { degraded_calendars: calendars.length, active_objects: items.length, artifacts_available: calendars.reduce((count, calendar) => count + calendar.objects.filter((object) => object.artifact_available).length, 0) }, calendars };
+  const corrections = await request<{ items?: SyncProviderCorrection[] }>("/diagnostics/corrections");
+  return { summary: { degraded_calendars: calendars.length, active_objects: items.length, artifacts_available: calendars.reduce((count, calendar) => count + calendar.objects.filter((object) => object.artifact_available).length, 0) }, calendars, recent_provider_corrections: corrections.items ?? [] };
 }
 
 function earlierTimestamp(candidate?: string, current?: string | null): boolean {
@@ -98,8 +99,8 @@ export function getSyncArtifact(csrfToken: string, calendarId: string, objectId:
   return request<SyncArtifact>("/sync-artifact", { method: "POST", headers: csrfHeaders(csrfToken), body: JSON.stringify({ calendar_id: calendarId, object_id: objectId }) });
 }
 
-export function scheduleSyncRepair(csrfToken: string, calendarId: string, objectId: string): Promise<{ status: "scheduled" | "already_queued" }> {
-  return request<{ status: "scheduled" | "already_queued" }>("/diagnostics/quarantine/repair", { method: "POST", headers: csrfHeaders(csrfToken), body: JSON.stringify({ calendar_id: calendarId, object_id: objectId }) });
+export function scheduleSyncRepair(csrfToken: string, calendarId: string, objectId: string, expectedETag: string): Promise<{ status: "scheduled" | "already_queued" }> {
+  return request<{ status: "scheduled" | "already_queued" }>("/diagnostics/quarantine/repair", { method: "POST", headers: csrfHeaders(csrfToken), body: JSON.stringify({ calendar_id: calendarId, object_id: objectId, expected_etag: expectedETag }) });
 }
 
 export function getEvents(start: string, end: string, calendarIds: string[]): Promise<EventListResponse> {

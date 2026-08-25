@@ -134,7 +134,12 @@ type EventSyncProvider interface {
 type EventSyncObjectRepairOutcome string
 
 const (
-	EventSyncObjectReplaceMembership    EventSyncObjectRepairOutcome = "replace_membership"
+	EventSyncObjectReplaceMembership EventSyncObjectRepairOutcome = "replace_membership"
+	// EventSyncObjectProviderCorrected is a successful, operator-authorized
+	// provider mutation whose resulting membership was revalidated. It has the
+	// same projection semantics as replace_membership, but must remain visible
+	// to operators after the quarantine row is resolved.
+	EventSyncObjectProviderCorrected    EventSyncObjectRepairOutcome = "provider_corrected"
 	EventSyncObjectAbsentFromProjection EventSyncObjectRepairOutcome = "absent_from_projection"
 	EventSyncObjectProviderDeleted      EventSyncObjectRepairOutcome = "provider_deleted"
 	EventSyncObjectStillQuarantined     EventSyncObjectRepairOutcome = "still_quarantined"
@@ -147,6 +152,10 @@ type EventSyncObjectRepairRequest struct {
 	Window     EventSyncWindow
 	Object     SyncObject
 	Generation int64
+	// AllowProviderMutation is granted once by the authenticated diagnostics
+	// action for this exact quarantined object version. Background workers must
+	// leave it false so adapters keep their normal repair path read-only.
+	AllowProviderMutation bool
 }
 
 // EventSyncObjectRepairResult contains one explicit repair outcome. A

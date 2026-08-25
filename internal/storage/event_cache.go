@@ -26,7 +26,7 @@ func (s *Store) ListDueEventSyncQuarantine(ctx context.Context, state CalendarSy
 	if limit <= 0 {
 		return []CalendarSyncQuarantine{}, nil
 	}
-	q := `SELECT calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active
+	q := `SELECT calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active, provider_mutation_authorized_etag
 		FROM calendar_sync_quarantine WHERE calendar_id=? AND active=? AND next_repair_at<=?
 		ORDER BY next_repair_at, object_id LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, s.query(q), state.CalendarID, true, now, limit)
@@ -37,7 +37,7 @@ func (s *Store) ListDueEventSyncQuarantine(ctx context.Context, state CalendarSy
 	items := make([]CalendarSyncQuarantine, 0, limit)
 	for rows.Next() {
 		var item CalendarSyncQuarantine
-		if err := rows.Scan(&item.CalendarID, &item.ObjectID, &item.ETag, &item.ErrorCode, &item.FirstSeenAt, &item.LastSeenAt, &item.NextRepairAt, &item.RepairAttempts, &item.Active); err != nil {
+		if err := rows.Scan(&item.CalendarID, &item.ObjectID, &item.ETag, &item.ErrorCode, &item.FirstSeenAt, &item.LastSeenAt, &item.NextRepairAt, &item.RepairAttempts, &item.Active, &item.ProviderMutationAuthorizedETag); err != nil {
 			return nil, fmt.Errorf("scan due event sync quarantine: %w", err)
 		}
 		items = append(items, item)
@@ -112,11 +112,41 @@ func (s *Store) GetActiveEventSyncQuarantineDiagnostic(ctx context.Context, cale
 	return &item, nil
 }
 
+// ListRecentEventSyncProviderCorrections returns the bounded operator audit
+// trail for repairs that changed provider data and then passed revalidation.
+// It deliberately does not join quarantine: corrected objects are resolved.
+func (s *Store) ListRecentEventSyncProviderCorrections(ctx context.Context, limit int) ([]EventSyncProviderCorrection, error) {
+	if limit <= 0 {
+		return []EventSyncProviderCorrection{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, s.query(`SELECT p.calendar_id, p.object_id, p.outcome, p.corrected_at, c.name, conn.provider
+		FROM calendar_sync_provider_corrections p
+		JOIN calendars c ON c.id=p.calendar_id
+		JOIN connections conn ON conn.id=c.connection_id
+		ORDER BY p.corrected_at DESC, p.calendar_id, p.object_id LIMIT ?`), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent event sync provider corrections: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]EventSyncProviderCorrection, 0, limit)
+	for rows.Next() {
+		var item EventSyncProviderCorrection
+		if err := rows.Scan(&item.CalendarID, &item.ObjectID, &item.Outcome, &item.CorrectedAt, &item.CalendarName, &item.Provider); err != nil {
+			return nil, fmt.Errorf("scan recent event sync provider correction: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent event sync provider corrections: %w", err)
+	}
+	return items, nil
+}
+
 // ScheduleEventSyncObjectRepair makes one active object due now and wakes an
 // unleased calendar so the worker can claim it immediately. A row that is
 // already due is left untouched, making repeated operator requests harmless.
-func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, objectID string, now time.Time) (bool, error) {
-	if calendarID == "" || objectID == "" {
+func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, objectID, expectedETag string, now time.Time) (bool, error) {
+	if calendarID == "" || objectID == "" || expectedETag == "" {
 		return false, ErrNotFound
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -124,8 +154,29 @@ func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, o
 		return false, fmt.Errorf("begin schedule event sync object repair: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The diagnostics handler is the authenticated operator boundary. Bind the
+	// grant to the current ETag so a later provider version needs a new click.
+	authorization, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine
+		SET provider_mutation_authorized_etag=etag
+		WHERE calendar_id=? AND object_id=? AND active=? AND etag=?`), calendarID, objectID, true, expectedETag)
+	if err != nil {
+		return false, fmt.Errorf("authorize event sync object repair: %w", err)
+	}
+	authorized, err := authorization.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read event sync object repair authorization: %w", err)
+	}
+	if authorized == 0 {
+		var active bool
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT active FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=?`), calendarID, objectID).Scan(&active); errors.Is(err, sql.ErrNoRows) || !active {
+			return false, ErrNotFound
+		} else if err != nil {
+			return false, fmt.Errorf("read event sync object repair authorization: %w", err)
+		}
+		return false, ErrEventSyncRepairETagMismatch
+	}
 	result, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET next_repair_at=?
-		WHERE calendar_id=? AND object_id=? AND active=? AND next_repair_at>?`), now, calendarID, objectID, true, now)
+		WHERE calendar_id=? AND object_id=? AND active=? AND etag=? AND next_repair_at>?`), now, calendarID, objectID, true, expectedETag, now)
 	if err != nil {
 		return false, fmt.Errorf("schedule event sync object repair: %w", err)
 	}
@@ -151,6 +202,37 @@ func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, o
 		return false, fmt.Errorf("commit event sync object repair: %w", err)
 	}
 	return changed == 1, nil
+}
+
+// ConsumeEventSyncProviderMutationAuthorization atomically spends the
+// operator's ETag-bound authorization while the worker still owns the
+// calendar lease. A process crash after this point requires a fresh explicit
+// operator action instead of risking an unapproved provider mutation retry.
+func (s *Store) ConsumeEventSyncProviderMutationAuthorization(ctx context.Context, state CalendarSyncState, calendarID, objectID, etag string, now time.Time) (bool, error) {
+	if state.CalendarID == "" || state.LeaseOwner == "" || state.CalendarID != calendarID || objectID == "" || etag == "" {
+		return false, ErrCalendarSyncLeaseLost
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin consume event sync repair authorization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine SET provider_mutation_authorized_etag=''
+		WHERE calendar_id=? AND object_id=? AND active=? AND etag=? AND provider_mutation_authorized_etag=?`), calendarID, objectID, true, etag, etag)
+	if err != nil {
+		return false, fmt.Errorf("consume event sync repair authorization: %w", err)
+	}
+	consumed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read consumed event sync repair authorization: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit event sync repair authorization: %w", err)
+	}
+	return consumed == 1, nil
 }
 
 func scanEventSyncQuarantineDiagnostic(row scanner) (EventSyncQuarantineDiagnostic, error) {
@@ -191,7 +273,7 @@ func (s *Store) ApplyEventSyncObjectRepair(ctx context.Context, state CalendarSy
 		return err
 	}
 	switch batch.Outcome {
-	case calendar.EventSyncObjectReplaceMembership:
+	case calendar.EventSyncObjectReplaceMembership, calendar.EventSyncObjectProviderCorrected:
 		if len(batch.Upserts) == 0 {
 			return errors.New("repair replacement requires event membership")
 		}
@@ -218,6 +300,12 @@ func (s *Store) ApplyEventSyncObjectRepair(ctx context.Context, state CalendarSy
 		}
 		if err := clearEventSyncQuarantine(ctx, s, tx, state.CalendarID, batch.ObjectID); err != nil {
 			return err
+		}
+		if batch.Outcome == calendar.EventSyncObjectProviderCorrected {
+			if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_provider_corrections(calendar_id, object_id, outcome, corrected_at)
+				VALUES (?, ?, ?, ?)`), state.CalendarID, batch.ObjectID, string(batch.Outcome), now); err != nil {
+				return fmt.Errorf("record provider correction: %w", err)
+			}
 		}
 	case calendar.EventSyncObjectAbsentFromProjection, calendar.EventSyncObjectProviderDeleted:
 		if _, err := tx.ExecContext(ctx, s.query(`UPDATE cached_events SET deleted=?, sync_generation=?, synced_at=?
@@ -966,14 +1054,15 @@ func upsertEventSyncWarning(ctx context.Context, s *Store, tx *sql.Tx, calendarI
 	// becoming active again) resets repair backoff; identical observations keep
 	// the existing schedule and attempt count.
 	if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_quarantine
-		(calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+		(calendar_id, object_id, etag, error_code, first_seen_at, last_seen_at, next_repair_at, repair_attempts, active, provider_mutation_authorized_etag)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '')
 		ON CONFLICT(calendar_id, object_id) DO UPDATE SET
 			etag=excluded.etag, error_code=excluded.error_code, last_seen_at=excluded.last_seen_at,
 			first_seen_at=CASE WHEN NOT calendar_sync_quarantine.active THEN excluded.first_seen_at ELSE calendar_sync_quarantine.first_seen_at END,
 			next_repair_at=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN excluded.next_repair_at ELSE calendar_sync_quarantine.next_repair_at END,
 			repair_attempts=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN 0 ELSE calendar_sync_quarantine.repair_attempts END,
-			active=excluded.active`), calendarID, warning.ObjectID, warning.ETag, warning.ErrorCode, now, now, now, true); err != nil {
+			active=excluded.active,
+			provider_mutation_authorized_etag=CASE WHEN NOT calendar_sync_quarantine.active OR calendar_sync_quarantine.etag<>excluded.etag THEN '' ELSE calendar_sync_quarantine.provider_mutation_authorized_etag END`), calendarID, warning.ObjectID, warning.ETag, warning.ErrorCode, now, now, now, true); err != nil {
 		return fmt.Errorf("upsert event sync quarantine: %w", err)
 	}
 	if warning.Diagnostic != nil && s.artifactCipher != nil {

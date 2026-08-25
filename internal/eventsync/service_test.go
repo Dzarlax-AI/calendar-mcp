@@ -89,6 +89,7 @@ type fakeStore struct {
 	resetErr   error
 	quarantine []storage.CalendarSyncQuarantine
 	repairs    []storage.EventSyncRepairBatch
+	consumed   []string
 }
 
 func (s *fakeStore) ApplyEventSyncPage(_ context.Context, state storage.CalendarSyncState, batch storage.EventSyncBatch, final bool, _ time.Time) error {
@@ -125,6 +126,18 @@ func (s *fakeStore) ListDueEventSyncQuarantine(_ context.Context, _ storage.Cale
 		limit = len(s.quarantine)
 	}
 	return s.quarantine[:limit], nil
+}
+
+func (s *fakeStore) ConsumeEventSyncProviderMutationAuthorization(_ context.Context, _ storage.CalendarSyncState, calendarID, objectID, etag string, _ time.Time) (bool, error) {
+	s.consumed = append(s.consumed, calendarID+"/"+objectID+"/"+etag)
+	for index := range s.quarantine {
+		item := &s.quarantine[index]
+		if item.CalendarID == calendarID && item.ObjectID == objectID && item.ETag == etag && item.ProviderMutationAuthorizedETag == etag {
+			item.ProviderMutationAuthorizedETag = ""
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *fakeStore) ApplyEventSyncObjectRepair(_ context.Context, _ storage.CalendarSyncState, batch storage.EventSyncRepairBatch, _ time.Time) error {
@@ -180,6 +193,28 @@ func TestRepairOneProcessesAllDueObjectsAndPersistsOutcomes(t *testing.T) {
 		if store.repairs[i].Outcome != want {
 			t.Fatalf("repair[%d] outcome=%q, want %q", i, store.repairs[i].Outcome, want)
 		}
+	}
+}
+
+func TestRepairOnePassesProviderMutationAuthorizationOnlyWhenPersisted(t *testing.T) {
+	provider := &fakeProvider{repairResults: []calendar.EventSyncObjectRepairResult{
+		repairResult("automatic", calendar.EventSyncObjectStillQuarantined),
+		repairResult("operator", calendar.EventSyncObjectStillQuarantined),
+	}}
+	operator := repairItem("operator")
+	operator.ProviderMutationAuthorizedETag = operator.ETag
+	store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{repairItem("automatic"), operator}}
+	service := newService(store, provider)
+	policy := service.policy(provider)
+	policy.MaxObjectRepairsPerRun = 2
+	if err := service.repairOne(t.Context(), testState("saved"), provider, "provider-calendar", policy); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.repairRequests) != 2 || provider.repairRequests[0].AllowProviderMutation || !provider.repairRequests[1].AllowProviderMutation {
+		t.Fatalf("repair authorizations = %#v", provider.repairRequests)
+	}
+	if len(store.consumed) != 1 || store.consumed[0] != "fake:calendar/operator/etag-operator" {
+		t.Fatalf("consumed authorizations = %#v", store.consumed)
 	}
 }
 

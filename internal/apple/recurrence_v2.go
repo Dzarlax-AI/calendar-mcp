@@ -39,6 +39,9 @@ func splitAppleInstanceID(value string) (string, *calendar.EventTime, error) {
 }
 
 func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEventsRequestV2) ([]calendar.EventV2, error) {
+	if err := normalizeAppleFixedOffsetTimezone(&object); err != nil {
+		return nil, err
+	}
 	events := object.Data.Events()
 	var master *ical.Event
 	for i := range events {

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Apple VTIMEZONE and Google Repair</title>
+  <style>
+    body { margin: 0; background: #f6f7fb; color: #1e293b; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 980px; margin: auto; padding: 32px 20px 56px; }
+    section { background: white; border: 1px solid #dce2ec; border-radius: 12px; padding: 20px 24px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; color: #17213a; } h1 { margin-bottom: 6px; }
+    code { background: #eef2f7; padding: 2px 5px; border-radius: 4px; word-break: break-word; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fff3d7; color: #875500; font-size: 13px; font-weight: 700; }
+    .risk { border-left: 4px solid #d97706; } .approval { border-left: 4px solid #2563eb; }
+    li { margin: 7px 0; } .mutates { color: #9a3412; font-weight: 700; }
+  </style>
+</head>
+<body><main>
+  <h1>Apple VTIMEZONE compatibility and explicit Google event repair</h1>
+  <p class="badge">Implementation approved; merge and deployment remain separate approvals</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Accept Apple Calendar resources whose non-IANA <code>TZID</code> is defined by a supported fixed-offset embedded <code>VTIMEZONE</code>, and make the existing operator-only Repair action able to repair one narrowly-defined malformed Google all-day event.</p>
+  </section>
+
+  <section>
+    <h2>Observed current behavior</h2>
+    <ul>
+      <li>Apple sync decodes the uploaded iCalendar object, then calls <code>Prop.DateTime(nil)</code>. The library calls <code>time.LoadLocation(TZID)</code>; it cannot resolve Apple’s <code>GMT+0100</code> despite the resource defining that timezone in <code>VTIMEZONE</code>. The whole resource is quarantined as <code>protocol</code>.</li>
+      <li>Google sync isolates malformed events and stores a reason such as <code>invalid_time_range</code>. Repair currently only refetches the event, so an all-day event with identical <code>start.date</code> and <code>end.date</code> remains quarantined.</li>
+      <li>The diagnostics repair endpoint is already authenticated, CSRF-protected, and schedules an object-level repair. It does not currently disclose or authorize a provider-data mutation separately.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior and safety boundary</h2>
+    <ul>
+      <li>Apple: parse a matching custom fixed-offset <code>VTIMEZONE</code> such as <code>GMT+0100</code>, then materialize the event with the correct offset. Do not rewrite Apple data.</li>
+      <li>Google: only when an operator invokes Repair, and only for an all-day event whose sole fault is <code>start.date == end.date</code>, set <code>end.date</code> to the following calendar day. Re-fetch and project it only if the corrected object validates.</li>
+      <li><span class="mutates">No automatic mutation during normal sync.</span> Timed events, missing dates, reversed ranges, recurrence semantics, and every other provider reason remain quarantined and require manual repair.</li>
+      <li>The repair result must show whether the provider object was corrected, was unchanged, conflicted, or remains quarantined. Cached events remain visible throughout.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>internal/apple/event_sync.go</code> and a focused Apple helper — resolve custom <code>VTIMEZONE</code> before event date-time parsing and preserve an actionable reason.</li>
+      <li><code>internal/apple/event_sync_test.go</code> — exact supplied Apple-style resource, plus unsupported/missing timezone definitions.</li>
+      <li><code>internal/google/event_sync.go</code> — explicit, ETag-aware all-day correction in <code>RepairEventSyncObject</code>, followed by re-fetch/validation.</li>
+      <li><code>internal/google/event_sync_test.go</code> — safe correction, no mutation for other invalid ranges, Google conflict/error behavior, and successful projection.</li>
+      <li><code>internal/calendar/event_sync.go</code>, storage, and <code>internal/web/</code> only if a new repair outcome/reason is needed to present mutation status accurately.</li>
+      <li><code>frontend/src/...</code> — only if the existing Repair feedback cannot distinguish corrected versus merely queued/still quarantined.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Add a calendar-level timezone resolver for a resource’s <code>VTIMEZONE</code>. Initially support only definitions with one unambiguous fixed UTC offset; retain a typed <code>unsupported_custom_timezone</code> reason for complex transition rules rather than guessing.</li>
+      <li>Use that resolver for Apple event and recurrence time parsing in the sync path; validate start/end as before and continue isolating a bad object from its calendar siblings.</li>
+      <li>Classify Google repair eligibility strictly: date-only start/end, identical dates, non-cancelled event, and no unsupported event form. Use the current ETag/conditional update so a concurrently edited event is never overwritten.</li>
+      <li>Perform the one-day end-date correction only in the already explicit operator repair flow. Re-fetch after the write, re-run the normal window validator, and return a truthful object-repair outcome.</li>
+      <li>Expose a concise repair status in diagnostics, without exposing raw provider payloads outside the existing allowlisted detail endpoint.</li>
+      <li>Update this plan with actual files, test evidence, limitations, and deployment result after implementation.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Model allocation and review gates</h2>
+    <ul>
+      <li><strong>Luna, medium:</strong> inspect the Go iCalendar dependency and current Apple/Google repair paths; prepare narrowly scoped regression fixtures and test cases. No production deployment, provider write, or architectural decision.</li>
+      <li><strong>Terra, medium:</strong> implement the fixed-offset <code>VTIMEZONE</code> resolver, the strictly eligible Google repair branch, typed outcomes, and the required integration/UI wiring. Run the full local verification set and address mechanical review findings.</li>
+      <li><strong>Sol, medium — opt-in only:</strong> independently review the final diff for calendar-data safety, conditional-update semantics, and the non-mutation boundary. It will not implement or iterate on routine fixes. Ask Alexey before invoking Sol; do not use Sol high.</li>
+      <li><strong>Coordinator:</strong> combine the small-model outputs, keep the scope narrow, verify the exact release image and production health, and report any provider mutation truthfully.</li>
+    </ul>
+    <p>Default cost rule: start with Luna/Terra; Sol is an exception for the final high-risk review, never a default implementation model.</p>
+  </section>
+
+  <section>
+    <h2>API, permissions, and deployment impact</h2>
+    <p>The browser API Repair request includes the quarantined object’s current ETag. The Google branch can perform one narrowly scoped external write only after this operator authorization; it remains protected by Authentik, the diagnostics operator allowlist, and CSRF. Schema migrations record the one-time authorization and durable provider-correction audit trail. The deployed worker needs the existing Google OAuth scope to update events; a permission failure is reported without retrying or modifying cached data.</p>
+  </section>
+
+  <section>
+    <h2>Test and manual QA</h2>
+    <ul>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-build go test ./internal/apple ./internal/google ./internal/calendar -count=1</code></li>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-build go test -race -count=1 ./...</code>, <code>go vet ./...</code>, frontend tests/typecheck/build, and <code>git diff --check</code>.</li>
+      <li>Fixture QA: supplied <code>GMT+0100</code> Apple resource yields 12:00–12:30 at +01:00 and does not quarantine.</li>
+      <li>Google QA with an isolated fixture: Repair changes only equal all-day dates to a one-day interval; a timed or reversed interval produces no provider write.</li>
+      <li>After deployment: verify health, diagnostics access, a successful Apple repair, and one eligible Google repair using a non-destructive test event before touching real historic objects.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks, limitations, and rollback</h2>
+    <ul>
+      <li>A <code>VTIMEZONE</code> with daylight transitions cannot be represented safely as one fixed offset. It will remain quarantined with an explicit reason until a full transition-aware resolver is added.</li>
+      <li>Automatic Google correction is intentionally confined to an explicit repair click and an exact malformed all-day shape. ETag conflict, auth failure, or an unexpected post-write representation leaves the object quarantined.</li>
+      <li>Rollback is an immutable-image pin rollback. Google changes already accepted by Google are user data and cannot be undone by deployment rollback; the repair audit/result must identify that a correction occurred.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <ul>
+      <li>Is fixed-offset custom timezone support sufficient for the current Apple failures, or should transition-aware <code>VTIMEZONE</code> support be part of this change? Proposed safe scope: fixed-offset now, typed quarantine otherwise.</li>
+      <li>Should diagnostics show a separate confirmation dialog before a Google provider write? Proposed scope: no extra dialog because Repair is already an explicit authenticated action, but label its outcome as “corrected at provider”.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Implemented Apple fixed whole-hour <code>VTIMEZONE</code> normalization in <code>internal/apple/timezone.go</code>, and applied it before sync validation and ordinary recurrence materialization. <code>GMT+0100</code> becomes the valid IANA zone <code>Etc/GMT-1</code>; the event instant remains <code>+01:00</code>.</li>
+      <li>Read-only production artifact inspection confirmed Apple’s fixed <code>GMT+0100</code> pattern has one <code>STANDARD</code> observance, equal <code>TZOFFSETFROM</code>/<code>TZOFFSETTO</code>, and a single <code>RDATE</code>. The resolver accepts that non-transitioning form; it still rejects rules or multiple observances that could imply a changing offset.</li>
+      <li>Unsupported fractional offsets, duplicate/missing definitions, and transition-aware zones remain quarantined with <code>unsupported_custom_timezone</code>.</li>
+      <li>Implemented Google repair in <code>internal/google/event_sync.go</code>: only an explicit repair of a default, non-recurring, date-only event with equal dates sends a conditional PATCH for <code>end.date = start.date + 1 day</code>, with notifications suppressed; it then refetches and validates before projection.</li>
+      <li>Review hardening added an ETag-bound, single-use operator authorization in migration 005. Background repair remains read-only; the worker consumes the authorization under its lease immediately before any provider mutation. Stale Repair clicks return a conflict instead of authorizing a newer provider version.</li>
+      <li>Migration 006 records a durable <code>provider_corrected</code> audit outcome while resolving quarantine. Operator diagnostics shows recent provider corrections without marking the calendar degraded. Google PATCH 404/410 resolves as provider-deleted; generated <code>Etc/GMT</code> zones are verified with <code>time.LoadLocation</code>.</li>
+      <li>Focused Apple, Google, event-sync, storage, and web tests plus frontend typecheck and <code>git diff --check</code> passed after the review fixes. Full repository verification is the remaining pre-commit gate.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p>Implementation was explicitly approved. The approval authorizes only the narrow Google provider mutation described above, not broader automatic repair. Merge and production deployment remain separate explicit approvals. Sol review remains a separate, explicit opt-in gate.</p>
+  </section>
+</main></body>
+</html>

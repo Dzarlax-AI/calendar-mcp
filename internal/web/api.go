@@ -102,8 +102,9 @@ type rawSyncArtifactRequest struct {
 }
 
 type diagnosticsQuarantineRequest struct {
-	CalendarID string `json:"calendar_id"`
-	ObjectID   string `json:"object_id"`
+	CalendarID   string `json:"calendar_id"`
+	ObjectID     string `json:"object_id"`
+	ExpectedETag string `json:"expected_etag"`
 }
 
 type uiDiagnosticsQuarantine struct {
@@ -138,6 +139,19 @@ type uiDiagnosticsQuarantineResponse struct {
 	Items  []uiDiagnosticsQuarantine `json:"items"`
 	Offset int                       `json:"offset"`
 	Limit  int                       `json:"limit"`
+}
+
+type uiDiagnosticsProviderCorrection struct {
+	CalendarID   string    `json:"calendar_id"`
+	ObjectID     string    `json:"object_id"`
+	Outcome      string    `json:"outcome"`
+	CorrectedAt  time.Time `json:"corrected_at"`
+	CalendarName string    `json:"calendar_name"`
+	Provider     string    `json:"provider"`
+}
+
+type uiDiagnosticsProviderCorrectionsResponse struct {
+	Items []uiDiagnosticsProviderCorrection `json:"items"`
 }
 
 type uiDiagnosticsRepairResponse struct {
@@ -351,12 +365,37 @@ func (s *Server) listDiagnosticsQuarantine(w http.ResponseWriter, r *http.Reques
 	writeUIJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) listDiagnosticsProviderCorrections(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDiagnosticsOperator(w, r) {
+		return
+	}
+	items, err := s.store.ListRecentEventSyncProviderCorrections(r.Context(), maxDiagnosticsPageSize)
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	result := uiDiagnosticsProviderCorrectionsResponse{Items: make([]uiDiagnosticsProviderCorrection, 0, len(items))}
+	for _, item := range items {
+		result.Items = append(result.Items, uiDiagnosticsProviderCorrection{
+			CalendarID: item.CalendarID, ObjectID: item.ObjectID, Outcome: item.Outcome,
+			CorrectedAt: item.CorrectedAt, CalendarName: item.CalendarName, Provider: item.Provider,
+		})
+	}
+	writeUIJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) diagnosticsQuarantineDetail(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDiagnosticsOperator(w, r) {
 		return
 	}
-	request, err := decodeDiagnosticsQuarantineRequest(r)
-	if err != nil {
+	var request rawSyncArtifactRequest
+	if err := decodeUIJSON(r, &request); err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	request.CalendarID, request.ObjectID = strings.TrimSpace(request.CalendarID), strings.TrimSpace(request.ObjectID)
+	if request.CalendarID == "" || request.ObjectID == "" {
+		err := calendar.NewAPIError(calendar.ErrorInvalidArgument, "calendar_id and object_id are required")
 		writeUIAPIError(w, err)
 		return
 	}
@@ -381,9 +420,13 @@ func (s *Server) scheduleDiagnosticsRepair(w http.ResponseWriter, r *http.Reques
 		writeUIAPIError(w, err)
 		return
 	}
-	scheduled, err := s.store.ScheduleEventSyncObjectRepair(r.Context(), request.CalendarID, request.ObjectID, time.Now().UTC())
+	scheduled, err := s.store.ScheduleEventSyncObjectRepair(r.Context(), request.CalendarID, request.ObjectID, request.ExpectedETag, time.Now().UTC())
 	if errors.Is(err, storage.ErrNotFound) {
 		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, storage.ErrEventSyncRepairETagMismatch) {
+		writeUIAPIError(w, calendar.NewAPIError(calendar.ErrorConflict, "the quarantined object changed; refresh diagnostics before authorizing repair"))
 		return
 	}
 	if err != nil {
@@ -421,9 +464,9 @@ func decodeDiagnosticsQuarantineRequest(r *http.Request) (diagnosticsQuarantineR
 	if err := decodeUIJSON(r, &request); err != nil {
 		return request, err
 	}
-	request.CalendarID, request.ObjectID = strings.TrimSpace(request.CalendarID), strings.TrimSpace(request.ObjectID)
-	if request.CalendarID == "" || request.ObjectID == "" {
-		return request, calendar.NewAPIError(calendar.ErrorInvalidArgument, "calendar_id and object_id are required")
+	request.CalendarID, request.ObjectID, request.ExpectedETag = strings.TrimSpace(request.CalendarID), strings.TrimSpace(request.ObjectID), strings.TrimSpace(request.ExpectedETag)
+	if request.CalendarID == "" || request.ObjectID == "" || request.ExpectedETag == "" {
+		return request, calendar.NewAPIError(calendar.ErrorInvalidArgument, "calendar_id, object_id, and expected_etag are required")
 	}
 	return request, nil
 }
