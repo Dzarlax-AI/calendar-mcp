@@ -209,7 +209,8 @@ function eventTimeValue(time: EventTime): { value: string; allDay: boolean; time
 function normalizeEvent(raw: RawEvent | RawOperationResult): EventRecord {
   const start = eventTimeValue(raw.start);
   const end = eventTimeValue(raw.end);
-  return { id: raw.id, calendarId: raw.calendar_id, title: raw.title ?? "", description: raw.description, descriptionFormat: raw.description_format === "html" ? "html" : "text", location: raw.location, start: start.value, end: end.value, allDay: start.allDay, timezone: start.timezone, etag: raw.etag, htmlLink: raw.html_link, conference: raw.conference, readOnly: raw.read_only, source: raw.provider, originalStart: raw.original_start, warnings: safeWarnings(raw.warnings), recurrence: { isRecurring: Boolean(raw.recurring_event_id || (raw.recurrence?.length ?? 0) > 0), masterId: raw.recurring_event_id, occurrenceStart: raw.original_start?.date_time ?? raw.original_start?.date, scopes: raw.recurring_event_id ? ["single", "following", "series"] : undefined } };
+  const descriptionFormat = raw.description_format === "html" || (raw.description_format === undefined && raw.provider === "google") ? "html" : "text";
+  return { id: raw.id, calendarId: raw.calendar_id, title: raw.title ?? "", description: raw.description, descriptionFormat, location: raw.location, start: start.value, end: end.value, allDay: start.allDay, timezone: start.timezone, etag: raw.etag, htmlLink: raw.html_link, conference: raw.conference, readOnly: raw.read_only, source: raw.provider, originalStart: raw.original_start, warnings: safeWarnings(raw.warnings), recurrence: { isRecurring: Boolean(raw.recurring_event_id || (raw.recurrence?.length ?? 0) > 0), masterId: raw.recurring_event_id, occurrenceStart: raw.original_start?.date_time ?? raw.original_start?.date, scopes: raw.recurring_event_id ? ["single", "following", "series"] : undefined } };
 }
 
 function safeWarnings(value: unknown): string[] | undefined {

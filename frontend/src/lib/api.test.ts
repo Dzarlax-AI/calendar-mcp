@@ -57,6 +57,14 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("treats cached Google descriptions without format metadata as HTML", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id: "e1", calendar_id: "google:c1", provider: "google", description: "<p><strong>Agenda</strong></p>", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }], complete: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["google:c1"]);
+    expect(result.items[0]).toMatchObject({ source: "google", descriptionFormat: "html" });
+    vi.unstubAllGlobals();
+  });
+
   it("preserves degraded status while hiding provider payloads", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "apple", calendar_id: "c1", complete: false, status: "degraded", stale: true, error_code: "protocol", error: { message: "raw iCalendar payload" } }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
