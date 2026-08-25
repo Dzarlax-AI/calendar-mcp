@@ -17,11 +17,11 @@
 </head>
 <body><main>
   <h1>Apple VTIMEZONE compatibility and explicit Google event repair</h1>
-  <p class="badge">Approval required before implementation</p>
+  <p class="badge">Implementation approved; merge and deployment remain separate approvals</p>
 
   <section>
     <h2>Task summary</h2>
-    <p>Accept Apple Calendar resources whose non-IANA <code>TZID</code> is defined by an embedded <code>VTIMEZONE</code>, and make the existing operator-only Repair action able to repair one narrowly-defined malformed Google all-day event.</p>
+    <p>Accept Apple Calendar resources whose non-IANA <code>TZID</code> is defined by a supported fixed-offset embedded <code>VTIMEZONE</code>, and make the existing operator-only Repair action able to repair one narrowly-defined malformed Google all-day event.</p>
   </section>
 
   <section>
@@ -87,7 +87,7 @@
     <h2>Test and manual QA</h2>
     <ul>
       <li><code>GOCACHE=/tmp/calendar-mcp-go-build go test ./internal/apple ./internal/google ./internal/calendar -count=1</code></li>
-      <li><code>GOCACHE=/tmp/calendar-mcp-go-build go test ./internal/web -count=1</code>, <code>go vet ./...</code>, frontend tests/typecheck/build, and <code>git diff --check</code>.</li>
+      <li><code>GOCACHE=/tmp/calendar-mcp-go-build go test -race -count=1 ./...</code>, <code>go vet ./...</code>, frontend tests/typecheck/build, and <code>git diff --check</code>.</li>
       <li>Fixture QA: supplied <code>GMT+0100</code> Apple resource yields 12:00–12:30 at +01:00 and does not quarantine.</li>
       <li>Google QA with an isolated fixture: Repair changes only equal all-day dates to a one-day interval; a timed or reversed interval produces no provider write.</li>
       <li>After deployment: verify health, diagnostics access, a successful Apple repair, and one eligible Google repair using a non-destructive test event before touching real historic objects.</li>
@@ -115,6 +115,7 @@
     <h2>Implementation record</h2>
     <ul>
       <li>Implemented Apple fixed whole-hour <code>VTIMEZONE</code> normalization in <code>internal/apple/timezone.go</code>, and applied it before sync validation and ordinary recurrence materialization. <code>GMT+0100</code> becomes the valid IANA zone <code>Etc/GMT-1</code>; the event instant remains <code>+01:00</code>.</li>
+      <li>Read-only production artifact inspection confirmed Apple’s fixed <code>GMT+0100</code> pattern has one <code>STANDARD</code> observance, equal <code>TZOFFSETFROM</code>/<code>TZOFFSETTO</code>, and a single <code>RDATE</code>. The resolver accepts that non-transitioning form; it still rejects rules or multiple observances that could imply a changing offset.</li>
       <li>Unsupported fractional offsets, duplicate/missing definitions, and transition-aware zones remain quarantined with <code>unsupported_custom_timezone</code>.</li>
       <li>Implemented Google repair in <code>internal/google/event_sync.go</code>: only an explicit repair of a default, non-recurring, date-only event with equal dates sends a conditional PATCH for <code>end.date = start.date + 1 day</code>, with notifications suppressed; it then refetches and validates before projection.</li>
       <li>Review hardening added an ETag-bound, single-use operator authorization in migration 005. Background repair remains read-only; the worker consumes the authorization under its lease immediately before any provider mutation. Stale Repair clicks return a conflict instead of authorizing a newer provider version.</li>
@@ -125,7 +126,7 @@
 
   <section class="approval">
     <h2>Approval gate</h2>
-    <p>Implementation must not start until you explicitly approve this plan. Approval authorizes the narrow Google provider mutation described above, but not any broader automatic repair or production deployment. Sol review remains a separate, explicit opt-in gate.</p>
+    <p>Implementation was explicitly approved. The approval authorizes only the narrow Google provider mutation described above, not broader automatic repair. Merge and production deployment remain separate explicit approvals. Sol review remains a separate, explicit opt-in gate.</p>
   </section>
 </main></body>
 </html>

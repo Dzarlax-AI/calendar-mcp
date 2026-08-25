@@ -14,8 +14,10 @@ const appleUnsupportedCustomTimezoneReason = "unsupported_custom_timezone"
 // normalizeAppleFixedOffsetTimezone replaces an Apple-defined fixed-offset
 // TZID with an equivalent IANA Etc/GMT name in one decoded resource. go-ical
 // otherwise attempts time.LoadLocation on the custom TZID and ignores its
-// VTIMEZONE definition. Only whole-hour, single-observance definitions are
-// accepted: guessing across daylight transitions would change event instants.
+// VTIMEZONE definition. Only whole-hour definitions with one observance and a
+// constant offset are accepted. Apple may add an RDATE to that observance; it
+// is safe because it cannot change the offset. Guessing across daylight
+// transitions would change event instants.
 func normalizeAppleFixedOffsetTimezone(object *caldav.CalendarObject) error {
 	if object == nil || object.Data == nil {
 		return fmt.Errorf("%s: missing calendar data", appleUnsupportedCustomTimezoneReason)
@@ -71,7 +73,7 @@ func appleFixedOffsetTimezoneName(container *ical.Calendar, tzid string) (string
 		return "", fmt.Errorf("%s: %q is not one unambiguous fixed definition", appleUnsupportedCustomTimezoneReason, tzid)
 	}
 	standard := matches[0].Children[0]
-	if standard.Name != ical.CompTimezoneStandard && standard.Name != ical.CompTimezoneDaylight || len(standard.Children) != 0 || len(standard.Props[ical.PropTimezoneOffsetFrom]) != 1 || len(standard.Props[ical.PropTimezoneOffsetTo]) != 1 || len(standard.Props["RRULE"]) != 0 || len(standard.Props["RDATE"]) != 0 {
+	if standard.Name != ical.CompTimezoneStandard && standard.Name != ical.CompTimezoneDaylight || len(standard.Children) != 0 || len(standard.Props[ical.PropTimezoneOffsetFrom]) != 1 || len(standard.Props[ical.PropTimezoneOffsetTo]) != 1 || len(standard.Props["RRULE"]) != 0 || len(standard.Props["RDATE"]) > 1 {
 		return "", fmt.Errorf("%s: %q has transitions", appleUnsupportedCustomTimezoneReason, tzid)
 	}
 	from := standard.Props.Get(ical.PropTimezoneOffsetFrom)
