@@ -217,7 +217,14 @@ func toGoogleReminders(value *calendar.ReminderSettings) *gcal.EventReminders {
 	if !value.UseDefault && len(value.Overrides) == 0 {
 		result.ForceSendFields = append(result.ForceSendFields, "Overrides")
 	}
-	return result
+	return prepareGoogleRemindersForWrite(result)
+}
+
+func prepareGoogleRemindersForWrite(value *gcal.EventReminders) *gcal.EventReminders {
+	if value != nil && !value.UseDefault {
+		value.ForceSendFields = appendField(value.ForceSendFields, "UseDefault")
+	}
+	return value
 }
 
 func fromGoogleAttachments(values []*gcal.EventAttachment) []calendar.Attachment {

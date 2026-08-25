@@ -59,6 +59,36 @@ func TestCreateEventV2MapsRecurringEventAndSafetyOptions(t *testing.T) {
 	}
 }
 
+func TestCreateEventV2SerializesFalseUseDefaultWithReminderOverrides(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		for _, want := range []string{`"useDefault":false`, `"overrides":[{"method":"popup","minutes":30}]`} {
+			if !bytes.Contains(body, []byte(want)) {
+				t.Errorf("request body %s does not contain %s", body, want)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"event","start":{"date":"2026-08-26"},"end":{"date":"2026-08-28"}}`)
+	})
+	defer closeServer()
+
+	_, err := provider.CreateEventV2(context.Background(), calendar.CreateEventRequestV2{
+		CalendarID: "primary",
+		Event: calendar.EventCreateV2{
+			Title: "Trip",
+			Start: calendar.EventTime{Date: "2026-08-26"},
+			End:   calendar.EventTime{Date: "2026-08-28"},
+			Reminders: &calendar.ReminderSettings{
+				UseDefault: false,
+				Overrides:  []calendar.Reminder{{Method: "popup", Minutes: 30}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateEventV2() error = %v", err)
+	}
+}
+
 func TestFindEventBySyncMarkerV2UsesBothPrivateProperties(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		properties := r.URL.Query()["privateExtendedProperty"]
@@ -164,6 +194,33 @@ func TestUpdateEventV2UsesFetchedETagWhenExpectedETagIsOmitted(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUpdateEventV2PreservesFalseUseDefaultWithReminderOverrides(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"id":"event","etag":"etag","summary":"Old","start":{"date":"2026-08-26"},"end":{"date":"2026-08-28"},"reminders":{"useDefault":false,"overrides":[{"method":"popup","minutes":30}]}}`)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		for _, want := range []string{`"summary":"Changed"`, `"useDefault":false`, `"overrides":[{"method":"popup","minutes":30}]`} {
+			if !bytes.Contains(body, []byte(want)) {
+				t.Errorf("request body %s does not contain %s", body, want)
+			}
+		}
+		_, _ = io.WriteString(w, `{"id":"event","etag":"updated","summary":"Changed","start":{"date":"2026-08-26"},"end":{"date":"2026-08-28"},"reminders":{"useDefault":false,"overrides":[{"method":"popup","minutes":30}]}}`)
+	})
+	defer closeServer()
+
+	_, err := provider.UpdateEventV2(context.Background(), calendar.UpdateEventRequestV2{
+		Ref:   calendar.EventRef{CalendarID: "primary", EventID: "event"},
+		Scope: calendar.ScopeSeries,
+		Patch: calendar.EventPatchV2{Title: calendar.PatchField[string]{Present: true, Value: "Changed"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateEventV2() error = %v", err)
 	}
 }
 

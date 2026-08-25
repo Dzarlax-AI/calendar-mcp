@@ -59,6 +59,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if err := validateGoogleEventType(existing, false); err != nil {
 		return nil, invalidGoogleArgument(err)
 	}
+	prepareGoogleRemindersForWrite(existing.Reminders)
 
 	call := p.svc.Events.Update(request.Ref.CalendarID, request.Ref.EventID, existing).SendUpdates(sendUpdates)
 	etag := request.ExpectedETag
