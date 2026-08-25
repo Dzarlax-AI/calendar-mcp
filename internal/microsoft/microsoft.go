@@ -105,7 +105,7 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 		"endDateTime":   {end.UTC().Format("2006-01-02T15:04:05Z")},
 		"$orderby":      {"start/dateTime"},
 		"$top":          {"250"},
-		"$select":       {"id,subject,body,start,end,location,isAllDay,showAs,attendees,onlineMeeting"},
+		"$select":       {"id,subject,body,webLink,start,end,location,isAllDay,showAs,attendees,onlineMeeting"},
 	}
 
 	type eventPage struct {
@@ -113,7 +113,7 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 		NextLink string       `json:"@odata.nextLink"`
 	}
 	headers := http.Header{
-		"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`},
+		"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`},
 	}
 	var events []calendar.Event
 	next := p.baseURL + path + "?" + params.Encode()
@@ -338,8 +338,10 @@ type graphEvent struct {
 	ETag    string `json:"@odata.etag"`
 	ICalUID string `json:"iCalUId"`
 	Subject string `json:"subject"`
+	WebLink string `json:"webLink"`
 	Body    struct {
-		Content string `json:"content"`
+		Content     string `json:"content"`
+		ContentType string `json:"contentType"`
 	} `json:"body"`
 	Start                graphDateTime    `json:"start"`
 	End                  graphDateTime    `json:"end"`

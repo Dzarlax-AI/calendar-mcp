@@ -139,35 +139,36 @@ type GoogleEventExtension struct {
 }
 
 type EventV2 struct {
-	ID               string                `json:"id"`
-	CalendarID       string                `json:"calendar_id"`
-	Provider         string                `json:"provider"`
-	ICalUID          string                `json:"ical_uid,omitempty"`
-	ETag             string                `json:"etag,omitempty"`
-	HTMLLink         string                `json:"html_link,omitempty"`
-	Title            string                `json:"title,omitempty"`
-	Description      string                `json:"description,omitempty"`
-	Location         string                `json:"location,omitempty"`
-	Status           string                `json:"status,omitempty"`
-	Start            EventTime             `json:"start"`
-	End              EventTime             `json:"end"`
-	OriginalStart    *EventTime            `json:"original_start,omitempty"`
-	RecurringEventID string                `json:"recurring_event_id,omitempty"`
-	InstanceKind     string                `json:"instance_kind,omitempty"`
-	Recurrence       []string              `json:"recurrence,omitempty"`
-	Organizer        *PersonV2             `json:"organizer,omitempty"`
-	Attendees        []AttendeeV2          `json:"attendees,omitempty"`
-	Reminders        *ReminderSettings     `json:"reminders,omitempty"`
-	Visibility       string                `json:"visibility,omitempty"`
-	Transparency     string                `json:"transparency,omitempty"`
-	ColorID          string                `json:"color_id,omitempty"`
-	Attachments      []Attachment          `json:"attachments,omitempty"`
-	Conference       *ConferenceData       `json:"conference,omitempty"`
-	GuestPermissions *GuestPermissions     `json:"guest_permissions,omitempty"`
-	Google           *GoogleEventExtension `json:"google,omitempty"`
-	Created          *time.Time            `json:"created,omitempty"`
-	Updated          *time.Time            `json:"updated,omitempty"`
-	ReadOnly         bool                  `json:"read_only,omitempty"`
+	ID                string                `json:"id"`
+	CalendarID        string                `json:"calendar_id"`
+	Provider          string                `json:"provider"`
+	ICalUID           string                `json:"ical_uid,omitempty"`
+	ETag              string                `json:"etag,omitempty"`
+	HTMLLink          string                `json:"html_link,omitempty"`
+	Title             string                `json:"title,omitempty"`
+	Description       string                `json:"description,omitempty"`
+	DescriptionFormat string                `json:"description_format,omitempty"` // text or html
+	Location          string                `json:"location,omitempty"`
+	Status            string                `json:"status,omitempty"`
+	Start             EventTime             `json:"start"`
+	End               EventTime             `json:"end"`
+	OriginalStart     *EventTime            `json:"original_start,omitempty"`
+	RecurringEventID  string                `json:"recurring_event_id,omitempty"`
+	InstanceKind      string                `json:"instance_kind,omitempty"`
+	Recurrence        []string              `json:"recurrence,omitempty"`
+	Organizer         *PersonV2             `json:"organizer,omitempty"`
+	Attendees         []AttendeeV2          `json:"attendees,omitempty"`
+	Reminders         *ReminderSettings     `json:"reminders,omitempty"`
+	Visibility        string                `json:"visibility,omitempty"`
+	Transparency      string                `json:"transparency,omitempty"`
+	ColorID           string                `json:"color_id,omitempty"`
+	Attachments       []Attachment          `json:"attachments,omitempty"`
+	Conference        *ConferenceData       `json:"conference,omitempty"`
+	GuestPermissions  *GuestPermissions     `json:"guest_permissions,omitempty"`
+	Google            *GoogleEventExtension `json:"google,omitempty"`
+	Created           *time.Time            `json:"created,omitempty"`
+	Updated           *time.Time            `json:"updated,omitempty"`
+	ReadOnly          bool                  `json:"read_only,omitempty"`
 }
 
 type EventCreateV2 struct {

@@ -140,6 +140,19 @@ func TestGraphEventNormalizesInstanceKinds(t *testing.T) {
 	}
 }
 
+func TestGraphEventPreservesDescriptionContentType(t *testing.T) {
+	event, err := (&graphEvent{Body: struct {
+		Content     string `json:"content"`
+		ContentType string `json:"contentType"`
+	}{Content: "<p>Agenda</p>", ContentType: "html"}}).toEventV2("calendar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Description != "<p>Agenda</p>" || event.DescriptionFormat != "html" {
+		t.Fatalf("description metadata = %#v", event)
+	}
+}
+
 func TestFindEventBySyncMarkerV2UsesFilteredExtendedProperty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Query().Get("$filter"), calendar.SyncMarkerValue("rule", "source")) {

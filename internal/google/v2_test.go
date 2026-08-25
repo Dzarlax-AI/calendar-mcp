@@ -300,7 +300,7 @@ func TestCreateEventV2RejectsInvalidSpecialEventsBeforeNetwork(t *testing.T) {
 }
 
 func TestFromGoogleEventV2PreservesRecurrenceAndTimezone(t *testing.T) {
-	data := []byte(`{"id":"instance","recurringEventId":"series","originalStartTime":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"recurrence":["RRULE:FREQ=WEEKLY"],"start":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"end":{"dateTime":"2026-08-10T10:00:00+02:00","timeZone":"Europe/Belgrade"}}`)
+	data := []byte(`{"id":"instance","description":"<p>Agenda</p>","recurringEventId":"series","originalStartTime":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"recurrence":["RRULE:FREQ=WEEKLY"],"start":{"dateTime":"2026-08-10T09:00:00+02:00","timeZone":"Europe/Belgrade"},"end":{"dateTime":"2026-08-10T10:00:00+02:00","timeZone":"Europe/Belgrade"}}`)
 	var event struct {
 		ID string `json:"id"`
 	}
@@ -316,7 +316,7 @@ func TestFromGoogleEventV2PreservesRecurrenceAndTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RecurringEventID != "series" || result.OriginalStart == nil || result.Start.TimeZone != "Europe/Belgrade" || result.Start.DateTime != "2026-08-10T09:00:00+02:00" {
+	if result.RecurringEventID != "series" || result.DescriptionFormat != "html" || result.OriginalStart == nil || result.Start.TimeZone != "Europe/Belgrade" || result.Start.DateTime != "2026-08-10T09:00:00+02:00" {
 		t.Fatalf("mapped event = %#v", result)
 	}
 }

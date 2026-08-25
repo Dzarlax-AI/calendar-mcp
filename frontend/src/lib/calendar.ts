@@ -4,6 +4,12 @@ import type { CalendarRecord, EventCreateRequest, EventDraft, EventListResponse,
 export const EVENT_STATUS_POLL_INTERVAL_MS = 2_000;
 export const EVENT_STATUS_POLL_MAX_ATTEMPTS = 30;
 
+// FullCalendar accepts a duration for scrollTime. Keep the initial viewport
+// centered on the user's current local time instead of midnight.
+export function currentTimeScrollTime(now = new Date()): string {
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:00`;
+}
+
 export type EventStatusSummary = {
   kind: "failed" | "degraded" | "stale" | "syncing" | "updated";
   label: string;

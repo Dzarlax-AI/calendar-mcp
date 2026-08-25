@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calendar-focused sidebar plan</title>
+  <style>
+    body { max-width: 900px; margin: 40px auto; padding: 0 24px; color: #1d2738; font: 16px/1.55 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.2; } code { background: #f1f3f7; padding: 1px 4px; border-radius: 3px; }
+    .gate { border-left: 4px solid #4052e8; padding: 14px 18px; background: #f5f6ff; } .out { color: #596579; }
+  </style>
+</head>
+<body>
+  <h1>Calendar-focused sidebar</h1>
+  <p><strong>Status:</strong> implemented and independently reviewed on 2026-08-25.</p>
+
+  <h2>Goal</h2>
+  <p>Make <code>/app</code> a focused daily calendar surface, following the supplied Fantastical reference: the sidebar supports navigating dates and choosing visible calendars, while configuration does not compete with the calendar.</p>
+
+  <h2>Current behaviour</h2>
+  <p><code>CalendarSidebar</code> mixes five global destinations (Calendar, Connections, Sync Rules, Runs, Settings) with New event, the mini-calendar, and calendar visibility filters. The same operational destinations already have separate routes and dedicated pages.</p>
+
+  <h2>Desired behaviour</h2>
+  <ul>
+    <li>The calendar sidebar contains only: New event, mini-calendar/date navigation, and visible-calendar toggles.</li>
+    <li>Connections, Sync Rules, Runs, Settings, and diagnostics are removed from the <code>/app</code> sidebar, but remain reachable through their existing URLs and one compact toolbar Manage menu.</li>
+    <li>On compact screens, the “Calendars” sheet exposes only calendar controls; it does not become a hidden settings drawer.</li>
+    <li>No changes to OAuth, sync, MCP, calendar selection persistence, or event CRUD behaviour.</li>
+  </ul>
+
+  <h2>Likely files</h2>
+  <ul>
+    <li><code>frontend/src/features/calendar/CalendarPage.tsx</code> — simplify <code>CalendarSidebar</code>, add an accessible Manage overflow menu in the toolbar, and remove now-unused navigation imports.</li>
+    <li><code>frontend/src/styles/app.css</code> — remove obsolete calendar-sidebar navigation styling, add menu positioning/focus styles, and rebalance sidebar spacing.</li>
+    <li>Frontend tests — preserve calendar filtering and add a narrow regression check if the extracted sidebar structure has a testable seam.</li>
+  </ul>
+
+  <h2>Implementation and QA</h2>
+  <ol>
+    <li>Remove global navigation from the calendar sidebar without deleting routes or control-plane screens.</li>
+    <li>Add one subtle toolbar Manage trigger that opens links to the existing Connections, Sync Rules, Runs, and Settings pages. Do not embed those pages in a modal or duplicate their state.</li>
+    <li>Keep the primary calendar actions and ensure keyboard labels remain accurate.</li>
+    <li>Check desktop and compact layouts for usable calendar toggles, no empty divider, and no layout shift.</li>
+    <li>Run frontend tests, typecheck, build, <code>git diff --check</code>, then visually verify the calendar and mobile calendar-filter sheet.</li>
+  </ol>
+
+  <h2>Agent allocation</h2>
+  <ol>
+    <li><strong>Implementer (Terra):</strong> make the coupled sidebar, toolbar-menu, CSS, and focused frontend-test changes. This is one lane because the menu state, keyboard behaviour, and responsive styles share the same component and must not be edited concurrently.</li>
+    <li><strong>Specification reviewer (Luna):</strong> read the resulting diff without editing; verify the approved scope, preserved routes, menu content, diagnostics visibility, and every acceptance criterion.</li>
+    <li><strong>Quality reviewer (Luna):</strong> after spec approval, inspect accessibility semantics, focus/Escape/click-outside handling, responsive CSS, and test coverage. Any finding returns to the implementer, then is re-reviewed.</li>
+    <li><strong>Root integration:</strong> inspect the final diff, run the integrated frontend checks and desktop/mobile visual smoke path, and report only verified results.</li>
+  </ol>
+
+  <h2>Acceptance criteria</h2>
+  <ul>
+    <li>On desktop <code>/app</code>, the sidebar contains New event, mini-calendar/date navigation, and calendar visibility toggles only.</li>
+    <li>On <code>/app</code>, the sidebar has no Calendar, Connections, Sync Rules, Runs, or Settings links.</li>
+    <li>The compact/mobile Calendars sheet has the same calendar-only content; Escape, scrim-close, focus handling, and accessible labels still work.</li>
+    <li>The toolbar Manage trigger has an accessible name, reports expanded state, closes on Escape/click outside/selection, restores focus to its trigger, and remains usable at 320px wide.</li>
+    <li>Calendar selection persists, Show all calendars still works, mini-calendar date selection still changes the main view, and New event still opens the existing modal.</li>
+    <li><code>/connections</code>, <code>/rules</code>, <code>/rules/new</code>, <code>/runs</code>, <code>/settings</code>, and <code>/diagnostics</code> retain their routes and their current global navigation.</li>
+  </ul>
+
+  <h2>Risks and rollback</h2>
+  <p>The main risk is discoverability of occasional administration pages. The Manage menu addresses it while keeping configuration out of the primary viewing surface. The existing routes and global sidebar stay intact; rollback is a small restoration of the calendar-sidebar navigation and removal of the menu.</p>
+
+  <div class="gate"><strong>Approval gate</strong><br>Approve this plan to implement the calendar-only sidebar plus its compact toolbar Manage menu. It deliberately does not rebuild administration pages inside a modal.</div>
+  <h2>Implementation record</h2>
+  <ul>
+    <li>Removed global navigation from <code>CalendarSidebar</code>; it now contains New event, mini-calendar navigation, and calendar-visibility toggles.</li>
+    <li>Added a compact toolbar Manage menu linking to the existing Connections, Sync Rules, Runs, and Settings routes.</li>
+    <li>Added menu semantics, Escape dismissal, click-outside dismissal without stealing focus, selection dismissal with focus restoration, and responsive 320px styling.</li>
+    <li>Added focused CalendarPage tests for menu destinations, Escape/focus behavior, outside click behavior, and calendar-only sidebar/toggle behavior.</li>
+  </ul>
+  <h2>Checks and limitations</h2>
+  <ul>
+    <li>Passed: <code>npm test</code> (32 tests), <code>npm run typecheck</code>, <code>npm run build</code>, and <code>git diff --check</code>.</li>
+    <li>Independent specification review and quality/accessibility review both approved the final change.</li>
+    <li>Local visual smoke reached only the unauthenticated fallback because the Vite server has no authenticated API/bootstrap data; the live Manage interaction and compact sheet were therefore verified by focused tests and code review, not an authenticated browser session.</li>
+  </ul>
+  <p class="out"><strong>Follow-up excluded from this change:</strong> a richer account menu can replace the toolbar Manage menu later, but needs its own navigation and responsive-state design.</p>
+</body>
+</html>

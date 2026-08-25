@@ -42,27 +42,30 @@ type uiError struct {
 const uiErrorOriginApplication = "application"
 
 type uiEvent struct {
-	ID               string              `json:"id"`
-	CalendarID       string              `json:"calendar_id"`
-	Provider         string              `json:"provider"`
-	ETag             string              `json:"etag,omitempty"`
-	Title            string              `json:"title,omitempty"`
-	Description      string              `json:"description,omitempty"`
-	Location         string              `json:"location,omitempty"`
-	Status           string              `json:"status,omitempty"`
-	Start            calendar.EventTime  `json:"start"`
-	End              calendar.EventTime  `json:"end"`
-	OriginalStart    *calendar.EventTime `json:"original_start,omitempty"`
-	RecurringEventID string              `json:"recurring_event_id,omitempty"`
-	InstanceKind     string              `json:"instance_kind,omitempty"`
-	Recurrence       []string            `json:"recurrence,omitempty"`
-	Visibility       string              `json:"visibility,omitempty"`
-	Transparency     string              `json:"transparency,omitempty"`
-	ColorID          string              `json:"color_id,omitempty"`
-	Created          *time.Time          `json:"created,omitempty"`
-	Updated          *time.Time          `json:"updated,omitempty"`
-	ReadOnly         bool                `json:"read_only,omitempty"`
-	Warnings         []string            `json:"warnings,omitempty"`
+	ID                string                   `json:"id"`
+	CalendarID        string                   `json:"calendar_id"`
+	Provider          string                   `json:"provider"`
+	ETag              string                   `json:"etag,omitempty"`
+	HTMLLink          string                   `json:"html_link,omitempty"`
+	Title             string                   `json:"title,omitempty"`
+	Description       string                   `json:"description,omitempty"`
+	DescriptionFormat string                   `json:"description_format,omitempty"`
+	Location          string                   `json:"location,omitempty"`
+	Status            string                   `json:"status,omitempty"`
+	Start             calendar.EventTime       `json:"start"`
+	End               calendar.EventTime       `json:"end"`
+	OriginalStart     *calendar.EventTime      `json:"original_start,omitempty"`
+	RecurringEventID  string                   `json:"recurring_event_id,omitempty"`
+	InstanceKind      string                   `json:"instance_kind,omitempty"`
+	Recurrence        []string                 `json:"recurrence,omitempty"`
+	Visibility        string                   `json:"visibility,omitempty"`
+	Transparency      string                   `json:"transparency,omitempty"`
+	ColorID           string                   `json:"color_id,omitempty"`
+	Conference        *calendar.ConferenceData `json:"conference,omitempty"`
+	Created           *time.Time               `json:"created,omitempty"`
+	Updated           *time.Time               `json:"updated,omitempty"`
+	ReadOnly          bool                     `json:"read_only,omitempty"`
+	Warnings          []string                 `json:"warnings,omitempty"`
 }
 
 type uiSourceStatus struct {
@@ -1035,7 +1038,7 @@ func (response *uiEventsResponse) sort() {
 }
 
 func toUIEvent(event calendar.EventV2) uiEvent {
-	return uiEvent{ID: event.ID, CalendarID: event.CalendarID, Provider: event.Provider, ETag: event.ETag, Title: event.Title, Description: event.Description, Location: event.Location, Status: event.Status, Start: event.Start, End: event.End, OriginalStart: event.OriginalStart, RecurringEventID: event.RecurringEventID, InstanceKind: event.InstanceKind, Recurrence: event.Recurrence, Visibility: event.Visibility, Transparency: event.Transparency, ColorID: event.ColorID, Created: event.Created, Updated: event.Updated, ReadOnly: event.ReadOnly}
+	return uiEvent{ID: event.ID, CalendarID: event.CalendarID, Provider: event.Provider, ETag: event.ETag, HTMLLink: event.HTMLLink, Title: event.Title, Description: event.Description, DescriptionFormat: event.DescriptionFormat, Location: event.Location, Status: event.Status, Start: event.Start, End: event.End, OriginalStart: event.OriginalStart, RecurringEventID: event.RecurringEventID, InstanceKind: event.InstanceKind, Recurrence: event.Recurrence, Visibility: event.Visibility, Transparency: event.Transparency, ColorID: event.ColorID, Conference: event.Conference, Created: event.Created, Updated: event.Updated, ReadOnly: event.ReadOnly}
 }
 
 func toUIOperation(result calendar.OperationResult) uiOperationResult {

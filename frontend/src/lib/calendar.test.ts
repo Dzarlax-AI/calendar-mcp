@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, eventStatusPollInterval, formatEventDate, formatRelativeTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
+import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -20,6 +20,10 @@ function withTimezone<T>(timezone: string, run: () => T): T {
 }
 
 describe("calendar mapping", () => {
+  it("opens timed calendar views at the current local time", () => {
+    expect(currentTimeScrollTime(new Date(2026, 7, 25, 14, 7))).toBe("14:07:00");
+  });
+
   it("maps timed events to FullCalendar without losing editability", () => {
     const mapped = toCalendarEvent(event, calendar);
     expect(mapped).toMatchObject({ id: "google:primary\u0000evt-1", start: event.start, end: event.end, allDay: false, editable: true });

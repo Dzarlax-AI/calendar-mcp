@@ -55,7 +55,7 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 			Value    []graphEvent `json:"value"`
 			NextLink string       `json:"@odata.nextLink"`
 		}
-		if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+		if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 			return nil, err
 		}
 		for i := range response.Value {
@@ -95,7 +95,7 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 		Value    []graphEvent `json:"value"`
 		NextLink string       `json:"@odata.nextLink"`
 	}
-	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
 	if response.NextLink != "" {
@@ -110,7 +110,7 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 				Value    []graphEvent `json:"value"`
 				NextLink string       `json:"@odata.nextLink"`
 			}
-			if err := p.getURLWithHeaders(ctx, nextPage, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &following); err != nil {
+			if err := p.getURLWithHeaders(ctx, nextPage, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &following); err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
 			}
 			if following.NextLink != "" {
@@ -183,7 +183,7 @@ func (p *Provider) validateGraphPageURL(value string) error {
 func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(ref.CalendarID), url.PathEscape(ref.EventID))
 	var event graphEvent
-	if err := p.getWithParamsAndHeaders(ctx, path, nil, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &event); err != nil {
+	if err := p.getWithParamsAndHeaders(ctx, path, nil, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &event); err != nil {
 		return nil, err
 	}
 	result, err := event.toEventV2(ref.CalendarID)
@@ -210,7 +210,7 @@ func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.Ins
 		Value    []graphEvent `json:"value"`
 		NextLink string       `json:"@odata.nextLink"`
 	}
-	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &response); err != nil {
+	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
 	if response.NextLink != "" {
@@ -430,7 +430,7 @@ func toGraphAttendeesV2(values []calendar.AttendeeV2) []graphAttendee {
 }
 
 func (e *graphEvent) toEventV2(calendarID string) (calendar.EventV2, error) {
-	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, Title: e.Subject, Description: e.Body.Content, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, InstanceKind: e.Type, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
+	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, HTMLLink: e.WebLink, Title: e.Subject, Description: e.Body.Content, DescriptionFormat: e.Body.ContentType, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, InstanceKind: e.Type, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
 	if e.IsCancelled {
 		result.Status = "cancelled"
 	}
@@ -478,9 +478,9 @@ func (e *graphEvent) toEventV2(calendarID string) (calendar.EventV2, error) {
 
 func (p *Provider) getSeriesMaster(ctx context.Context, calendarID, eventID string) (*graphEvent, error) {
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
-	params := url.Values{"$select": {"id,iCalUId,subject,body,start,end,location,isAllDay,isCancelled,showAs,sensitivity,type,recurrence,cancelledOccurrences"}}
+	params := url.Values{"$select": {"id,iCalUId,subject,body,webLink,start,end,location,isAllDay,isCancelled,showAs,sensitivity,type,recurrence,cancelledOccurrences"}}
 	var event graphEvent
-	if err := p.getWithParamsAndHeaders(ctx, path, params, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="text"`}}, &event); err != nil {
+	if err := p.getWithParamsAndHeaders(ctx, path, params, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &event); err != nil {
 		return nil, err
 	}
 	return &event, nil
