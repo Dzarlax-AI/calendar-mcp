@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calendar Authentik outpost isolation</title>
+  <style>
+    body { max-width: 920px; margin: 40px auto; padding: 0 20px; font: 16px/1.55 system-ui, sans-serif; color: #182238; }
+    h1, h2 { line-height: 1.2; } h2 { margin-top: 34px; } code { background:#f1f4f8; padding:2px 5px; border-radius:4px; }
+    .callout { border-left: 4px solid #4f63ef; background:#f5f7ff; padding:14px 18px; } table { border-collapse:collapse; width:100%; }
+    th, td { border:1px solid #d9dee8; padding:9px; text-align:left; vertical-align:top; } th { background:#f5f7fa; }
+  </style>
+</head>
+<body>
+  <h1>Calendar Authentik outpost isolation</h1>
+  <p><strong>Status:</strong> implemented on 2026-08-25; authenticated-browser acceptance remains pending a user session check.</p>
+
+  <h2>Problem and evidence</h2>
+  <p>The Calendar Platform UI router uses the shared <code>authentik-auth</code> Traefik middleware. Its forward-auth target is the shared <code>authentik-proxy</code> outpost. An unauthenticated request to <code>calendar.dzarlax.dev/diagnostics</code> was redirected with Readeck scope and callback:</p>
+  <pre><code>ak_proxy_readeck
+https://read.dzarlax.dev/outpost.goauthentik.io/callback</code></pre>
+  <p>The browser correctly rejects that cross-origin redirect while the SPA is fetching its API, causing the 404/CORS and unavailable-diagnostics symptoms. The existing global Traefik outpost router already owns <code>PathPrefix(/outpost.goauthentik.io/)</code>; we will preserve it unless live verification disproves this routing model.</p>
+
+  <h2>Desired outcome</h2>
+  <ul>
+    <li>Calendar has its own Authentik Proxy Provider/Application and outpost binding (or a verified multi-application outpost configuration that produces an equivalent Calendar-specific callback).</li>
+    <li>Calendar's protected router uses a dedicated <code>authentik-calendar</code> middleware; Readeck and the shared middleware remain unchanged.</li>
+    <li>An unauthenticated top-level Calendar visit returns through <code>calendar.dzarlax.dev/outpost.goauthentik.io/callback</code>, not <code>read.dzarlax.dev</code>.</li>
+    <li>After login, <code>/diagnostics</code> loads and its quarantine request returns JSON without a cross-origin redirect.</li>
+  </ul>
+
+  <h2>Scope and likely locations</h2>
+  <ul>
+    <li>Authentik administration: new Calendar application, provider and outpost relationship; capture IDs/settings before changing them.</li>
+    <li><code>personal_ai_stack/deploy/authentik/docker-compose.yml</code>: add a separately named proxy only if the provider/outpost design requires it.</li>
+    <li><code>personal_ai_stack/deploy/calendar-mcp/docker-compose.yml</code>: define a Calendar-specific forward-auth middleware and attach it solely to <code>calendar-platform-ui</code>.</li>
+    <li>This plan. No Calendar Go/React change is in scope unless the corrected auth boundary exposes a separate, reproducible client contract issue.</li>
+  </ul>
+
+  <h2>Implementation sequence</h2>
+  <ol>
+    <li>Read the current Authentik applications, proxy providers and outposts; record the Readeck binding, existing proxy token owner, and the expected Calendar external host. Do not expose tokens.</li>
+    <li>Create a Calendar-specific Authentik application and proxy provider with the Calendar external host and authorization policy. Prefer a dedicated outpost/proxy when the current outpost cannot safely serve both applications; otherwise use Authentik's supported multi-application binding only after proving the callback is host-correct.</li>
+    <li>Add the new Calendar forward-auth middleware to the Calendar deploy configuration. It must target only the Calendar outpost/proxy and retain the identity response headers required by the app. Leave <code>authentik-auth</code> and <code>authentik-readeck</code> untouched.</li>
+    <li>Deploy the new/updated outpost first and verify its health. Then recreate only the Calendar UI service so Traefik discovers the new labels. Do not restart the shared proxy or Traefik unless the verified design requires it and a fresh approval is obtained.</li>
+    <li>Validate both top-level browser authentication and API calls. Only then remove no configuration; the old middleware remains as rollback.</li>
+  </ol>
+
+  <h2>Verification and acceptance criteria</h2>
+  <ul>
+    <li>Unauthenticated <code>GET https://calendar.dzarlax.dev/diagnostics</code> begins a Calendar-specific login flow and has no <code>read.dzarlax.dev</code> callback or Readeck scope.</li>
+    <li>After login, the browser remains on Calendar, <code>/diagnostics</code> renders, and <code>/api/ui/diagnostics/quarantine</code> returns 200 JSON.</li>
+    <li>Calendar health stays healthy; calendar UI and worker logs show no new auth proxy errors.</li>
+    <li>Readeck top-level login and its API path keep working unchanged.</li>
+  </ul>
+
+  <h2>Risks and rollback</h2>
+  <ul>
+    <li>Incorrect provider/outpost association can lock out Calendar. Roll back the Calendar router label to <code>authentik-auth</code> and recreate only Calendar UI.</li>
+    <li>Changing the existing shared outpost can affect Readeck. We will not mutate it unless the pre-change snapshot shows a supported, low-risk configuration and Readeck is included in verification.</li>
+    <li>Proxy tokens and provider settings are secrets; commands and logs must redact them.</li>
+    <li>A successful internal header-based request is not acceptance evidence; real browser login is required.</li>
+  </ul>
+
+  <h2>Actual implementation and evidence</h2>
+  <ul>
+    <li>Live inventory showed that the existing embedded outpost already serves several proxy providers. The Calendar application existed but was not linked to any provider.</li>
+    <li>Created <code>Calendar ForwardAuth</code> with <code>https://calendar.dzarlax.dev</code>, the standard five proxy claims, and the existing authorization/invalidation flows. It was attached to the Calendar application and the existing embedded outpost.</li>
+    <li>No Traefik labels, images, environment files, or containers needed changing or restarting. The global outpost callback router correctly serves Calendar by host.</li>
+    <li>External unauthenticated check now redirects Calendar to <code>calendar.dzarlax.dev/outpost.goauthentik.io/callback</code> with <code>ak_proxy</code>, while Readeck still redirects to its own callback with <code>ak_proxy_readeck</code>. Calendar serve/worker stayed healthy and the proxy reported zero errors in the five-minute check.</li>
+    <li>Limitation: a real authenticated browser session remains required to prove the post-login diagnostics screen and API response; this cannot be established from anonymous HTTP headers.</li>
+  </ul>
+
+  <h2>Model allocation</h2>
+  <table>
+    <tr><th>Work</th><th>Model / effort</th><th>Reason</th></tr>
+    <tr><td>Inventory current labels, outpost mapping, and local config; prepare non-secret evidence</td><td>Luna / medium</td><td>Bounded read-only inspection.</td></tr>
+    <tr><td>Apply and review the Authentik/Traefik configuration, then run browser acceptance checks</td><td>Terra / medium</td><td>Cross-service auth boundary merits stronger implementation judgment without Sol cost.</td></tr>
+    <tr><td>Coordinate rollout, preserve rollback point, and report evidence</td><td>Root coordinator</td><td>Single accountable deployment path.</td></tr>
+    <tr><td>Sol</td><td>Not scheduled</td><td>Reserved for an explicit user request only.</td></tr>
+  </table>
+
+  <h2>Approval gate</h2>
+  <div class="callout"><strong>Implemented under approved scope.</strong> No shared Traefik/Authentik service restart or Readeck change was required. The remaining acceptance check is a real Calendar browser sign-in.</div>
+</body>
+</html>

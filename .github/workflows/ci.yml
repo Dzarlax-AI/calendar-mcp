@@ -49,6 +49,9 @@ jobs:
       - name: Frontend visual regression tests
         run: npm --prefix frontend run test:e2e
 
+      - name: Frontend local mock workbench smoke test
+        run: npm --prefix frontend run test:e2e:mocks
+
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4

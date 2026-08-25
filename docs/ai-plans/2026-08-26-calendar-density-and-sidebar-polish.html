@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Calendar Density and Sidebar Polish</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color: #182033; background: #f6f7f9; font: 15px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; } main { max-width: 1050px; margin: 0 auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px; border: 1px solid #dfe3eb; border-radius: 10px; background: #fff; }
+    h1, h2 { line-height: 1.2; } h1 { margin: 0 0 8px; } h2 { margin: 0 0 10px; font-size: 18px; }
+    p, li { color: #364158; } ul, ol { margin: 8px 0; padding-left: 22px; }
+    code { padding: 2px 5px; border-radius: 4px; background: #f0f2f7; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; } th, td { padding: 9px; border: 1px solid #dfe3eb; text-align: left; vertical-align: top; } th { background: #f5f6fa; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fff1d7; color: #8b5d06; font-size: 12px; font-weight: 700; }
+    .callout { border-left: 4px solid #4456ee; padding: 10px 14px; background: #f5f6ff; } .risk { border-left-color: #d83b4f; background: #fff5f6; } .approval { border-left-color: #b57319; background: #fffaf0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Calendar Density and Sidebar Polish</h1>
+  <p class="badge">Implemented locally — ready for review</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Address the visual-audit findings in Calendar: overlapping timed events, event-card density, all-day overflow, mini-calendar alignment, calendar-list label space, and toolbar grouping. This is presentation-only work: no provider, event, authentication, or storage contract changes.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li>FullCalendar is configured in <code>CalendarPage.tsx</code> with <code>dayMaxEvents={3}</code>, but no explicit timed-event overlap policy or all-day stack policy.</li>
+      <li>Custom event markup renders time/title and an optional location; detailed events use CSS line clamping. The visual audit shows an overlapping event covering the adjacent card and tight lower padding.</li>
+      <li>The sidebar mini calendar uses a seven-column CSS grid and centered day controls. Calendar names and provider labels share a single row, so long names truncate prematurely.</li>
+      <li>The existing visual-regression harness has deterministic mock events including overlaps, all-day events, long titles, locations, and responsive screenshots. It can become the acceptance fixture for these fixes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ul>
+      <li>Timed events that overlap display side by side without obscuring each other; each remains clickable and readable.</li>
+      <li>Event cards preserve clear hierarchy: readable secondary location, consistent interior spacing, and no text touching the bottom edge.</li>
+      <li>The all-day row caps visible items intentionally and uses FullCalendar’s <code>+X more</code> expansion rather than an unbounded or silently clipped row.</li>
+      <li>The mini-calendar is visually centered; long calendar names get priority space, with provider metadata shifted to a quieter second line where needed.</li>
+      <li>The date/navigation group and view controls remain visually grouped with no artificial empty space or overlap at desktop, tablet, and phone widths.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Proposed implementation</h2>
+    <ol>
+      <li>Set FullCalendar’s timed-overlap behavior to side-by-side placement and verify its drag/click hit areas with synthetic concurrent events.</li>
+      <li>Refine event-card padding, line height, and location typography; retain clamping so long metadata does not grow a short event beyond its time slot.</li>
+      <li>Set and test a bounded all-day stack. Verify the existing <code>+X more</code> affordance opens the correct event list in week and month contexts.</li>
+      <li>Normalize the mini-calendar grid geometry and revise calendar-list layout into name-first plus compact provider metadata, without weakening checkbox labels or read-only indication.</li>
+      <li>Adjust toolbar group alignment only where visual screenshots prove a remaining gap; preserve the new compact calendar/refresh controls and phone view selector.</li>
+      <li>Add focused unit assertions where helper behavior is introduced and visual/interaction assertions for overlap, all-day overflow, long labels, and key viewport breakpoints.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>frontend/src/features/calendar/CalendarPage.tsx</code> — FullCalendar options and compact sidebar markup.</li>
+      <li><code>frontend/src/styles/app.css</code> — event-card, all-day, sidebar, and toolbar layout rules.</li>
+      <li><code>frontend/src/features/calendar/CalendarPage.test.tsx</code> — focused component/helper coverage.</li>
+      <li><code>frontend/e2e/calendar.visual.spec.ts</code> and/or mock fixtures — deterministic responsive and interaction evidence.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Validation and manual QA</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend test</code>, <code>npm --prefix frontend run test:e2e:mocks</code>, and <code>npm --prefix frontend run build</code>.</li>
+      <li>Browser checks at 390×844, 582×1000, 768×1024, 1120×1234, and 1440×900: no card text overlap, no toolbar collision, no unexpected page-width scroll.</li>
+      <li>Open a day with four all-day fixture events; confirm visible cap, <code>+X more</code>, keyboard access, and event selection.</li>
+      <li>Check an overlap at 9:00–10:30: both cards have distinct bounding boxes and can be clicked independently.</li>
+    </ul>
+  </section>
+
+  <section class="callout risk">
+    <h2>Risks and assumptions</h2>
+    <ul>
+      <li>FullCalendar’s all-day expansion behavior differs by view. The desired cap will be confirmed against the installed version before asserting a specific popover implementation.</li>
+      <li>Disabling timed-event overlap consumes more horizontal width; narrow Week remains horizontally scrollable by design, while Day remains the practical phone default.</li>
+      <li>Provider metadata must remain available to assistive technology and for same-name calendars, even if visually secondary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Model and execution allocation</h2>
+    <table>
+      <thead><tr><th>Lane</th><th>Model</th><th>Deliverable</th></tr></thead>
+      <tbody>
+        <tr><td>Integration and acceptance</td><td>GPT-5.6-Sol</td><td>FullCalendar policy, final CSS integration, viewport QA, and diff review.</td></tr>
+        <tr><td>Calendar rendering review</td><td>GPT-5.6-Terra</td><td>Validate timed overlap/all-day options and fixture coverage before implementation.</td></tr>
+        <tr><td>Sidebar and typography review</td><td>GPT-5.6-Luna</td><td>Read-only layout recommendation and responsive regression checklist.</td></tr>
+      </tbody>
+    </table>
+    <p>The review lanes are independent and do not modify files. Sol owns all production edits after approval.</p>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>Revert the focused Calendar component, stylesheet, and test changes in one commit. No database, provider, or deployment rollback is needed.</p>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Configured FullCalendar with <code>slotEventOverlap={false}</code>, <code>dayMaxEventRows={3}</code>, and <code>moreLinkClick=&quot;popover&quot;</code>. Timed conflicts now split horizontally; all-day overflow opens a native event popover.</li>
+      <li>Added four same-day all-day mock fixtures; refined timed-card padding, line height, location typography, and <code>+X more</code> affordance styling.</li>
+      <li>Centered mini-calendar weekday/day geometry with a shared seven-column grid and tabular numerals. Calendars are grouped by their source connection; the source label is shown once per group, giving long names the usable row width.</li>
+      <li>Moved Refresh into the sidebar footer next to Manage. It is intentionally absent from the top bar even when the sidebar is temporarily hidden; opening Calendars is the single access path.</li>
+      <li>Added mock-workbench assertions for non-overlapping concurrent cards and all-day popover interaction. Updated visual-test responsive navigation expectation and accepted regenerated Linux Chromium baselines for the intentional design change.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks completed</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code> — passed.</li>
+      <li><code>npm --prefix frontend test</code> — 38 passed.</li>
+      <li><code>npm --prefix frontend run build</code> and <code>git diff --check</code> — passed.</li>
+      <li>Linux Playwright container, no snapshot update: 25 visual-regression scenarios and 3 mock-workbench smoke scenarios passed.</li>
+    </ul>
+  </section>
+
+  <section class="callout approval">
+    <h2>Approval record</h2>
+    <p>The user approved this plan on 2026-08-26. The implemented boundary remains limited to the visual and interaction changes described here.</p>
+  </section>
+</main>
+</body>
+</html>

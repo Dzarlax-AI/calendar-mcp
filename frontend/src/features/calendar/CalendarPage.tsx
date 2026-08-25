@@ -30,8 +30,12 @@ type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toResched
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
+const SUCCESS_STATUS_DURATION_MS = 4_000;
 export const COMPACT_LAYOUT_MAX_WIDTH = 1439;
 const COMPACT_LAYOUT_QUERY = `(max-width: ${COMPACT_LAYOUT_MAX_WIDTH}px)`;
+const NARROW_CALENDAR_QUERY = "(max-width: 760px)";
+const PHONE_CALENDAR_QUERY = "(max-width: 560px)";
+const usingCalendarMocks = import.meta.env.VITE_CALENDAR_MOCKS === "true";
 
 export function usesCompactCalendarLayout(viewportWidth: number) {
   return viewportWidth <= COMPACT_LAYOUT_MAX_WIDTH;
@@ -70,10 +74,13 @@ export default function CalendarPage() {
   // Surface state is intentionally serializable: future deep-link support can
   // map date/view/filter/event without introducing a second ownership model.
   const compactLayout = useMediaQuery(COMPACT_LAYOUT_QUERY);
+  const narrowCalendarLayout = useMediaQuery(NARROW_CALENDAR_QUERY);
+  const phoneCalendarLayout = useMediaQuery(PHONE_CALENDAR_QUERY);
   const [surface, setSurface] = useState<Surface>({ kind: "none" });
   const scopePayloadRef = useRef<ScopePayload | null>(null);
   const [editEvent, setEditEvent] = useState<EventRecord | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [showUpdatedStatus, setShowUpdatedStatus] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<EventRecord | null>(null);
   const lastPolledDataUpdatedAtRef = useRef(0);
   const [pollingAttempts, setPollingAttempts] = useState(0);
@@ -94,6 +101,7 @@ export default function CalendarPage() {
   const events = eventsQuery.data?.items ?? [];
   const baseEventStatus = eventsQuery.data ? summarizeEventSources(eventsQuery.data) : null;
   const eventStatus = baseEventStatus?.kind === "syncing" && pollingCapped ? { ...baseEventStatus, kind: "stale" as const, label: "Sync paused; refresh to try again" } : baseEventStatus;
+  const visibleEventStatus = eventStatus?.kind === "updated" && !showUpdatedStatus ? null : eventStatus;
   const hasPendingSources = eventsQuery.data?.sources?.some((source) => source.status === "pending" || source.status === "syncing") ?? false;
   const eventsById = useMemo(() => new Map(events.map((event) => [calendarEventKey(event), event])), [events]);
   const calendarById = useMemo(() => new Map(calendars.map((calendar) => [calendar.id, calendar])), [calendars]);
@@ -119,6 +127,7 @@ export default function CalendarPage() {
         const unknown = result.unknown.length ? ` ${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
         setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued.${rejected}${unknown} No automatic retry was attempted.`, intent: "warning" });
       } else if (result.queued.length) {
+        setShowUpdatedStatus(true);
         setNotice({ message: `${result.queued.length} calendar refresh${result.queued.length === 1 ? "" : "es"} queued.`, intent: "success" });
       } else if (result.rejected.length || result.unknown.length) {
         const rejected = result.rejected.length ? `${result.rejected.length} refresh${result.rejected.length === 1 ? "" : "es"} rejected.` : "";
@@ -145,6 +154,11 @@ export default function CalendarPage() {
       });
     }
   }, [hasPendingSources, eventsQuery.dataUpdatedAt]);
+  useEffect(() => {
+    if (!showUpdatedStatus) return;
+    const timeout = window.setTimeout(() => setShowUpdatedStatus(false), SUCCESS_STATUS_DURATION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [showUpdatedStatus]);
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
     onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
@@ -169,6 +183,7 @@ export default function CalendarPage() {
     try { localStorage.setItem(CALENDAR_VIEW_STORAGE_KEY, nextView); } catch { /* persistence is optional */ }
     calendarRef.current?.getApi().changeView(nextView);
   }
+
   function navigate(direction: "prev" | "next" | "today") {
     const api = calendarRef.current?.getApi();
     if (!api) return;
@@ -257,20 +272,20 @@ export default function CalendarPage() {
   const sheetOpen = compactLayout && (surface.kind === "filters" || surface.kind === "event");
   const persistentSidebar = !compactLayout;
   return <div className={`calendar-screen ${persistentSidebar || surface.kind === "filters" ? "with-sidebar" : "wide"} ${surface.kind === "event" ? "with-drawer" : ""}`}>
-    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
-    {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
+    {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onRefresh={refreshSelectedCalendars} refreshDisabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} refreshing={refreshMutation.isPending} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
+    {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onRefresh={refreshSelectedCalendars} refreshDisabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} refreshing={refreshMutation.isPending} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
     <main className="calendar-main" inert={sheetOpen} aria-hidden={sheetOpen || undefined}>
       <div className="calendar-toolbar">
         <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><span className="date-title" aria-live="polite">{calendarRef.current?.getApi().view.title ?? "Calendar"}</span></div>
-        <div className="toolbar-actions"><div className="toolbar-scroll-controls"><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars"><ListFilter size={15} /> Calendars</button><button className="button button-outline" onClick={refreshSelectedCalendars} disabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} aria-label="Refresh selected calendars"><RefreshCw size={15} className={refreshMutation.isPending ? "spin" : undefined} /> Refresh</button></div><ManageMenu /><div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div></div>
+        <div className="toolbar-actions"><div className="toolbar-scroll-controls">{!persistentSidebar && <><button className="button button-primary calendar-create-button" onClick={() => openCreate()} aria-label="New event" title="New event"><Plus size={16} /><span>New event</span></button><button className="button button-outline calendar-filter-button" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars" title="Choose calendars"><CalendarDays size={17} /><span className="calendar-filter-label">Calendars</span></button></>}</div>{usingCalendarMocks && <span className="mock-data-indicator" role="status">Mock data</span>}{phoneCalendarLayout || !narrowCalendarLayout ? <div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div> : <label className="compact-view-picker"><span className="visually-hidden">Calendar view</span><select value={view} onChange={(event) => changeView(event.target.value as ViewName)}>{VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}</div>
       </div>
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
-      {eventStatus && <div className={`event-status-strip event-status-row event-status-row--${eventStatus.kind}`} role={eventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{eventStatus.label}</span>{(eventStatus.kind === "failed" || eventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{eventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}
+      {visibleEventStatus && <div className={`event-status-strip event-status-row event-status-row--${visibleEventStatus.kind}`} role={visibleEventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{visibleEventStatus.label}</span>{(visibleEventStatus.kind === "failed" || visibleEventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{visibleEventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}
       {notice && <div className={`notice notice--${notice.intent}`} role={notice.intent === "error" ? "alert" : "status"}><span>{notice.message}</span><button className="icon-button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16} /></button></div>}
-      {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className="calendar-canvas-wrap">
+      {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className={`calendar-canvas-wrap ${narrowCalendarLayout && view === "timeGridWeek" ? "is-narrow-week" : ""}`}>
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
-        <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} scrollTime={initialScrollTime} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator dayMaxEvents={3} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => { setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() }); setMiniCalendarDate(arg.view.calendar.getDate()); }} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
+        <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={view} initialDate={usingCalendarMocks ? "2026-08-25" : undefined} firstDay={1} scrollTime={initialScrollTime} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator slotEventOverlap={false} dayMaxEventRows={3} moreLinkClick="popover" events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => { setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() }); setMiniCalendarDate(arg.view.calendar.getDate()); }} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
     {surface.kind === "event" && (compactLayout ? <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></SurfaceSheet> : <aside className="event-drawer is-open" aria-label="Event details"><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></aside>)}
@@ -343,18 +358,19 @@ function SurfaceSheet({ children, className, labelledBy, onClose }: { children: 
   return <><button className="sidebar-scrim" type="button" aria-label="Close panel" onClick={onClose} /><aside ref={sheetRef} className={`${className} is-open`} role="dialog" aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>{children}</aside></>;
 }
 
-export function CalendarSidebar({ calendars, selected, onToggle, onCreate, onClose, onJumpToDate, showClose = true, visibleDate = new Date() }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean; visibleDate?: Date }) {
-  const groups = useMemo(() => Array.from(new Set(calendars.map((calendar) => calendar.group || "Calendars"))), [calendars]);
+export function CalendarSidebar({ calendars, selected, onToggle, onCreate, onRefresh, refreshDisabled, refreshing, onClose, onJumpToDate, showClose = true, visibleDate = new Date() }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onRefresh: () => void; refreshDisabled: boolean; refreshing: boolean; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean; visibleDate?: Date }) {
+  const sourceLabel = (calendar: CalendarRecord) => calendar.accountLabel ?? providerLabel(calendar.provider);
+  const groups = useMemo(() => Array.from(new Set(calendars.map(sourceLabel))), [calendars]);
   const today = new Date();
   const year = visibleDate.getFullYear();
   const month = visibleDate.getMonth();
-  const firstWeekday = new Date(year, month, 1).getDay();
+  const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const miniDays = Array.from({ length: 42 }, (_, index) => {
     const day = index - firstWeekday + 1;
     return day > 0 && day <= daysInMonth ? day : null;
   });
-  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1>{showClose && <button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button>}</div><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(visibleDate)}</strong></div><div className="mini-weekdays">{["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "is-today" : ""} aria-current={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => (calendar.group || "Calendars") === group).map((calendar) => { const identity = `${calendar.name} (${calendar.accountLabel ?? providerLabel(calendar.provider)})`; return <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={`${calendar.id}:${calendar.accountLabel ?? calendar.provider}`} title={identity}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${identity} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={identity}>{calendar.name}</span><span className="calendar-provider">{calendar.accountLabel ?? providerLabel(calendar.provider)}</span></label>; })}</div>)}</div></>;
+  return <><div className="sidebar-heading"><h1 id="calendar-filters-title"><CalendarDays size={22} /> Calendar</h1>{showClose && <button className="icon-button" onClick={onClose} aria-label="Hide calendar filters"><X size={18} /></button>}</div><button className="button button-primary new-event-button" onClick={onCreate}><Plus size={17} /> New event</button><div className="mini-calendar"><div className="mini-calendar-title"><strong>{new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(visibleDate)}</strong></div><div className="mini-weekdays">{["M", "T", "W", "T", "F", "S", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div><div className="mini-days">{miniDays.map((day, index) => day ? <button type="button" key={index} className={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "is-today" : ""} aria-current={day === today.getDate() && month === today.getMonth() && year === today.getFullYear() ? "date" : undefined} onClick={() => onJumpToDate(new Date(year, month, day))} aria-label={`Go to ${new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(year, month, day))}`}>{day}</button> : <span key={index} />)}</div></div><div className="calendar-list"><div className="section-label">Calendars <span>{selected.length}/{calendars.length}</span></div>{groups.map((group) => <div className="calendar-group" key={group}><div className="group-title">{group}</div>{calendars.filter((calendar) => sourceLabel(calendar) === group).map((calendar) => { const identity = `${calendar.name} (${sourceLabel(calendar)})`; return <label className={`calendar-filter ${calendar.capability.read ? "" : "is-disabled"}`} key={`${calendar.id}:${calendar.accountLabel ?? calendar.provider}`} title={identity}><input type="checkbox" checked={selected.includes(calendar.id)} onChange={() => onToggle(calendar)} disabled={!calendar.capability.read} aria-label={`${identity} calendar`} /><span className="checkmark" style={{ backgroundColor: calendar.color }} /><span className="calendar-name" title={identity}>{calendar.name}</span></label>; })}</div>)}</div><div className="sidebar-footer"><button className="button button-outline" onClick={onRefresh} disabled={refreshDisabled} aria-label="Refresh selected calendars"><RefreshCw size={16} className={refreshing ? "spin" : undefined} /> Refresh</button><div className="sidebar-manage"><ManageMenu /></div></div></>;
 }
 
 export function ManageMenu() {
@@ -380,14 +396,19 @@ export function ManageMenu() {
     return () => { document.removeEventListener("pointerdown", handlePointerDown); document.removeEventListener("keydown", handleKeyDown); };
   }, [open]);
 
-  return <div className="manage-menu" ref={menuRef}><button ref={triggerRef} type="button" className="button button-outline manage-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-controls="calendar-manage-menu" onClick={() => setOpen((current) => !current)}><MoreHorizontal size={17} /> Manage</button>{open && <div id="calendar-manage-menu" className="manage-menu-popover" role="menu" aria-label="Manage calendar"><NavLink to="/connections" role="menuitem" onClick={() => close()}>Connections</NavLink><NavLink to="/rules" role="menuitem" onClick={() => close()}>Sync Rules</NavLink><NavLink to="/runs" role="menuitem" onClick={() => close()}>Runs</NavLink><NavLink to="/settings" role="menuitem" onClick={() => close()}>Settings</NavLink></div>}</div>;
+  return <div className="manage-menu" ref={menuRef}><button ref={triggerRef} type="button" className="button button-outline manage-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-controls="calendar-manage-menu" onClick={() => setOpen((current) => !current)}><MoreHorizontal size={17} /> Manage</button>{open && <div id="calendar-manage-menu" className="manage-menu-popover" role="menu" aria-label="Manage calendar"><NavLink to="/connections" role="menuitem" onClick={() => close()}>Connections</NavLink><NavLink to="/rules" role="menuitem" onClick={() => close()}>Sync activity</NavLink><NavLink to="/settings" role="menuitem" onClick={() => close()}>Settings</NavLink></div>}</div>;
 }
 
 function providerLabel(provider: string) { return provider === "microsoft" ? "Microsoft 365" : provider === "google" ? "Google" : provider === "apple" ? "Apple" : provider; }
 
+export function shouldShowDetailedEventContent(start: Date | null, end: Date | null, allDay: boolean): boolean {
+  return !allDay && Boolean(start && end && end.getTime() - start.getTime() >= 60 * 60 * 1000);
+}
+
 function CalendarEventContent({ arg }: { arg: EventContentArg }) {
   const event = arg.event.extendedProps.event as EventRecord | undefined;
-  return <div className="fc-event-inner"><strong>{arg.timeText && <span className="fc-event-time-label">{arg.timeText}</span>}{arg.event.title}</strong>{event?.location && <span className="fc-event-location">{event.location}</span>}</div>;
+  const detailed = shouldShowDetailedEventContent(arg.event.start, arg.event.end, arg.event.allDay);
+  return <div className={`fc-event-inner ${detailed ? "is-detailed" : ""}`}><strong>{arg.timeText && <span className="fc-event-time-label">{arg.timeText}</span>}{arg.event.title}</strong>{event?.location && <span className="fc-event-location">{event.location}</span>}</div>;
 }
 
 function EventDrawer({ event, calendar, onClose, onEdit, onDelete }: { event: EventRecord; calendar?: CalendarRecord; onClose: () => void; onEdit: () => void; onDelete: () => void }) {

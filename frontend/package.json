@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mocks": "VITE_CALENDAR_MOCKS=true vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:mocks": "E2E_MOCK_SERVER=true playwright test e2e/calendar.mock-server.spec.ts",
     "test:e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {

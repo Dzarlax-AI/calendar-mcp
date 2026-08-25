@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Calendar Platform Production Deployment</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f6f8; --card:#fff; --text:#172033; --muted:#5f6b7a; --line:#dfe4ea; --blue:#1769aa; --green:#18794e; --amber:#a15c00; --red:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); line-height:1.55; }
+    main { max-width:1080px; margin:0 auto; padding:32px 20px 64px; }
+    header, section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:22px; margin:0 0 16px; }
+    h1,h2,h3 { line-height:1.2; margin-top:0; }
+    h1 { font-size:30px; margin-bottom:8px; }
+    h2 { font-size:21px; }
+    h3 { font-size:16px; margin-top:20px; }
+    p,li { color:var(--muted); }
+    strong { color:var(--text); }
+    code { background:#eef1f5; color:#24364b; padding:2px 5px; border-radius:4px; overflow-wrap:anywhere; }
+    .badge { display:inline-block; padding:4px 10px; border-radius:999px; background:#fff3d6; color:#7a4800; font-size:12px; font-weight:700; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+    .card { border:1px solid var(--line); border-radius:9px; padding:15px; }
+    .card p { margin-bottom:0; }
+    .flow { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; align-items:stretch; }
+    .node { border:1px solid #bad5ea; background:#f4faff; border-radius:9px; padding:14px; }
+    .node.legacy { border-color:#e7c98e; background:#fffaf0; }
+    .node.private { border-color:#b9ddcb; background:#f1fbf5; }
+    .risk { border-left:5px solid var(--red); }
+    .approval { border-left:5px solid var(--amber); }
+    .success { border-left:5px solid var(--green); }
+    .checklist { list-style:none; padding-left:0; }
+    .checklist li { margin:8px 0; padding-left:25px; position:relative; }
+    .checklist li::before { content:"□"; position:absolute; left:0; color:var(--blue); font-weight:700; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:10px 8px; }
+    th { color:var(--text); }
+    @media (max-width:760px) { .flow { grid-template-columns:1fr; } main { padding:18px 12px 40px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Approval required before implementation</span>
+    <h1>Calendar Platform Production Deployment</h1>
+    <p>Parallel shadow rollout with an unchanged MCP URL, Authentik-protected UI, isolated PostgreSQL schema, temporary dual API keys, and immediate router rollback.</p>
+  </header>
+
+  <section>
+    <h2>1. Task summary and inspected current state</h2>
+    <div class="grid">
+      <div class="card"><strong>Current production</strong><p>One legacy <code>calendar-mcp</code> container serves <code>https://mcp.dzarlax.dev/calendar</code>. No platform worker is running.</p></div>
+      <div class="card"><strong>New public origin</strong><p><code>https://calendar.dzarlax.dev</code> is reserved for UI and OAuth. The user created DNS, but propagation was not visible at the latest check.</p></div>
+      <div class="card"><strong>Shared infrastructure</strong><p>Reuse Traefik, Authentik, <code>infra-postgres-1</code>, and existing Docker networks. The live calendar role/schema still need explicit provisioning.</p></div>
+      <div class="card"><strong>Credential state</strong><p>Legacy credentials remain temporarily compatible. New API/provider credentials are required before legacy retirement.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Desired topology</h2>
+    <div class="flow">
+      <div class="node legacy"><strong>calendar-mcp</strong><p>Legacy image and credentials. Low-priority MCP router. Kept running for compatibility and rollback.</p></div>
+      <div class="node"><strong>calendar-serve</strong><p>New immutable image. UI, OAuth, MCP, schema migration. Authentik on UI only.</p></div>
+      <div class="node private"><strong>calendar-worker</strong><p>Same immutable image. Infra network only. Starts after connection QA; rules begin paused.</p></div>
+    </div>
+    <p><strong>MCP stays at:</strong> <code>https://mcp.dzarlax.dev/calendar</code>. A priority-300 Traefik overlay moves traffic to <code>calendar-serve</code> without removing the legacy router.</p>
+  </section>
+
+  <section>
+    <h2>3. Application and deployment changes</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Change</th><th>Safety property</th></tr></thead>
+      <tbody>
+        <tr><td>API authentication</td><td>Add optional <code>API_KEY_LEGACY</code>; keep <code>API_KEY</code> mandatory.</td><td>Both use constant-time comparison; neither is logged or shown.</td></tr>
+        <tr><td>Compose</td><td>Preserve legacy; add serve/worker from one digest; create cutover overlay.</td><td>Shadow start does not recreate legacy. Worker has no public route.</td></tr>
+        <tr><td>PostgreSQL</td><td>Create <code>calendar_user</code> and schema <code>calendar</code> with a password-safe idempotent script.</td><td>Backup first; no public-schema create permission; no shared DB restart.</td></tr>
+        <tr><td>Authentik</td><td>Create Calendar proxy provider/application through supported UI/API and attach it to the existing outpost.</td><td>No direct ORM/DB write; no Authentik restart; exact existing identity/policy only.</td></tr>
+        <tr><td>OAuth</td><td>Use parallel new Google/Microsoft credentials and a new Apple app password.</td><td>Legacy credentials stay valid until separate retirement approval.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>4. Implementation sequence</h2>
+    <ol>
+      <li>Create an isolated branch/worktree from current <code>origin/main</code>; preserve the dirty root checkout.</li>
+      <li>Implement dual-key support test-first; run race tests, vet, build, and docs checks.</li>
+      <li>Prepare base Compose, cutover overlay, and PostgreSQL provisioning SQL; validate against disposable PostgreSQL 17.</li>
+      <li>Review cumulative diffs. Commit/push/PR only after a separate authorization.</li>
+      <li>After merge, resolve the CI-built GHCR digest. Never deploy <code>latest</code> or build on the VPS.</li>
+      <li>Perform read-only production preflight, backup PostgreSQL, provision the schema, configure Authentik, and create parallel provider credentials under a separate production approval.</li>
+      <li>Start only <code>calendar-serve</code>; verify TLS, Authentik, callbacks, migrations, health, logs, and unchanged legacy MCP.</li>
+      <li>Connect providers, then start worker and test only paused rules on empty dedicated calendars.</li>
+      <li>After explicit cutover approval, add the priority-300 router and verify MCP with primary and legacy keys plus a real Personal Assistant read path.</li>
+      <li>Keep legacy service, router, key, and credentials until the user separately authorizes retirement.</li>
+    </ol>
+    <p>The executable task-by-task plan is in <code>docs/superpowers/plans/2026-08-20-calendar-platform-production-deployment.md</code>.</p>
+  </section>
+
+  <section>
+    <h2>5. Test and manual QA plan</h2>
+    <ul class="checklist">
+      <li>Dual-key tests: primary accepted, non-empty legacy accepted, invalid rejected, and an absent credential rejected when the optional legacy key is unset.</li>
+      <li><code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, <code>go build ./...</code>, formatting, and <code>git diff --check</code>.</li>
+      <li>Base and cutover Compose both render; worker has no Traefik exposure; all deployed images are digest-pinned.</li>
+      <li>Provisioning SQL succeeds twice on disposable PostgreSQL 17 and proves schema ownership/search path/public denial.</li>
+      <li>DNS/TLS, Authentik redirect, authenticated UI, callback invalid-state behavior, spoofed-header resistance, health/restarts/logs.</li>
+      <li>Provider connection and calendar discovery with newly authorized credentials.</li>
+      <li>Dry run followed by one approved real sync on empty test calendars: normal, all-day, and recurring moved exception.</li>
+      <li>No copied attendees, invitations, or notifications.</li>
+      <li>Unchanged MCP URL works with both keys; invalid key fails; Personal Assistant read path succeeds.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>6. Risks and edge cases</h2>
+    <ul>
+      <li><strong>Legacy key exposure:</strong> compatibility is intentional but temporary. It is removed only on the user's command.</li>
+      <li><strong>OAuth cutover:</strong> standalone token files are not imported. Provider accounts must be reauthorized through the UI.</li>
+      <li><strong>Shared database:</strong> the live role/schema are absent despite the first-start init source. Provision explicitly and verify permissions.</li>
+      <li><strong>Router collision:</strong> use unique new router/middleware/service names and explicit priority; never overwrite the legacy labels.</li>
+      <li><strong>Sync safety:</strong> no production-calendar rule may be enabled during initial deployment. Test calendars and disabled notifications/invites are mandatory.</li>
+      <li><strong>Secret handling:</strong> do not copy `.env`, print values, place credentials in commands/artifacts, or pass an Authentik token until a safe method is agreed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. Rollback</h2>
+    <ul>
+      <li>Before cutover: stop only new serve/worker; legacy MCP remains untouched.</li>
+      <li>After cutover: recreate only <code>calendar-serve</code> from base Compose without the overlay. The lower-priority legacy router resumes.</li>
+      <li>Pause the exact test rule and stop worker if sync validation fails.</li>
+      <li>Preserve schema, volumes, token files, mappings, old keys, and old provider credentials. No automatic destructive rollback.</li>
+      <li>Do not restart shared Traefik, Authentik, or PostgreSQL without separate approval and evidence that it is necessary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8. Assumptions, unknowns, and exclusions</h2>
+    <ul>
+      <li>DNS propagation and a valid certificate must be observed before OAuth configuration.</li>
+      <li>The exact Authentik identity/policy and the final GHCR digest are discovered at execution time; neither is invented in the plan.</li>
+      <li>Initial deployment excludes old-key removal, credential revocation, legacy-container deletion, legacy-router deletion, and production-calendar sync enablement.</li>
+      <li>The user manages Cloudflare DNS. The assistant configures Authentik after production approval; a key is requested only if supported authenticated UI/API access cannot be used safely.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>9. Approval gate</h2>
+    <p><strong>Implementation must not start until the user explicitly approves this HTML plan.</strong> Approval authorizes local application/config/test work in an isolated worktree only. Publication, production shadow deployment, real test synchronization, MCP cutover, and legacy retirement remain separate approval gates.</p>
+  </section>
+</main>
+</body>
+</html>

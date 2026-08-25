@@ -2,7 +2,7 @@ import { createContext, lazy, Suspense, useContext, useEffect, useState } from "
 import type { ReactNode } from "react";
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation, useRouteError } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, PlayCircle, Settings2, ShieldAlert, X } from "lucide-react";
+import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, Settings2, ShieldAlert, X } from "lucide-react";
 import { getBootstrap, isSessionExpiredError, navigateToApp } from "../lib/api";
 import type { Bootstrap } from "../lib/types";
 import "../styles/app.css";
@@ -18,8 +18,7 @@ export function useBootstrap() {
 const navItems = [
   { to: "/app", label: "Calendar", icon: CalendarDays, end: true },
   { to: "/connections", label: "Connections", icon: Link2 },
-  { to: "/rules", label: "Sync Rules", icon: ListChecks },
-  { to: "/runs", label: "Runs", icon: PlayCircle },
+  { to: "/rules", label: "Sync activity", icon: ListChecks },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ];
 
@@ -108,7 +107,7 @@ const router = createBrowserRouter([
       { path: "/connections", element: <ControlPlanePage section="connections" /> },
       { path: "/rules", element: <ControlPlanePage section="rules" /> },
       { path: "/rules/new", element: <ControlPlanePage section="rule-new" /> },
-      { path: "/runs", element: <ControlPlanePage section="runs" /> },
+      { path: "/runs", element: <Navigate to="/rules" replace /> },
       { path: "/settings", element: <ControlPlanePage section="settings" /> },
       { path: "/diagnostics", element: <DiagnosticsPage /> },
       { path: "*", element: <Navigate to="/app" replace /> },

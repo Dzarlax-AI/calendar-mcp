@@ -126,6 +126,17 @@ make build
 
 `make build`, the Dockerfile, and CI all stage `frontend/dist/` into the Go embed directory before compiling. Generated bundles are ignored; only the source-controlled placeholder is retained. Automated and visual QA must use fake providers or synthetic data. Before any later live mutation, use a dedicated empty calendar and separately confirm invitation and notification suppression.
 
+### Local Calendar mock workbench
+
+For UI polishing without Authentik, provider credentials, or real calendar data:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run dev:mocks
+```
+
+Open `http://localhost:5173/app`. This serves the frontend workbench with in-memory synthetic `/api/ui` responses only; create, edit, delete, and refresh stay local and reset when Vite restarts. The regular `npm --prefix frontend run dev` command is unchanged and does not install mock routes.
+
 The Settings page shows the MCP endpoint and can reveal the primary `API_KEY` only after an explicit authenticated, same-origin, CSRF-protected action. The key is absent from the initial HTML and is removed from the page after 30 seconds, when hidden, or when the page exits. Copying uses the browser Clipboard API; the application does not automatically clear the OS clipboard because doing so could overwrite newer clipboard contents. `API_KEY_LEGACY` is never revealed and appears only as a configured/not-configured status.
 
 This convenience assumes a single-user Authentik boundary. Every identity accepted by that boundary can retrieve the primary master key, and a compromised browser session can do the same. Before enabling multi-user UI access, replace master-key reveal with independently revocable per-client credentials.
