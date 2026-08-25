@@ -105,11 +105,16 @@
     #nav-connections:checked ~ .shell label[for="nav-connections"],
     #nav-rules:checked ~ .shell label[for="nav-rules"],
     #nav-new-rule:checked ~ .shell label[for="nav-rules"],
-    #nav-runs:checked ~ .shell label[for="nav-runs"],
     #nav-settings:checked ~ .shell label[for="nav-settings"] {
       background: #283349;
       color: #fff;
     }
+
+    #nav-dashboard:focus-visible ~ .shell label[for="nav-dashboard"],
+    #nav-connections:focus-visible ~ .shell label[for="nav-connections"],
+    #nav-rules:focus-visible ~ .shell label[for="nav-rules"],
+    #nav-new-rule:focus-visible ~ .shell label[for="nav-rules"],
+    #nav-settings:focus-visible ~ .shell label[for="nav-settings"] { outline: 2px solid #fff; outline-offset: 2px; }
 
     .sidebar-foot {
       margin-top: auto;
@@ -159,7 +164,6 @@
     #nav-connections:checked ~ .shell #connections,
     #nav-rules:checked ~ .shell #rules,
     #nav-new-rule:checked ~ .shell #new-rule,
-    #nav-runs:checked ~ .shell #runs,
     #nav-settings:checked ~ .shell #settings { display: block; }
 
     .page-head {
@@ -373,7 +377,6 @@
   <input class="nav-state" type="radio" name="view" id="nav-connections">
   <input class="nav-state" type="radio" name="view" id="nav-rules">
   <input class="nav-state" type="radio" name="view" id="nav-new-rule">
-  <input class="nav-state" type="radio" name="view" id="nav-runs">
   <input class="nav-state" type="radio" name="view" id="nav-settings">
 
   <div class="shell">
@@ -382,8 +385,7 @@
       <nav aria-label="Primary">
         <label class="nav-label" for="nav-dashboard">⌂ <span>Dashboard</span></label>
         <label class="nav-label" for="nav-connections">⌁ <span>Connections</span></label>
-        <label class="nav-label" for="nav-rules">⇄ <span>Sync Rules</span></label>
-        <label class="nav-label" for="nav-runs">◷ <span>Runs</span></label>
+        <label class="nav-label" for="nav-rules">⇄ <span>Sync activity</span></label>
         <label class="nav-label" for="nav-settings">⚙ <span>Settings</span></label>
       </nav>
       <div class="sidebar-foot"><strong>Single-user installation</strong>Access protected by Authentik</div>
@@ -492,6 +494,16 @@
             </div>
             <div class="notice" style="margin-top:14px"><strong>Target ownership:</strong> edits to synchronized title, time, location, description, recurrence, or cancellation state may be overwritten from Microsoft 365.</div>
           </div>
+          <div class="panel-head" style="margin-top:24px"><div><h2>Recent activity</h2><div class="muted">Scheduled, manual, reconciliation, and dry-run outcomes.</div></div><button class="btn secondary small">Run selected rule now</button></div>
+          <div class="card table-wrap">
+            <table>
+              <thead><tr><th>Rule</th><th>Trigger</th><th>Started</th><th>Outcome</th><th>Changes</th><th></th></tr></thead>
+              <tbody>
+                <tr><td><strong>Primary → Рабочий</strong></td><td>Dry run</td><td>Not executed</td><td><span class="status paused">Preview</span></td><td>—</td><td><button class="btn ghost small">Details</button></td></tr>
+                <tr><td><strong>Primary → Рабочий</strong></td><td>Scheduled</td><td>No live data</td><td><span class="status paused">Unknown</span></td><td>—</td><td><button class="btn ghost small">Details</button></td></tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section class="view" id="new-rule">
@@ -511,34 +523,7 @@
             <div class="toggle-row"><div><strong>Copy attendees</strong><div class="row-meta">Disabled to prevent accidental invitations.</div></div><span class="toggle" aria-label="Disabled"></span></div>
             <div class="toggle-row"><div><strong>Send provider notifications</strong><div class="row-meta">Disabled for a silent personal mirror.</div></div><span class="toggle" aria-label="Disabled"></span></div>
             <div class="safety"><h3>Safety summary</h3><p>This rule reads Microsoft 365 and writes only to Google Calendar. It starts paused. No attendees, invitations, or notifications are copied. A successful dry run is required before enablement.</p></div>
-            <div class="form-actions"><label class="btn secondary" for="nav-rules">Cancel</label><label class="btn" for="nav-runs">Save paused &amp; run dry run</label></div>
-          </div>
-        </section>
-
-        <section class="view" id="runs">
-          <div class="page-head">
-            <div><h1>Runs</h1><p class="subtitle">Inspect scheduled, manual, reconciliation, and dry-run outcomes.</p></div>
-            <button class="btn secondary">Run selected rule now</button>
-          </div>
-          <div class="sample-banner">Interactive design mockup. Run rows intentionally use placeholders instead of fabricated operational results.</div>
-          <div class="card table-wrap">
-            <table>
-              <thead><tr><th>Rule</th><th>Trigger</th><th>Started</th><th>Outcome</th><th>Changes</th><th></th></tr></thead>
-              <tbody>
-                <tr><td><strong>Primary → Рабочий</strong></td><td>Dry run</td><td>Not executed</td><td><span class="status paused">Preview</span></td><td>—</td><td><button class="btn ghost small">Details</button></td></tr>
-                <tr><td><strong>Primary → Рабочий</strong></td><td>Scheduled</td><td>No live data</td><td><span class="status paused">Unknown</span></td><td>—</td><td><button class="btn ghost small">Details</button></td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="card panel run-detail">
-            <div class="panel-head"><div><h2>Run detail</h2><div class="muted">Select a real run to inspect its sanitized result.</div></div><span class="status paused">No selection</span></div>
-            <div class="metric-strip">
-              <div class="metric"><span class="muted">Created</span><strong>—</strong></div>
-              <div class="metric"><span class="muted">Updated</span><strong>—</strong></div>
-              <div class="metric"><span class="muted">Deleted</span><strong>—</strong></div>
-              <div class="metric"><span class="muted">Skipped</span><strong>—</strong></div>
-              <div class="metric"><span class="muted">Warnings</span><strong>—</strong></div>
-            </div>
+            <div class="form-actions"><label class="btn secondary" for="nav-rules">Cancel</label><label class="btn" for="nav-rules">Save paused &amp; run dry run</label></div>
           </div>
         </section>
 

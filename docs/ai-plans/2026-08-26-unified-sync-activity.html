@@ -14,7 +14,7 @@
 <body>
 <main>
   <h1>Unified sync activity</h1>
-  <p class="badge">Approval required before implementation</p>
+  <p class="badge">Implemented locally — CI review in progress</p>
 
   <section>
     <h2>Task summary</h2>
@@ -95,8 +95,8 @@
   </section>
 
   <section class="approval">
-    <h2>Approval gate</h2>
-    <p>Implementation must not start until this plan is explicitly approved. Approval covers only the frontend navigation/combined screen and tests; it does not authorize backend, API, provider, auth, or deployment changes.</p>
+    <h2>Approval record</h2>
+    <p>The user approved this frontend-only navigation and combined-screen boundary before implementation. It did not authorize backend, API, provider, auth, or deployment changes.</p>
   </section>
 
   <section>
@@ -112,7 +112,7 @@
   <section>
     <h2>Verification record</h2>
     <ul>
-      <li>Passed: <code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend test</code> (37 tests), <code>npm --prefix frontend run test:e2e:mocks</code> (2 browser tests, including <code>/runs → /rules</code>), <code>npm --prefix frontend run build</code>, and <code>git diff --check</code>.</li>
+      <li>Passed: <code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend test</code> (37 tests), <code>npm --prefix frontend run test:e2e:mocks</code> (3 browser smoke scenarios, including <code>/runs → /rules</code>), <code>npm --prefix frontend run build</code>, and <code>git diff --check</code>.</li>
       <li>Mock mode now uses a Vite-only root base so local routes such as <code>/rules</code> can be exercised; ordinary development and production retain the <code>/spa/</code> base. The existing production-preview visual regression suite remains CI-authoritative because this Mac has Linux-only baselines.</li>
     </ul>
   </section>

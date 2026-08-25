@@ -155,10 +155,10 @@ export default function CalendarPage() {
     }
   }, [hasPendingSources, eventsQuery.dataUpdatedAt]);
   useEffect(() => {
-    if (!showUpdatedStatus) return;
+    if (!showUpdatedStatus || eventStatus?.kind !== "updated") return;
     const timeout = window.setTimeout(() => setShowUpdatedStatus(false), SUCCESS_STATUS_DURATION_MS);
     return () => window.clearTimeout(timeout);
-  }, [showUpdatedStatus]);
+  }, [eventStatus?.kind, showUpdatedStatus]);
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
     onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },

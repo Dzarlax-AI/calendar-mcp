@@ -97,6 +97,11 @@ export function useBootstrapData() {
 
 function Root() { return <BootstrapGate />; }
 
+function LegacyRunsRedirect() {
+  const location = useLocation();
+  return <Navigate to={{ pathname: "/rules", search: location.search }} replace />;
+}
+
 const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/app" replace /> },
   {
@@ -107,7 +112,7 @@ const router = createBrowserRouter([
       { path: "/connections", element: <ControlPlanePage section="connections" /> },
       { path: "/rules", element: <ControlPlanePage section="rules" /> },
       { path: "/rules/new", element: <ControlPlanePage section="rule-new" /> },
-      { path: "/runs", element: <Navigate to="/rules" replace /> },
+      { path: "/runs", element: <LegacyRunsRedirect /> },
       { path: "/settings", element: <ControlPlanePage section="settings" /> },
       { path: "/diagnostics", element: <DiagnosticsPage /> },
       { path: "*", element: <Navigate to="/app" replace /> },

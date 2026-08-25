@@ -40,7 +40,8 @@ test("sync activity combines rules and runs and preserves the legacy route", asy
   await expect(page.getByText("No sync rules")).toBeVisible();
   await expect(page.getByText("No activity yet")).toBeVisible();
 
-  await page.goto("/runs");
-  await expect(page).toHaveURL(/\/rules$/);
+  await page.goto("/runs?status=run_queued");
+  await expect(page).toHaveURL(/\/rules\?status=run_queued$/);
   await expect(page.getByRole("heading", { name: "Sync activity" })).toBeVisible();
+  await expect(page.getByText("Run queued.")).toBeVisible();
 });

@@ -202,7 +202,7 @@ For Microsoft 365 to Google Calendar:
 
 Objects created by the platform receive private synchronization metadata containing the rule and source identity needed for recovery. After a timeout or ambiguous provider response, the worker searches for this metadata before retrying a write, preventing duplicate mirrors.
 
-Unsupported recurrence rules are reported during dry run and skipped. The platform does not silently materialize them as independent events. An explicit materialization fallback may be designed later.
+Unsupported recurrence rules block dry run and prevent a rule from being enabled. They are neither skipped nor silently materialized as independent events: the rule must be supported or removed before enablement. An explicit materialization fallback may be designed later and is out of scope here.
 
 Deletion is driven by provider tombstones, explicit cancellation state, or full reconciliation. Absence from a bounded time window is not proof of deletion.
 
@@ -253,7 +253,7 @@ The UI is an operational control plane, not a calendar grid.
 Migration from the existing deployment is staged:
 
 1. Back up the current environment files, OAuth token files, and sync state file.
-2. Import current Google and Microsoft credentials into encrypted connections.
+2. Create new platform connections through the approved OAuth flows; do not import legacy provider credentials or token files.
 3. Convert the current source and target configuration into one paused sync rule.
 4. Import the existing event mappings with an explicit legacy marker.
 5. Run the new worker in dry-run mode and compare its plan with the current deployment.

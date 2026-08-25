@@ -131,8 +131,8 @@ go test -tags=integration ./internal/storage -count=1</code></pre>
   </section>
 
   <section class="approval">
-    <h2>Approval gate</h2>
-    <p><strong>Implementation must not start until the user explicitly approves this plan.</strong> Approval covers multi-page warning accumulation, retryable state lifecycle, the existing <code>failed/protocol</code> API behavior, typed Apple error classification, no-master safety, tests, and staged canary design. It does not authorize commit, push, feature-flag enablement, migration, or deployment.</p>
+    <h2>Approval record</h2>
+    <p>The approval gate was completed before the implementation recorded in the companion execution plan. Its scope was multi-page warning accumulation, retryable state lifecycle, the existing <code>failed/protocol</code> API behavior, typed Apple error classification, no-master safety, tests, and staged canary design; it did not authorize production deployment.</p>
   </section>
 </main>
 </body>

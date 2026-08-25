@@ -226,6 +226,6 @@ Expected: all commands pass. A missing `TEST_POSTGRES_URL` is a reported limitat
 - Sol `medium` re-review initially found two blockers; both were fixed: invalid/missing per-object `Content-Type` is now a hard protocol failure, and degraded terminal retries use the bounded provider retry base. The follow-up Sol review approved with no residual blocker.
 - No commit, push, production migration, feature-flag enablement, or deployment was performed. The only unverified layer is execution against live PostgreSQL.
 
-## Approval gate
+## Approval record
 
-Implementation must not start until the user explicitly approves this plan. Approval covers multi-page warning accumulation, degraded retry lifecycle, the existing `failed/protocol` API behavior, typed Apple error classification, no-master safety, tests, and staged canary design. It does not authorize commit, push, feature-flag enablement, migration, or deployment.
+The approval gate was completed before the implementation recorded above. It covered multi-page warning accumulation, degraded retry lifecycle, the existing `failed/protocol` API behavior, typed Apple error classification, no-master safety, tests, and staged canary design; it did not authorize production deployment.

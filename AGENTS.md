@@ -6,7 +6,7 @@ Unified Calendar MCP server (Go + mcp-go). Aggregates Google Calendar, Microsoft
 
 ```bash
 go build -o server ./cmd/server       # Build
-go test -race -count=1 ./...          # Tests (no test files yet, but CI runs this)
+go test -race -count=1 ./...          # Full Go test suite
 go vet ./...                          # Lint
 API_KEY=test ./server                 # Run locally (add provider env vars as needed)
 ```

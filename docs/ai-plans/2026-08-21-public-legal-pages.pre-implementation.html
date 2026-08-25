@@ -43,8 +43,8 @@
     <ul>
       <li>The Calendar Platform dashboard and all UI pages are protected by application authentication and production Authentik ForwardAuth.</li>
       <li>Only Google and Microsoft OAuth callback paths bypass ForwardAuth.</li>
-      <li>The repository does not currently contain public product, privacy, or terms documents.</li>
-      <li>The production proxy has no anonymous router for legal or product-information pages.</li>
+      <li>The repository already contains the internal embedded legal sources <code>legal/privacy.md</code> and <code>legal/terms.md</code>; they are not yet anonymously exposed on the public domain.</li>
+      <li>The production proxy has no anonymous router for legal or product-information pages. The existing embedded legal render contract will be reused rather than creating duplicate policy sources or changing the server unnecessarily.</li>
     </ul>
   </section>
 

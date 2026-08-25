@@ -158,7 +158,9 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement, degraded)
 		if page.Complete {
 			next := s.now().Add(policy.PollInterval)
-			batch.NextCursor = string(page.NextCursor)
+			if !degraded {
+				batch.NextCursor = string(page.NextCursor)
+			}
 			batch.NextSyncAt = &next
 		}
 		applyErr := s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
