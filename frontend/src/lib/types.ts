@@ -75,6 +75,49 @@ export type Bootstrap = {
   runs: RunRecord[];
   settings: Settings;
   capabilities?: Record<string, RawCalendarCapabilities>;
+  diagnostics_operator?: boolean;
+};
+
+export type SyncDiagnosticObject = {
+  object_id: string;
+  etag?: string;
+  error_code?: string;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  next_repair_at?: string;
+  repair_attempts?: number;
+  artifact_available?: boolean;
+};
+
+export type SyncDiagnosticCalendar = {
+  calendar_id: string;
+  display_name: string;
+  provider: string;
+  status: string;
+  active_quarantine_count: number;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  next_repair_at?: string | null;
+  objects: SyncDiagnosticObject[];
+};
+
+export type SyncDiagnostics = {
+  summary: { degraded_calendars: number; active_objects: number; artifacts_available: number };
+  calendars: SyncDiagnosticCalendar[];
+};
+
+export type SyncArtifact = {
+  calendar_id: string;
+  object_id: string;
+  etag?: string;
+  payload_base64: string;
+  payload_sha256: string;
+  content_type?: string;
+  provider_status?: number;
+  provider_reason?: string;
+  truncated: boolean;
+  captured_at: string;
+  expires_at: string;
 };
 
 export type RawCalendarCapabilities = {

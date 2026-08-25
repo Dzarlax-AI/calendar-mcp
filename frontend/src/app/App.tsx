@@ -2,13 +2,14 @@ import { createContext, lazy, Suspense, useContext, useEffect, useState } from "
 import type { ReactNode } from "react";
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation, useRouteError } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, PlayCircle, Settings2, X } from "lucide-react";
+import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, PlayCircle, Settings2, ShieldAlert, X } from "lucide-react";
 import { getBootstrap, isSessionExpiredError, navigateToApp } from "../lib/api";
 import type { Bootstrap } from "../lib/types";
 import "../styles/app.css";
 
 const CalendarPage = lazy(() => import("../features/calendar/CalendarPage"));
 const ControlPlanePage = lazy(() => import("../features/control-plane/ControlPlanePage"));
+const DiagnosticsPage = lazy(() => import("../features/diagnostics/DiagnosticsPage"));
 
 export function useBootstrap() {
   return useQuery({ queryKey: ["bootstrap"], queryFn: getBootstrap, retry: (failureCount, error) => !isSessionExpiredError(error) && failureCount < 2 });
@@ -36,7 +37,7 @@ export function RouteErrorPage() {
   </div>;
 }
 
-function Sidebar({ open, onClose, username }: { open: boolean; onClose: () => void; username?: string }) {
+function Sidebar({ open, onClose, username, diagnosticsOperator }: { open: boolean; onClose: () => void; username?: string; diagnosticsOperator?: boolean }) {
   const accountLabel = username?.trim() || "Calendar account";
   return <aside className={`app-sidebar ${open ? "is-open" : ""}`} aria-label="Primary navigation">
     <div className="brand-row">
@@ -45,7 +46,7 @@ function Sidebar({ open, onClose, username }: { open: boolean; onClose: () => vo
       <button className="icon-button sidebar-close" onClick={onClose} aria-label="Close navigation"><X size={20} /></button>
     </div>
     <nav className="primary-nav">
-      {navItems.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onClick={onClose} className={({ isActive }) => `nav-link ${isActive ? "is-active" : ""}`}>
+      {navItems.concat({ to: "/diagnostics", label: "Diagnostics", icon: ShieldAlert, end: false }).filter((item) => item.to !== "/diagnostics" || diagnosticsOperator === true).map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onClick={onClose} className={({ isActive }) => `nav-link ${isActive ? "is-active" : ""}`}>
         <Icon size={19} strokeWidth={1.9} /><span>{label}</span>
       </NavLink>)}
     </nav>
@@ -82,7 +83,7 @@ function Workspace({ bootstrap }: { bootstrap: Bootstrap }) {
   const location = useLocation();
   const calendarRoute = location.pathname === "/app";
   return <div className="app-frame">
-    {!calendarRoute && <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} username={bootstrap.username} />}
+    {!calendarRoute && <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} username={bootstrap.username} diagnosticsOperator={bootstrap.diagnostics_operator} />}
     {!calendarRoute && sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
     <div className="app-content">{!calendarRoute && <Header onMenu={() => setSidebarOpen(true)} />}<BootstrapContext.Provider value={bootstrap}><Suspense fallback={<SuspendedRoute />}><Outlet /></Suspense></BootstrapContext.Provider></div>
   </div>;
@@ -109,6 +110,7 @@ const router = createBrowserRouter([
       { path: "/rules/new", element: <ControlPlanePage section="rule-new" /> },
       { path: "/runs", element: <ControlPlanePage section="runs" /> },
       { path: "/settings", element: <ControlPlanePage section="settings" /> },
+      { path: "/diagnostics", element: <DiagnosticsPage /> },
       { path: "*", element: <Navigate to="/app" replace /> },
     ],
   },

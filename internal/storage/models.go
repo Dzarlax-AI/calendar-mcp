@@ -146,6 +146,25 @@ type RawEventSyncArtifact struct {
 	CapturedAt, ExpiresAt                                                  time.Time
 }
 
+// EventSyncQuarantineDiagnostic is the operator-facing, bounded view of an
+// active quarantined object. It intentionally contains no raw provider payload.
+type EventSyncQuarantineDiagnostic struct {
+	CalendarSyncQuarantine
+	CalendarName, Provider, SyncStatus string
+	LastSuccessAt                      *time.Time
+	LastErrorCode                      string
+	Artifact                           *RawEventSyncArtifactMetadata
+}
+
+// RawEventSyncArtifactMetadata identifies whether a non-expired diagnostic
+// payload remains available without decrypting or loading it.
+type RawEventSyncArtifactMetadata struct {
+	ETag, PayloadSHA256, ContentType, ProviderReason string
+	ProviderStatus                                   int
+	Truncated                                        bool
+	CapturedAt, ExpiresAt                            time.Time
+}
+
 // EventSyncRepairBatch is one already-fetched repair result. Outcome is kept
 // explicit rather than reducing provider deletion and out-of-window objects to
 // the same boolean.

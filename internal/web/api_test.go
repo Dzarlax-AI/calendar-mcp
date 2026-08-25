@@ -207,6 +207,47 @@ func TestUIAPIBootstrapIsProtectedSafeAndFlat(t *testing.T) {
 	assertNoStoreHeaders(t, response)
 }
 
+func TestDiagnosticsQuarantineRequiresOperatorAndSchedulesOneObject(t *testing.T) {
+	provider := uiProvider()
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, RawArtifactOperators: []string{"operator"}}, provider)
+	now := time.Now().UTC()
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.ClaimDueCalendarSync(t.Context(), "test-worker", now, now.Add(time.Minute))
+	if err != nil || state == nil {
+		t.Fatalf("claim state = %#v, %v", state, err)
+	}
+	next := now.Add(time.Hour)
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{Warnings: []storage.EventSyncWarning{{ObjectID: "broken.ics", ETag: "etag", ErrorCode: "protocol"}}, NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := httptest.NewRecorder()
+	deniedRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/diagnostics/quarantine", nil)
+	deniedRequest.Header.Set("X-authentik-username", "alexey")
+	handler.ServeHTTP(denied, deniedRequest)
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("non-operator status = %d", denied.Code)
+	}
+
+	list := httptest.NewRecorder()
+	listRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/diagnostics/quarantine?limit=1", nil)
+	listRequest.Header.Set("X-authentik-username", "operator")
+	handler.ServeHTTP(list, listRequest)
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"object_id":"broken.ics"`) || !strings.Contains(list.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("operator diagnostics = %d %s cache=%q", list.Code, list.Body.String(), list.Header().Get("Cache-Control"))
+	}
+
+	repair := httptest.NewRecorder()
+	repairRequest := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/diagnostics/quarantine/repair", `{"calendar_id":"google:primary","object_id":"broken.ics"}`, "token")
+	repairRequest.Header.Set("X-authentik-username", "operator")
+	handler.ServeHTTP(repair, repairRequest)
+	if repair.Code != http.StatusOK || !strings.Contains(repair.Body.String(), `"status":"already_queued"`) {
+		t.Fatalf("repair status = %d: %s", repair.Code, repair.Body.String())
+	}
+}
+
 func TestUIAPIBootstrapOmitsCalendarsFromInactiveConnections(t *testing.T) {
 	provider := uiProvider()
 	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true}, provider)
