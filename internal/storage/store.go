@@ -23,15 +23,16 @@ const (
 )
 
 var (
-	ErrNotFound               = errors.New("storage record not found")
-	ErrSchemaMismatch         = errors.New("storage schema version mismatch")
-	ErrOAuthNotConsumable     = errors.New("oauth attempt is expired, consumed, or missing")
-	ErrConnectionInUse        = errors.New("connection is referenced by a sync rule")
-	ErrRuleCycle              = errors.New("sync rule would create a cycle")
-	ErrJobLeaseLost           = errors.New("sync job lease is no longer owned by this worker attempt")
-	ErrCalendarSyncActive     = errors.New("calendar sync has an active lease")
-	ErrCalendarSyncIneligible = errors.New("calendar sync calendar is not readable on a connected connection")
-	ErrInvalidSyncCode        = errors.New("calendar sync error code is invalid")
+	ErrNotFound                    = errors.New("storage record not found")
+	ErrSchemaMismatch              = errors.New("storage schema version mismatch")
+	ErrOAuthNotConsumable          = errors.New("oauth attempt is expired, consumed, or missing")
+	ErrConnectionInUse             = errors.New("connection is referenced by a sync rule")
+	ErrRuleCycle                   = errors.New("sync rule would create a cycle")
+	ErrJobLeaseLost                = errors.New("sync job lease is no longer owned by this worker attempt")
+	ErrCalendarSyncActive          = errors.New("calendar sync has an active lease")
+	ErrCalendarSyncIneligible      = errors.New("calendar sync calendar is not readable on a connected connection")
+	ErrInvalidSyncCode             = errors.New("calendar sync error code is invalid")
+	ErrEventSyncRepairETagMismatch = errors.New("event sync repair authorization does not match current object version")
 )
 
 //go:embed migrations/postgres/*.sql migrations/sqlite/*.sql
@@ -150,6 +151,10 @@ func migrationName(version int) string {
 		return "event_sync_quarantine"
 	case 4:
 		return "event_sync_raw_artifacts"
+	case 5:
+		return "event_sync_repair_authorization"
+	case 6:
+		return "event_sync_provider_corrections"
 	default:
 		return ""
 	}

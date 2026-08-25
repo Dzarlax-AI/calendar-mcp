@@ -219,7 +219,7 @@ func TestDiagnosticsQuarantineRequiresOperatorAndSchedulesOneObject(t *testing.T
 		t.Fatalf("claim state = %#v, %v", state, err)
 	}
 	next := now.Add(time.Hour)
-	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{Warnings: []storage.EventSyncWarning{{ObjectID: "broken.ics", ETag: "etag", ErrorCode: "protocol"}}, NextSyncAt: &next}, true, now); err != nil {
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{Warnings: []storage.EventSyncWarning{{ObjectID: "broken.ics", ETag: "etag", ErrorCode: "protocol"}, {ObjectID: "corrected.ics", ETag: "before", ErrorCode: "protocol"}}, NextSyncAt: &next}, false, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,9 +238,26 @@ func TestDiagnosticsQuarantineRequiresOperatorAndSchedulesOneObject(t *testing.T
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"object_id":"broken.ics"`) || !strings.Contains(list.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("operator diagnostics = %d %s cache=%q", list.Code, list.Body.String(), list.Header().Get("Cache-Control"))
 	}
+	detail := httptest.NewRecorder()
+	detailRequest := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/diagnostics/quarantine/detail", `{"calendar_id":"google:primary","object_id":"broken.ics"}`, "token")
+	detailRequest.Header.Set("X-authentik-username", "operator")
+	handler.ServeHTTP(detail, detailRequest)
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"object_id":"broken.ics"`) {
+		t.Fatalf("operator diagnostic detail = %d %s", detail.Code, detail.Body.String())
+	}
+	if err := store.ApplyEventSyncObjectRepair(t.Context(), *state, storage.EventSyncRepairBatch{ObjectID: "corrected.ics", ETag: "repaired", Outcome: calendar.EventSyncObjectProviderCorrected, Upserts: []storage.CachedEventUpsert{{SourceObjectID: "corrected.ics", Event: calendar.EventV2{ID: "corrected", Provider: "google", Start: calendar.EventTime{Date: "2026-08-21"}, End: calendar.EventTime{Date: "2026-08-22"}}}}}, now); err != nil {
+		t.Fatal(err)
+	}
+	corrections := httptest.NewRecorder()
+	correctionsRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://calendar.example/api/ui/diagnostics/corrections", nil)
+	correctionsRequest.Header.Set("X-authentik-username", "operator")
+	handler.ServeHTTP(corrections, correctionsRequest)
+	if corrections.Code != http.StatusOK || !strings.Contains(corrections.Body.String(), `"object_id":"corrected.ics"`) || !strings.Contains(corrections.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("provider corrections = %d %s cache=%q", corrections.Code, corrections.Body.String(), corrections.Header().Get("Cache-Control"))
+	}
 
 	repair := httptest.NewRecorder()
-	repairRequest := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/diagnostics/quarantine/repair", `{"calendar_id":"google:primary","object_id":"broken.ics"}`, "token")
+	repairRequest := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/diagnostics/quarantine/repair", `{"calendar_id":"google:primary","object_id":"broken.ics","expected_etag":"etag"}`, "token")
 	repairRequest.Header.Set("X-authentik-username", "operator")
 	handler.ServeHTTP(repair, repairRequest)
 	if repair.Code != http.StatusOK || !strings.Contains(repair.Body.String(), `"status":"already_queued"`) {

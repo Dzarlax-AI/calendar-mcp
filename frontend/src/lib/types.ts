@@ -104,6 +104,16 @@ export type SyncDiagnosticCalendar = {
 export type SyncDiagnostics = {
   summary: { degraded_calendars: number; active_objects: number; artifacts_available: number };
   calendars: SyncDiagnosticCalendar[];
+  recent_provider_corrections: SyncProviderCorrection[];
+};
+
+export type SyncProviderCorrection = {
+  calendar_id: string;
+  object_id: string;
+  outcome: string;
+  corrected_at: string;
+  calendar_name: string;
+  provider: string;
 };
 
 export type SyncArtifact = {

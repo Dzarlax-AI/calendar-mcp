@@ -137,15 +137,36 @@ func TestRepairEventSyncObjectCorrectsOnlyEqualAllDayDatesAndRefetches(t *testin
 	})
 	defer closeServer()
 
-	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day"}, Window: syncWindow()})
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != calendar.EventSyncObjectReplaceMembership || result.Object.ETag != "after" || len(result.Upserts) != 1 || result.Upserts[0].Event.Start.Date != "2026-08-20" || result.Upserts[0].Event.End.Date != "2026-08-21" {
+	if result.Outcome != calendar.EventSyncObjectProviderCorrected || result.Object.ETag != "after" || len(result.Upserts) != 1 || result.Upserts[0].Event.Start.Date != "2026-08-20" || result.Upserts[0].Event.End.Date != "2026-08-21" {
 		t.Fatalf("repair result = %#v", result)
 	}
 	if requests.Load() != 3 {
 		t.Fatalf("requests = %d, want get, patch, get", requests.Load())
+	}
+}
+
+func TestRepairEventSyncObjectDoesNotPatchWithoutExactOperatorAuthorization(t *testing.T) {
+	var requests atomic.Int32
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Errorf("automatic repair method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
+	})
+	defer closeServer()
+
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "stale"}, Window: syncWindow(), AllowProviderMutation: true})
+	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || result.Warning == nil {
+		t.Fatalf("stale authorization result=%#v err=%v", result, err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d, want one read-only GET", requests.Load())
 	}
 }
 
@@ -199,13 +220,39 @@ func TestRepairEventSyncObjectReturnsConditionalUpdateConflict(t *testing.T) {
 	})
 	defer closeServer()
 
-	_, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day"}, Window: syncWindow()})
+	_, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
 	var syncErr *calendar.EventSyncError
 	if !errors.As(err, &syncErr) || syncErr.Class != calendar.EventSyncProtocol || syncErr.ProviderStatus != http.StatusPreconditionFailed || syncErr.ProviderReason != "conditionNotMet" {
 		t.Fatalf("error = %#v", err)
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("requests = %d, want get and failed patch", requests.Load())
+	}
+}
+
+func TestRepairEventSyncObjectTreatsMissingDuringPatchAsProviderDeleted(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var requests atomic.Int32
+			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if requests.Add(1) == 1 {
+					_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
+					return
+				}
+				if r.Method != http.MethodPatch {
+					t.Errorf("request method = %s, want PATCH", r.Method)
+				}
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":{"code":`+strconv.Itoa(status)+`}}`)
+			})
+			defer closeServer()
+
+			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+			if err != nil || result.Outcome != calendar.EventSyncObjectProviderDeleted || requests.Load() != 2 {
+				t.Fatalf("result=%#v err=%v requests=%d", result, err, requests.Load())
+			}
+		})
 	}
 }
 

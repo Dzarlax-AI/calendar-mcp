@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 6
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -136,6 +136,7 @@ type CalendarSyncQuarantine struct {
 	FirstSeenAt, LastSeenAt, NextRepairAt time.Time
 	RepairAttempts                        int
 	Active                                bool
+	ProviderMutationAuthorizedETag        string
 }
 
 type RawEventSyncArtifact struct {
@@ -154,6 +155,15 @@ type EventSyncQuarantineDiagnostic struct {
 	LastSuccessAt                      *time.Time
 	LastErrorCode                      string
 	Artifact                           *RawEventSyncArtifactMetadata
+}
+
+// EventSyncProviderCorrection is a durable operator-audit record for a
+// successful provider-side correction. It intentionally outlives the resolved
+// quarantine row and does not affect source health.
+type EventSyncProviderCorrection struct {
+	CalendarID, ObjectID, Outcome string
+	CorrectedAt                   time.Time
+	CalendarName, Provider        string
 }
 
 // RawEventSyncArtifactMetadata identifies whether a non-expired diagnostic

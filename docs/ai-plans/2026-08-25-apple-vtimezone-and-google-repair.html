@@ -80,7 +80,7 @@
 
   <section>
     <h2>API, permissions, and deployment impact</h2>
-    <p>The browser API remains the same Repair endpoint, but its Google branch can now perform a narrowly scoped external write. It remains protected by Authentik, the diagnostics operator allowlist, and CSRF. No database migration is expected. The deployed worker needs the existing Google OAuth scope to update events; a permission failure is reported without retrying or modifying cached data.</p>
+    <p>The browser API Repair request includes the quarantined object’s current ETag. The Google branch can perform one narrowly scoped external write only after this operator authorization; it remains protected by Authentik, the diagnostics operator allowlist, and CSRF. Schema migrations record the one-time authorization and durable provider-correction audit trail. The deployed worker needs the existing Google OAuth scope to update events; a permission failure is reported without retrying or modifying cached data.</p>
   </section>
 
   <section>
@@ -117,7 +117,9 @@
       <li>Implemented Apple fixed whole-hour <code>VTIMEZONE</code> normalization in <code>internal/apple/timezone.go</code>, and applied it before sync validation and ordinary recurrence materialization. <code>GMT+0100</code> becomes the valid IANA zone <code>Etc/GMT-1</code>; the event instant remains <code>+01:00</code>.</li>
       <li>Unsupported fractional offsets, duplicate/missing definitions, and transition-aware zones remain quarantined with <code>unsupported_custom_timezone</code>.</li>
       <li>Implemented Google repair in <code>internal/google/event_sync.go</code>: only an explicit repair of a default, non-recurring, date-only event with equal dates sends a conditional PATCH for <code>end.date = start.date + 1 day</code>, with notifications suppressed; it then refetches and validates before projection.</li>
-      <li>Added focused Apple and Google regression coverage. Local Go package tests, web tests, <code>go vet ./...</code>, frontend tests/typecheck/build, and <code>git diff --check</code> passed before the final Apple read-path normalization change; Apple package tests and diff check passed again after that change. Full final verification remains required before commit/release.</li>
+      <li>Review hardening added an ETag-bound, single-use operator authorization in migration 005. Background repair remains read-only; the worker consumes the authorization under its lease immediately before any provider mutation. Stale Repair clicks return a conflict instead of authorizing a newer provider version.</li>
+      <li>Migration 006 records a durable <code>provider_corrected</code> audit outcome while resolving quarantine. Operator diagnostics shows recent provider corrections without marking the calendar degraded. Google PATCH 404/410 resolves as provider-deleted; generated <code>Etc/GMT</code> zones are verified with <code>time.LoadLocation</code>.</li>
+      <li>Focused Apple, Google, event-sync, storage, and web tests plus frontend typecheck and <code>git diff --check</code> passed after the review fixes. Full repository verification is the remaining pre-commit gate.</li>
     </ul>
   </section>
 

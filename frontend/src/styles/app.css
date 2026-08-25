@@ -235,6 +235,8 @@ a { color: inherit; text-decoration: none; }
 .diagnostics-summary-card span, .diagnostics-meta span, .diagnostics-detail-grid span { color: var(--muted); font-size: 11px; }
 .diagnostics-summary-card strong { font-size: 27px; letter-spacing: -.03em; }
 .diagnostics-calendar-list { display: grid; gap: 17px; }
+.diagnostics-corrections { margin-top: 17px; }
+.diagnostics-corrections time { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .diagnostics-calendar-title { display: flex; align-items: center; gap: 9px; }
 .diagnostics-calendar-title h2 { margin: 0 0 5px; }
 .diagnostics-alert { color: #b57319; }

@@ -80,6 +80,10 @@ func TestMigrateUpgradesVersionOneToEventReadModel(t *testing.T) {
 			t.Fatalf("table %q: %v", table, err)
 		}
 	}
+	var authorizationColumn int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('calendar_sync_quarantine') WHERE name='provider_mutation_authorized_etag'`).Scan(&authorizationColumn); err != nil || authorizationColumn != 1 {
+		t.Fatalf("repair authorization migration column=%d err=%v", authorizationColumn, err)
+	}
 }
 
 func TestMigrateFreshAndIdempotentEventReadModel(t *testing.T) {
@@ -89,6 +93,77 @@ func TestMigrateFreshAndIdempotentEventReadModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSchemaVersion(t, store, SchemaVersion)
+}
+
+func TestOperatorRepairAuthorizationIsETagBoundAndSingleUse(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	state, err := store.ClaimDueCalendarSync(t.Context(), "worker", now, now.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim=%#v err=%v", state, err)
+	}
+	next := now.Add(time.Hour)
+	if err := store.ApplyEventSyncPage(t.Context(), *state, EventSyncBatch{Warnings: []EventSyncWarning{{ObjectID: "broken", ETag: "etag-1", ErrorCode: "protocol"}}, NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ScheduleEventSyncObjectRepair(t.Context(), "calendar", "broken", "stale-etag", now.Add(time.Minute)); !errors.Is(err, ErrEventSyncRepairETagMismatch) {
+		t.Fatalf("stale authorization error=%v", err)
+	}
+	var grant string
+	if err := store.db.QueryRowContext(t.Context(), "SELECT provider_mutation_authorized_etag FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=?", "calendar", "broken").Scan(&grant); err != nil || grant != "" {
+		t.Fatalf("stale authorization grant=%q err=%v", grant, err)
+	}
+	if _, err := store.ScheduleEventSyncObjectRepair(t.Context(), "calendar", "broken", "etag-1", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.ClaimDueCalendarSync(t.Context(), "worker", now.Add(time.Minute), now.Add(2*time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim authorized=%#v err=%v", state, err)
+	}
+	due, err := store.ListDueEventSyncQuarantine(t.Context(), *state, now.Add(time.Minute), 1)
+	if err != nil || len(due) != 1 || due[0].ProviderMutationAuthorizedETag != "etag-1" {
+		t.Fatalf("due=%#v err=%v", due, err)
+	}
+	consumed, err := store.ConsumeEventSyncProviderMutationAuthorization(t.Context(), *state, "calendar", "broken", "etag-1", now.Add(time.Minute))
+	if err != nil || !consumed {
+		t.Fatalf("consume=%v err=%v", consumed, err)
+	}
+	consumed, err = store.ConsumeEventSyncProviderMutationAuthorization(t.Context(), *state, "calendar", "broken", "etag-1", now.Add(time.Minute))
+	if err != nil || consumed {
+		t.Fatalf("second consume=%v err=%v", consumed, err)
+	}
+}
+
+func TestProviderCorrectionIsAuditedAfterResolvingQuarantine(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	state, err := store.ClaimDueCalendarSync(t.Context(), "worker", now, now.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim=%#v err=%v", state, err)
+	}
+	next := now.Add(time.Hour)
+	if err := store.ApplyEventSyncPage(t.Context(), *state, EventSyncBatch{Warnings: []EventSyncWarning{{ObjectID: "all-day", ETag: "before", ErrorCode: "protocol"}}, NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.ClaimDueCalendarSync(t.Context(), "worker", next, next.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("repair claim=%#v err=%v", state, err)
+	}
+	correctedAt := next.Add(time.Minute)
+	upsert := CachedEventUpsert{SourceObjectID: "all-day", Event: cachedAllDayEvent("all-day", "2026-08-20", "2026-08-21")}
+	if err := store.ApplyEventSyncObjectRepair(t.Context(), *state, EventSyncRepairBatch{ObjectID: "all-day", ETag: "after", Outcome: calendar.EventSyncObjectProviderCorrected, Upserts: []CachedEventUpsert{upsert}}, correctedAt); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM calendar_sync_quarantine WHERE calendar_id=? AND object_id=? AND active=?", "calendar", "all-day", true).Scan(&active); err != nil || active != 0 {
+		t.Fatalf("active quarantine=%d err=%v", active, err)
+	}
+	corrections, err := store.ListRecentEventSyncProviderCorrections(t.Context(), 10)
+	if err != nil || len(corrections) != 1 {
+		t.Fatalf("corrections=%#v err=%v", corrections, err)
+	}
+	got := corrections[0]
+	if got.CalendarID != "calendar" || got.ObjectID != "all-day" || got.Outcome != string(calendar.EventSyncObjectProviderCorrected) || !got.CorrectedAt.Equal(correctedAt) || got.Provider != "google" {
+		t.Fatalf("correction=%#v", got)
+	}
 }
 
 func TestPostgresEventReadModelIntegration(t *testing.T) {

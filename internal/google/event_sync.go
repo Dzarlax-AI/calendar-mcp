@@ -140,14 +140,19 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	}
 	event := fromGoogleEventV2(item, request.CalendarID, "")
 	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
+	providerCorrected := false
 	if windowErr != nil {
-		if correctedEndDate, eligible := googleAllDayRepairEndDate(item); eligible {
+		if correctedEndDate, eligible := googleAllDayRepairEndDate(item); eligible && request.AllowProviderMutation && request.Object.ETag == item.Etag {
 			// Patch only the malformed field and bind it to the representation we
 			// just read. A concurrent edit therefore fails rather than overwriting
 			// any user change. Suppress notifications for this operator repair.
 			call := p.svc.Events.Patch(request.CalendarID, request.Object.ObjectID, &gcal.Event{End: &gcal.EventDateTime{Date: correctedEndDate}}).SendUpdates("none")
 			call.Header().Set("If-Match", item.Etag)
 			if _, err := call.Context(ctx).Do(); err != nil {
+				var apiErr *googleapi.Error
+				if errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone) {
+					return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+				}
 				return calendar.EventSyncObjectRepairResult{}, classifyGoogleSyncError(err)
 			}
 			// Do not trust a write response to be the final representation: fetch
@@ -166,6 +171,7 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 			}
 			event = fromGoogleEventV2(item, request.CalendarID, "")
 			inWindow, windowErr = googleEventInSyncWindow(event, request.Window)
+			providerCorrected = true
 		}
 	}
 	if windowErr != nil {
@@ -174,7 +180,11 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	if !inWindow {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
 	}
-	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
+	outcome := calendar.EventSyncObjectReplaceMembership
+	if providerCorrected {
+		outcome = calendar.EventSyncObjectProviderCorrected
+	}
+	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: outcome, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
 }
 
 // googleAllDayRepairEndDate accepts only the malformed shape that an operator

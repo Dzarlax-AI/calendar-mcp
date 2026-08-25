@@ -87,7 +87,11 @@ func appleFixedOffsetTimezoneName(container *ical.Calendar, tzid string) (string
 		return "UTC", nil
 	}
 	// IANA's Etc/GMT signs are deliberately reversed: Etc/GMT-1 is UTC+01.
-	return "Etc/GMT" + strconv.Itoa(-offset), nil
+	name := "Etc/GMT" + strconv.Itoa(-offset)
+	if _, err := time.LoadLocation(name); err != nil {
+		return "", fmt.Errorf("%s: fixed offset %q is unavailable", appleUnsupportedCustomTimezoneReason, to.Value)
+	}
+	return name, nil
 }
 
 func appleTimezoneWholeHourOffset(value string) (int, error) {
