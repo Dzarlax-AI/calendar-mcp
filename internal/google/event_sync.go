@@ -116,10 +116,14 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 }
 
 // RepairEventSyncObject refetches one malformed event without replaying the
-// whole calendar feed. A provider 404/410 is a confirmed deletion; malformed
-// data remains quarantined with the representation ETag observed by Google.
+// whole calendar feed. It can correct exactly one provider defect: a
+// non-recurring default all-day event whose equal start and end dates make its
+// interval empty. Normal sync never writes provider data.
 func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.EventSyncObjectRepairRequest) (calendar.EventSyncObjectRepairResult, error) {
 	if p == nil || p.svc == nil || request.CalendarID == "" || request.Object.ObjectID == "" {
+		return calendar.EventSyncObjectRepairResult{}, syncProtocolError(nil)
+	}
+	if !validSyncWindow(request.Window) {
 		return calendar.EventSyncObjectRepairResult{}, syncProtocolError(nil)
 	}
 	item, err := p.svc.Events.Get(request.CalendarID, request.Object.ObjectID).Context(ctx).Do()
@@ -137,12 +141,57 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	event := fromGoogleEventV2(item, request.CalendarID, "")
 	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
 	if windowErr != nil {
+		if correctedEndDate, eligible := googleAllDayRepairEndDate(item); eligible {
+			// Patch only the malformed field and bind it to the representation we
+			// just read. A concurrent edit therefore fails rather than overwriting
+			// any user change. Suppress notifications for this operator repair.
+			call := p.svc.Events.Patch(request.CalendarID, request.Object.ObjectID, &gcal.Event{End: &gcal.EventDateTime{Date: correctedEndDate}}).SendUpdates("none")
+			call.Header().Set("If-Match", item.Etag)
+			if _, err := call.Context(ctx).Do(); err != nil {
+				return calendar.EventSyncObjectRepairResult{}, classifyGoogleSyncError(err)
+			}
+			// Do not trust a write response to be the final representation: fetch
+			// it again and run the ordinary validator before projecting it.
+			item, err = p.svc.Events.Get(request.CalendarID, request.Object.ObjectID).Context(ctx).Do()
+			if err != nil {
+				var apiErr *googleapi.Error
+				if errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone) {
+					return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+				}
+				return calendar.EventSyncObjectRepairResult{}, classifyGoogleSyncError(err)
+			}
+			object = calendar.SyncObject{ObjectID: item.Id, ETag: item.Etag}
+			if item.Status == "cancelled" {
+				return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+			}
+			event = fromGoogleEventV2(item, request.CalendarID, "")
+			inWindow, windowErr = googleEventInSyncWindow(event, request.Window)
+		}
+	}
+	if windowErr != nil {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item, googleEventWindowErrorCode(windowErr))}}, nil
 	}
 	if !inWindow {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectAbsentFromProjection}, nil
 	}
 	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectReplaceMembership, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
+}
+
+// googleAllDayRepairEndDate accepts only the malformed shape that an operator
+// may repair: a normal, non-recurring date-only event with equal valid dates.
+// All other malformed ranges deliberately stay quarantined for manual repair.
+func googleAllDayRepairEndDate(item *gcal.Event) (string, bool) {
+	if item == nil || item.Etag == "" || item.Status == "cancelled" || normalizedGoogleEventType(item.EventType) != "default" || item.RecurringEventId != "" || item.OriginalStartTime != nil || len(item.Recurrence) != 0 || item.Start == nil || item.End == nil {
+		return "", false
+	}
+	if item.Start.Date == "" || item.End.Date == "" || item.Start.DateTime != "" || item.End.DateTime != "" || item.Start.Date != item.End.Date {
+		return "", false
+	}
+	start, err := time.Parse(calendar.DateLayout, item.Start.Date)
+	if err != nil {
+		return "", false
+	}
+	return start.AddDate(0, 0, 1).Format(calendar.DateLayout), true
 }
 
 func googleEventDiagnostic(item *gcal.Event, reason string) *calendar.EventSyncDiagnostic {

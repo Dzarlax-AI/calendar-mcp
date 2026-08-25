@@ -503,7 +503,7 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	}
 	members, err := appleSyncMembers(*object, calendar.EventSyncRequest{CalendarID: request.CalendarID, Window: request.Window})
 	if err != nil {
-		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag, Diagnostic: diagnostic}}, nil
+		return calendar.EventSyncObjectRepairResult{Object: calendar.SyncObject{ObjectID: path, ETag: object.ETag}, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: path, ETag: object.ETag, Diagnostic: appleDiagnosticForError(diagnostic, err)}}, nil
 	}
 	identity := calendar.SyncObject{ObjectID: path, ETag: object.ETag}
 	if len(members) == 0 {
@@ -547,7 +547,7 @@ func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObje
 		}
 		members, err := appleSyncMembers(fetched.object, request)
 		if err != nil {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path, ETag: fetched.object.ETag, Diagnostic: fetched.diagnostic})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: fetched.object.Path, ETag: fetched.object.ETag, Diagnostic: appleDiagnosticForError(fetched.diagnostic, err)})
 			continue
 		}
 		if len(members) == 0 {
@@ -564,7 +564,19 @@ func appleSyncPage(request calendar.EventSyncRequest, objects []appleFetchedObje
 	return page, nil
 }
 
+func appleDiagnosticForError(diagnostic *calendar.EventSyncDiagnostic, err error) *calendar.EventSyncDiagnostic {
+	if diagnostic == nil || err == nil || !strings.Contains(err.Error(), appleUnsupportedCustomTimezoneReason) {
+		return diagnostic
+	}
+	copy := *diagnostic
+	copy.ProviderReason = appleUnsupportedCustomTimezoneReason
+	return &copy
+}
+
 func appleSyncMembers(object caldav.CalendarObject, request calendar.EventSyncRequest) ([]calendar.EventV2, error) {
+	if err := normalizeAppleFixedOffsetTimezone(&object); err != nil {
+		return nil, err
+	}
 	events := object.Data.Events()
 	items := make([]calendar.EventV2, 0, len(events))
 	masters := 0
@@ -689,7 +701,7 @@ func appleReplacementPage(request calendar.EventSyncRequest, fetched []appleFetc
 		}
 		members, err := appleSyncMembers(item.object, request)
 		if err != nil {
-			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.object.Path, ETag: item.object.ETag, Diagnostic: item.diagnostic})
+			page.Warnings = append(page.Warnings, calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.object.Path, ETag: item.object.ETag, Diagnostic: appleDiagnosticForError(item.diagnostic, err)})
 			continue
 		}
 		object := calendar.SyncObject{ObjectID: item.object.Path, ETag: item.object.ETag}
