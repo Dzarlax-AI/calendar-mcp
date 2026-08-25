@@ -140,7 +140,7 @@
       <li>Fixed the harness during the first local baseline run: froze the browser clock to 2026-08-25, placed daily-view test events on that date, and aligned selectors with the current accessibility names. No production Calendar code changed.</li>
       <li>CI installs Linux Chromium, runs the suite, and uploads Playwright report/test results only when the job fails (seven-day retention).</li>
     </ul>
-    <p>Verification passed: TypeScript typecheck, 34 Vitest tests, 25 local Playwright interaction tests, 25 Ubuntu Chromium screenshot comparisons in the Playwright Docker image, and <code>git diff --check</code>. Only Linux Chromium baseline PNGs are committed; local macOS screenshots and reports remain disposable artifacts.</p>
+    <p>Verification passed: TypeScript typecheck, 34 Vitest tests, 25 local Playwright interaction tests, and 25 Ubuntu Chromium screenshot comparisons. Docker was used for the initial Linux candidate only; the committed baselines were then generated from the actual GitHub Actions runner after its rendering differed. Only Linux Chromium baseline PNGs are committed; local screenshots and reports remain disposable artifacts.</p>
   </section>
 </main>
 </body>
