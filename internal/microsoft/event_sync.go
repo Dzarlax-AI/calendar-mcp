@@ -144,7 +144,7 @@ func (p *Provider) getDeltaPage(ctx context.Context, rawURL string, out *graphDe
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Prefer", `outlook.timezone="UTC", outlook.body-content-type="text"`)
+	request.Header.Set("Prefer", `outlook.timezone="UTC", outlook.body-content-type="html"`)
 	response, err := p.client.Do(request)
 	if err != nil {
 		return err

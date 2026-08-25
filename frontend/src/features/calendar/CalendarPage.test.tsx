@@ -1,0 +1,89 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CalendarSidebar, ManageMenu } from "./CalendarPage";
+import type { CalendarRecord } from "../../lib/types";
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+function renderManageMenu() {
+  act(() => root.render(<MemoryRouter initialEntries={["/app"]}><ManageMenu /></MemoryRouter>));
+  const trigger = container.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']");
+  if (!trigger) throw new Error("Manage trigger was not rendered");
+  return trigger;
+}
+
+function openMenu(trigger: HTMLButtonElement) {
+  act(() => trigger.click());
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+}
+
+describe("calendar manage menu", () => {
+  it("exposes only the existing administration routes", () => {
+    const trigger = renderManageMenu();
+    openMenu(trigger);
+    const links = Array.from(container.querySelectorAll<HTMLAnchorElement>("[role='menuitem']"));
+    expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Connections", "/connections"],
+      ["Sync Rules", "/rules"],
+      ["Runs", "/runs"],
+      ["Settings", "/settings"],
+    ]);
+  });
+
+  it("closes on Escape and restores focus to its trigger", () => {
+    const trigger = renderManageMenu();
+    openMenu(trigger);
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger);
+    outside.remove();
+  });
+
+  it("closes on an outside pointer without stealing that focus", () => {
+    const trigger = renderManageMenu();
+    openMenu(trigger);
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    act(() => outside.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+});
+
+describe("calendar sidebar", () => {
+  it("keeps its scope to event creation, date navigation, and visibility toggles", () => {
+    const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
+    const onToggle = vi.fn();
+    act(() => root.render(<CalendarSidebar calendars={[calendar]} selected={[calendar.id]} onToggle={onToggle} onCreate={() => undefined} onClose={() => undefined} onJumpToDate={() => undefined} showClose={false} visibleDate={new Date(2026, 7, 25)} />));
+    expect(container.textContent).toContain("New event");
+    expect(container.textContent).toContain("Personal");
+    expect(container.querySelectorAll("a")).toHaveLength(0);
+    const checkbox = container.querySelector<HTMLInputElement>("input[type='checkbox']");
+    if (!checkbox) throw new Error("Calendar visibility checkbox was not rendered");
+    act(() => checkbox.click());
+    expect(onToggle).toHaveBeenCalledWith(calendar);
+  });
+});

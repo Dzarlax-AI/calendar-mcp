@@ -49,6 +49,14 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves the provider description format for event rendering", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id: "e1", calendar_id: "microsoft:c1", provider: "microsoft", title: "Review", description: "<p><strong>Agenda</strong></p>", description_format: "html", html_link: "https://outlook.office.com/calendar/event", conference: { solution: "teamsForBusiness", entry_points: [{ type: "video", uri: "https://teams.microsoft.com/l/meetup-join/example" }] }, start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }], complete: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["microsoft:c1"]);
+    expect(result.items[0]).toMatchObject({ descriptionFormat: "html", description: "<p><strong>Agenda</strong></p>", htmlLink: "https://outlook.office.com/calendar/event", conference: { entry_points: [{ type: "video", uri: "https://teams.microsoft.com/l/meetup-join/example" }] } });
+    vi.unstubAllGlobals();
+  });
+
   it("preserves degraded status while hiding provider payloads", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "apple", calendar_id: "c1", complete: false, status: "degraded", stale: true, error_code: "protocol", error: { message: "raw iCalendar payload" } }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

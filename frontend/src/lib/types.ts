@@ -150,12 +150,15 @@ export type EventRecord = {
   calendarId: string;
   title: string;
   description?: string;
+  descriptionFormat?: "html" | "text";
   location?: string;
   start: string;
   end: string;
   allDay: boolean;
   timezone?: string;
   etag?: string;
+  htmlLink?: string;
+  conference?: { solution?: string; entry_points?: Array<{ type: string; uri: string; label?: string }> };
   readOnly?: boolean;
   source?: string;
   recurrence?: RecurrenceInfo;
