@@ -30,7 +30,12 @@ type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toResched
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
-const COMPACT_LAYOUT_QUERY = "(max-width: 1279px)";
+export const COMPACT_LAYOUT_MAX_WIDTH = 1439;
+const COMPACT_LAYOUT_QUERY = `(max-width: ${COMPACT_LAYOUT_MAX_WIDTH}px)`;
+
+export function usesCompactCalendarLayout(viewportWidth: number) {
+  return viewportWidth <= COMPACT_LAYOUT_MAX_WIDTH;
+}
 
 const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
   { value: "timeGridDay", label: "Day" },
@@ -257,7 +262,7 @@ export default function CalendarPage() {
     <main className="calendar-main" inert={sheetOpen} aria-hidden={sheetOpen || undefined}>
       <div className="calendar-toolbar">
         <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><span className="date-title" aria-live="polite">{calendarRef.current?.getApi().view.title ?? "Calendar"}</span></div>
-        <div className="toolbar-actions"><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars"><ListFilter size={15} /> Calendars</button><button className="button button-outline" onClick={refreshSelectedCalendars} disabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} aria-label="Refresh selected calendars"><RefreshCw size={15} className={refreshMutation.isPending ? "spin" : undefined} /> Refresh</button><ManageMenu /><div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div></div>
+        <div className="toolbar-actions"><div className="toolbar-scroll-controls"><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars"><ListFilter size={15} /> Calendars</button><button className="button button-outline" onClick={refreshSelectedCalendars} disabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} aria-label="Refresh selected calendars"><RefreshCw size={15} className={refreshMutation.isPending ? "spin" : undefined} /> Refresh</button></div><ManageMenu /><div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div></div>
       </div>
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
       {eventStatus && <div className={`event-status-strip event-status-row event-status-row--${eventStatus.kind}`} role={eventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{eventStatus.label}</span>{(eventStatus.kind === "failed" || eventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{eventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}

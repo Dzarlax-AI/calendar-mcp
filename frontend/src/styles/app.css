@@ -53,10 +53,11 @@ a { color: inherit; text-decoration: none; }
 .calendar-screen.with-sidebar { grid-template-columns: 246px minmax(0, 1fr) 0; }
 .calendar-screen.with-drawer { grid-template-columns: 0 minmax(0, 1fr) 318px; }
 .calendar-screen.with-sidebar.with-drawer { grid-template-columns: 246px minmax(0, 1fr) 318px; }
-.calendar-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+.calendar-main { container-type: inline-size; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
 .calendar-toolbar { height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 18px 0 20px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
-.toolbar-primary, .toolbar-actions, .nav-arrows, .view-switcher { display: flex; align-items: center; }
+.toolbar-primary, .toolbar-actions, .toolbar-scroll-controls, .nav-arrows, .view-switcher { display: flex; align-items: center; }
 .toolbar-primary { gap: 10px; min-width: 0; }
+.toolbar-scroll-controls { gap: 10px; }
 .today-button { min-width: 74px; }
 .nav-arrows { gap: 0; }
 .nav-arrows .icon-button:first-child { border-radius: 7px 0 0 7px; border-right: 0; }
@@ -367,7 +368,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* Compact calendar sheets remain overlays through tablet widths. */
-@media (min-width: 821px) and (max-width: 1279px) {
+@media (min-width: 821px) and (max-width: 1439px) {
   .calendar-screen, .calendar-screen.with-sidebar, .calendar-screen.with-drawer { display: block; height: 100vh; height: 100dvh; }
   .calendar-screen > .sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 20; border: 0; background: rgba(22, 30, 48, .36); }
   .calendar-sidebar, .event-drawer { position: fixed; top: 0; bottom: 0; z-index: 21; display: flex; flex-direction: column; width: min(100vw, 360px); min-width: 0; max-width: 100%; padding-top: max(18px, env(safe-area-inset-top)); padding-bottom: env(safe-area-inset-bottom); overflow-y: auto; overscroll-behavior: contain; }
@@ -376,4 +377,14 @@ a { color: inherit; text-decoration: none; }
   .calendar-sidebar.is-open, .event-drawer.is-open { transform: translateX(0); }
   .calendar-main { height: 100vh; height: 100dvh; }
   .calendar-provider { display: inline; }
+}
+
+/* A persistent sidebar and inspector can make the calendar canvas much narrower than the viewport. */
+@container (max-width: 900px) {
+  .calendar-toolbar { height: auto; min-height: 68px; flex-wrap: wrap; padding-block: 8px; }
+  .toolbar-primary, .toolbar-actions { flex: 1 1 100%; }
+  .toolbar-actions { justify-content: flex-start; min-width: 0; overflow: visible; }
+  .toolbar-scroll-controls { flex: 1 1 auto; min-width: 0; gap: 10px; overflow-x: auto; scrollbar-width: none; }
+  .toolbar-scroll-controls::-webkit-scrollbar { display: none; }
+  .toolbar-scroll-controls > .button { flex: 0 0 auto; white-space: nowrap; }
 }
