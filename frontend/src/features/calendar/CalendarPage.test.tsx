@@ -94,6 +94,7 @@ describe("calendar responsive layout", () => {
     expect(usesCompactCalendarLayout(768)).toBe(true);
     expect(usesCompactCalendarLayout(1024)).toBe(true);
     expect(usesCompactCalendarLayout(1280)).toBe(true);
+    expect(usesCompactCalendarLayout(1439)).toBe(true);
     expect(usesCompactCalendarLayout(1440)).toBe(false);
   });
 });
