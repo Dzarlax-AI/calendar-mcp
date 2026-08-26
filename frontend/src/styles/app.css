@@ -441,6 +441,11 @@ a { color: inherit; text-decoration: none; }
   .toolbar-actions .view-switcher { grid-column: 1 / -1; grid-row: 2; display: flex; width: 100%; }
   .toolbar-actions .view-switcher button { flex: 1 1 0; min-width: 0; height: 38px; }
 
+  /* Month owns its date navigation and actions; the shared toolbar only switches views. */
+  .calendar-toolbar.is-mobile-month-toolbar { display: block; min-height: 0; padding: 8px 12px; }
+  .calendar-toolbar.is-mobile-month-toolbar .toolbar-actions { display: block; }
+  .calendar-toolbar.is-mobile-month-toolbar .toolbar-actions .view-switcher { display: flex; width: 100%; }
+
   /* A purpose-built month keeps the complete month visible without a blank canvas below it. */
   .calendar-canvas-wrap.has-mobile-month { overflow-y: auto; background: #fff; }
   .calendar-canvas-wrap.has-mobile-month > .fc { display: none; }
@@ -457,7 +462,7 @@ a { color: inherit; text-decoration: none; }
   .mobile-month-day { position: relative; display: flex; min-width: 0; flex: 1 1 0; flex-direction: column; gap: 3px; padding: 7px 3px 5px; overflow: hidden; }
   .mobile-month-day + .mobile-month-day { border-left: 1px solid rgba(231, 234, 240, .72); }
   .mobile-month-day.is-outside { background: #fbfcfd; }
-  .mobile-month-day-number { width: 27px; min-height: 27px; align-self: center; border: 0; border-radius: 50%; background: transparent; color: #202838; font-size: 17px; font-weight: 650; line-height: 27px; }
+  .mobile-month-day-number { display: grid; width: 27px; min-height: 27px; align-self: center; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #202838; font-size: 17px; font-variant-numeric: tabular-nums; font-weight: 650; line-height: 1; text-align: center; }
   .mobile-month-day-number:hover, .mobile-month-day-number:focus-visible { background: #eff1ff; color: var(--accent); outline: 0; }
   .mobile-month-day.is-today .mobile-month-day-number { background: #ef4655; color: #fff; }
   .mobile-month-event, .mobile-month-more { width: 100%; min-width: 0; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--event-color, #4762ee) 13%, white); color: #38465b; font-size: 10px; font-weight: 650; line-height: 16px; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -465,9 +470,8 @@ a { color: inherit; text-decoration: none; }
   .mobile-month-event:hover, .mobile-month-event:focus-visible { background: color-mix(in srgb, var(--event-color, #4762ee) 23%, white); outline: 0; }
   .mobile-month-more { padding: 0 4px; background: transparent; color: #657087; font-weight: 700; }
   .mobile-month-more:hover, .mobile-month-more:focus-visible { color: var(--accent); outline: 0; }
-  .mobile-month-footer { position: sticky; bottom: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 12px 15px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid rgba(223, 227, 235, .92); background: rgba(255, 255, 255, .94); backdrop-filter: blur(10px); }
+  .mobile-month-footer { position: sticky; bottom: 0; display: flex; align-items: center; padding: 12px 15px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid rgba(223, 227, 235, .92); background: rgba(255, 255, 255, .94); backdrop-filter: blur(10px); }
   .mobile-month-footer .button { min-height: 39px; border-radius: 999px; }
-  .mobile-month-next { display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: 0; background: transparent; color: #39455b; font-size: 12px; font-weight: 700; }
 
   /* The phone Week view is a real three-day time grid, so it should use the available width. */
   .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-slot { height: 48px; }

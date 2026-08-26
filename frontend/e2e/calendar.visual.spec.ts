@@ -86,7 +86,14 @@ test("toolbar actions, sidebar Manage menu, and every view selector stay reachab
       await expect(page.locator(".calendar-canvas-wrap")).toHaveClass(/is-phone-week/);
       await expect(page.locator(".fc-col-header-cell")).toHaveCount(3);
     }
-    if (name === "Month") await expect(page.locator(".mobile-month")).toBeVisible();
+    if (name === "Month") {
+      await expect(page.locator(".mobile-month")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Today", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "New event", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Choose calendars", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("heading", { name: "August", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Next month", exact: true })).toHaveCount(0);
+    }
   }
   await page.getByRole("button", { name: "Choose calendars" }).click();
   const sidebar = page.getByRole("dialog", { name: "Calendar" });
