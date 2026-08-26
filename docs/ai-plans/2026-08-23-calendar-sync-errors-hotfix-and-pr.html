@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>План: диагностика и исправление ошибок фоновой синхронизации</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5b6578; --line:#dce2ec; --card:#fff; --bg:#f5f7fb; --blue:#2563eb; --amber:#b45309; --red:#b91c1c; --green:#166534; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1100px; margin:0 auto; padding:32px 20px 56px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:22px 24px; margin:16px 0; }
+    h1,h2 { line-height:1.2; } h1 { margin-bottom:8px; } h2 { margin-top:0; }
+    code { background:#eef2f7; border-radius:4px; padding:2px 5px; }
+    .badge { display:inline-block; border-radius:999px; padding:4px 11px; background:#fff1d6; color:var(--amber); font-weight:700; font-size:13px; }
+    .callout { border-left:4px solid var(--blue); padding:12px 16px; background:#eff6ff; }
+    .risk { border-left:4px solid var(--red); } .approval { border-left:4px solid var(--amber); }
+    .ok { border-left:4px solid var(--green); }
+    table { width:100%; border-collapse:collapse; margin-top:10px; } th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 8px; } th { background:#f8fafc; }
+    li { margin:6px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>План: исправление ошибок фоновой синхронизации календарей</h1>
+  <span class="badge">Нужно явное approval до реализации</span>
+
+  <section>
+    <h2>1. Краткое резюме</h2>
+    <p>Сначала напрямую выкатить небольшой диагностический hotfix без PR, чтобы worker перестал скрывать реальные причины ошибок. Затем на основании production-данных подготовить один большой PR с исправлениями Google sync, Apple protocol/degraded-поведения, retry/backoff и наблюдаемости.</p>
+    <div class="callout"><strong>Граница первой фазы:</strong> только безопасное улучшение диагностики и ограничение шумных логов; не менять credentials, календарные данные или sync state вручную.</div>
+  </section>
+
+  <section>
+    <h2>2. Что подтверждено сейчас</h2>
+    <ul>
+      <li><code>calendar-serve</code> и <code>calendar-worker</code> работают и healthy на digest <code>sha256:c919ac44…</code>.</li>
+      <li>За 30 минут worker записал около 343 сообщений <code>calendar event read-model sync failed</code>, примерно раз в 5 секунд.</li>
+      <li>Лог печатает только <code>category=%T</code>, поэтому наружу виден бесполезный <code>*errors.joinError</code>.</li>
+      <li>Все три Google calendar sync state сейчас <code>failed/transient</code>; один Apple state — <code>degraded/protocol</code>.</li>
+      <li>Apple adapter получает CalDAV HTTP 500 для одного календаря и применяет существующую защиту «force 207»; остальные Apple calendars sync проходят.</li>
+      <li>Google connection остаётся <code>connected</code>; значит проблема фонового event-sync отделена от OAuth GUI-потока.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Желаемое поведение</h2>
+    <ul>
+      <li>Каждая ошибка sync логируется с безопасными категорией, provider, canonical calendar ID в редактированном виде, error code, retry decision и correlation/run ID; credentials, tokens и payloads не логируются.</li>
+      <li>Ошибки Google API различаются как auth, permission, rate limit, transient и protocol; для каждой категории применяется предсказуемый backoff.</li>
+      <li>Один проблемный календарь не создаёт глобальный busy-loop и не скрывает успешную синхронизацию остальных.</li>
+      <li>Apple protocol/degraded calendar либо получает корректный bounded retry/parked state, либо явно отображается в UI как stale/degraded с понятной причиной.</li>
+      <li>Worker остаётся healthy при ошибке отдельного provider, но alert/операционный сигнал становится actionable.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Фаза A — диагностический hotfix без PR</h2>
+    <ol>
+      <li>В <code>internal/runtime/worker.go</code> заменить логирование только типа на безопасное структурированное сообщение с <code>%v</code> и классифицированными полями; не включать raw OAuth/API payload.</li>
+      <li>В <code>internal/eventsync/service.go</code> сохранить исходную причину при оборачивании ошибок (через <code>%w</code> или typed error), чтобы worker видел provider/API code, а не только общий <code>ErrProviderFailure</code>.</li>
+      <li>Добавить focused tests на сохранение причины и отсутствие секретов в диагностическом сообщении.</li>
+      <li>Запустить локальные тесты, собрать CI image, выкатить immutable digest напрямую в production без PR.</li>
+      <li>После rollout собрать 10–15 минут логов и таблицу <code>calendar_sync_state</code>; только эти данные использовать для Фазы B.</li>
+    </ol>
+    <p><strong>Ожидаемый результат:</strong> вместо <code>*errors.joinError</code> появится конкретный Google HTTP/API reason или точная ошибка Apple parser/CalDAV.</p>
+  </section>
+
+  <section>
+    <h2>5. Фаза B — большой PR с исправлениями</h2>
+    <ol>
+      <li><strong>Google adapter:</strong> проверить параметры Events.List для replacement/incremental, корректность sync token, обработку 401/403/429/5xx и поведение после token refresh; добавить integration-like fixtures для реальных API error shapes.</li>
+      <li><strong>Apple adapter:</strong> локализовать календарь, возвращающий CalDAV 500; сохранить успешные multistatus items, но не превращать повторяемую protocol проблему в бесконечный retry.</li>
+      <li><strong>Coordinator:</strong> сделать retry policy категориальной и bounded; permanent auth/permission/protocol ошибки переводить в park/paused state с ручным refresh, transient — в exponential backoff с jitter.</li>
+      <li><strong>Storage/API:</strong> сохранить безопасный <code>last_error_code</code>, attempt count и next retry metadata; не хранить raw provider payload в БД.</li>
+      <li><strong>Observability:</strong> добавить счётчики/structured logs для provider, outcome, retry category и latency; payloads, tokens и идентификаторы учетных записей исключить.</li>
+      <li><strong>UI:</strong> показать stale/degraded/parked источник и действие восстановления, не маскируя частичный успех календаря.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>6. Файлы и границы изменений</h2>
+    <ul>
+      <li><code>internal/runtime/worker.go</code> — безопасное диагностическое логирование и cycle-level error context.</li>
+      <li><code>internal/eventsync/service.go</code> — error propagation, classification и retry orchestration.</li>
+      <li><code>internal/google/event_sync.go</code> и <code>internal/google/event_sync_test.go</code> — Google API semantics и fixtures.</li>
+      <li><code>internal/apple/event_sync.go</code> и <code>internal/apple/event_sync_test.go</code> — CalDAV protocol/degraded behavior.</li>
+      <li><code>internal/storage/event_cache.go</code>, <code>internal/storage/models.go</code> и миграции — только если доказана необходимость новых retry metadata.</li>
+      <li><code>internal/web/api.go</code>/<code>internal/web/*test.go</code> — user-visible source health, если текущего контракта недостаточно.</li>
+      <li><code>docs/ai-plans/2026-08-23-calendar-sync-errors-hotfix-and-pr.html</code> — после реализации обновить фактическими изменениями, проверками и ограничениями.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. Model-led execution strategy</h2>
+    <p>Минимизируем Sol как жёсткое ограничение: реализация и focused verification принадлежат Luna/Terra; Sol не получает implementation lane.</p>
+    <table>
+      <thead><tr><th>Workstream</th><th>Модель</th><th>Effort</th><th>Owned files</th><th>Gate</th></tr></thead>
+      <tbody>
+        <tr><td>Диагностический hotfix</td><td>Terra</td><td>medium</td><td><code>worker.go</code>, <code>eventsync/service.go</code>, tests</td><td>focused tests + safe-log review</td></tr>
+        <tr><td>Google adapter lane</td><td>Terra</td><td>high</td><td><code>internal/google/*</code></td><td>provider fixtures + integration checks</td></tr>
+        <tr><td>Apple/retry lane</td><td>Terra</td><td>high</td><td><code>internal/apple/*</code>, coordinator tests</td><td>bounded retry/park invariants</td></tr>
+        <tr><td>Fixtures, log redaction и UI states</td><td>Luna</td><td>medium</td><td>focused tests, web UI files</td><td>static checks + frontend tests</td></tr>
+        <tr><td>Integration/release decision</td><td>Sol</td><td>medium, only if needed</td><td>cross-cutting diff</td><td>named unresolved risk; otherwise root coordinator verifies directly</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Target:</strong> не менее 90% делегируемой реализации — Terra/Luna; Sol — не более 10% плановой работы и только для cross-cutting review/release gate.</p>
+  </section>
+
+  <section>
+    <h2>8. Проверки</h2>
+    <ul>
+      <li><code>gofmt -w ...</code>, <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code>, <code>git diff --check</code>.</li>
+      <li>Provider tests: Google 401/403/429/5xx, stale sync token, pagination; Apple 500/207, malformed resource, parked state.</li>
+      <li>Worker tests: один failing calendar не блокирует остальные; retry interval увеличивается и bounded; <code>errors.Join</code> не скрывает underlying cause.</li>
+      <li>Production smoke: оба контейнера healthy, нет fatal/panic, aggregate error rate снижается, sync state Google/Apple переходят в ожидаемые состояния.</li>
+      <li>Manual UI: healthy, stale/degraded и parked source отображаются отдельно; повторный refresh не создаёт busy-loop.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>9. Риски и rollback</h2>
+    <ul>
+      <li>Диагностический лог может случайно раскрыть чувствительный provider payload — поэтому разрешён только allowlist полей и redaction test.</li>
+      <li>Изменение retry policy может увеличить freshness lag; сохраняем текущую cached projection и rollback на предыдущий immutable digest.</li>
+      <li>Принудительный reauth Google не является частью hotfix; credentials и DB вручную не меняем.</li>
+      <li>Apple provider может возвращать частично валидный multistatus при HTTP 500; нельзя удалять уже подтверждённые cached events из-за одной плохой resource.</li>
+    </ul>
+    <p>Rollback Фазы A: вернуть предыдущий digest. Rollback Фазы B: откатить PR и digest; миграции допустимы только backward-compatible и с отдельным rollback-планом.</p>
+  </section>
+
+  <section>
+    <h2>10. Открытые вопросы</h2>
+    <ul>
+      <li>Какой точный Google HTTP status/reason скрывается за текущим <code>transient</code>?</li>
+      <li>Является ли Apple HTTP 500 постоянным дефектом конкретного календаря или временной реакцией CalDAV endpoint?</li>
+      <li>Нужно ли добавлять persistent retry-attempt metadata в schema или достаточно существующего <code>last_error_code/next_sync_at</code>?</li>
+      <li>Какой UI-copy и manual recovery action предпочитаем для parked source?</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>11. Фактический результат Фазы A</h2>
+    <ul>
+      <li>Коммиты напрямую в <code>main</code>, без PR: <code>5e7c51e</code>, <code>40c508e</code>, <code>7a79cd2</code>.</li>
+      <li>CI/Docker прошли; production выкатан на digest <code>sha256:f3e270d9…</code>.</li>
+      <li>Безопасная причина установлена: Google OAuth token endpoint возвращает HTTP 401 <code>unauthorized_client</code>; это происходит до Calendar Events API.</li>
+      <li>Все Google read-model states теперь корректно припаркованы с <code>last_error_code=auth</code>; повторный 5-секундный busy-loop прекращён.</li>
+      <li>Оба новых контейнера healthy, внутренние health endpoints отвечают, внешний UI отдаёт HTTP 200, fatal/panic в свежих логах нет.</li>
+      <li>Отдельная Apple-проблема остаётся: один CalDAV calendar даёт HTTP 500/protocol degraded; два других Apple calendars sync проходят.</li>
+      <li>После пользовательского reconnect Google connection снова <code>connected</code>: два Google calendars перешли в <code>ready</code> и успешно синхронизировались; primary Google calendar получил отдельный <code>parked/protocol</code> без busy-loop.</li>
+    </ul>
+    <div class="callout"><strong>Следующий шаг:</strong> не менять Google credentials или DB вручную. Сначала повторить Google reconnect через UI с текущими client credentials, затем подтвердить, что новые tokens сохраняются и calendars выходят из parked/auth.</div>
+  </section>
+
+  <section class="approval">
+    <h2>12. Approval gate для Фазы B</h2>
+    <p>Фаза A завершена и остановлена на фактах. Пользователь подтвердил запуск Фазы B после успешного Google reconnect.</p>
+  </section>
+
+  <section class="approval">
+    <h2>13. Фактический результат Фазы B</h2>
+    <ul>
+      <li>Создан PR <a href="https://github.com/Dzarlax-AI/calendar-mcp/pull/11">#11</a> из ветки <code>fix/calendar-sync-protocol-isolation</code>.</li>
+      <li><code>internal/google/event_sync.go</code>: malformed event изолируется warning-ом, валидные события страницы продолжают sync; invalid или reversed window отклоняется до вызова Google и не может продвинуть cursor.</li>
+      <li><code>internal/eventsync/service.go</code>: повторяющиеся transient errors больше не создают 5-секундный busy-loop; retry ограничен provider poll interval и RetryMax.</li>
+      <li><code>internal/apple/http.go</code>: CalDAV fallback log больше не содержит request path или потенциальные идентификаторы.</li>
+      <li>Добавлены regression tests для malformed Google event, invalid incremental window и bounded retry.</li>
+      <li>Локально прошли <code>go test -race -count=1 ./...</code>, <code>go vet ./...</code> и <code>git diff --check</code>.</li>
+      <li>Первый CodeRabbit review завершён без actionable-комментариев; он отдельно отметил риск invalid window, закрытый commit <code>b3e2307</code>. Повторный review rate-limited, Build &amp; Vet после последнего commit ещё выполняется.</li>
+    </ul>
+    <div class="callout"><strong>Merge gate:</strong> дождаться зелёного Build &amp; Vet; merge/deploy в этой фазе не выполнять автоматически. После merge отдельно проверить production health и реальный sync path.</div>
+  </section>
+</main>
+</body>
+</html>

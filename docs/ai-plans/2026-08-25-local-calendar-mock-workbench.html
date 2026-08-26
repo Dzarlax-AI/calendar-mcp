@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Local Calendar Mock Workbench</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { font: 15px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; color: #1d2940; background: #f5f7fb; }
+    body { margin: 0; } main { max-width: 1000px; margin: auto; padding: 32px 20px 56px; }
+    section { margin: 16px 0; padding: 20px; background: #fff; border: 1px solid #dde3ee; border-radius: 10px; }
+    h1, h2 { line-height: 1.2; } h1 { margin: 0 0 7px; } h2 { font-size: 18px; margin: 0 0 10px; }
+    code { padding: 2px 5px; border-radius: 4px; background: #eef1f6; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    li { margin: 5px 0; } .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fff1d7; color: #855500; font-size: 12px; font-weight: 700; }
+    .callout { border-left: 4px solid #5368df; background: #f3f5ff; } .risk { border-left-color: #c73b4e; background: #fff5f6; } .approval { border-left-color: #ad711b; background: #fffaf0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Local Calendar Mock Workbench</h1>
+  <p class="badge">Implemented locally — CI review in progress</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Add one explicit local development command that opens the Calendar UI with realistic, mutable synthetic data. It will make UI polishing possible without Authentik, a local Go server, connected providers, or personal calendar data.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li><code>npm --prefix frontend run dev</code> starts Vite, but the React app requests same-origin <code>/api/ui/bootstrap</code> and renders “Calendar is unavailable” when no server supplies it.</li>
+      <li>The new visual suite already has realistic raw API fixtures and Playwright-only route interception in <code>frontend/e2e/fixtures/calendar.ts</code>. Those fixtures cannot serve an interactive browser session.</li>
+      <li>Production remains protected by ForwardAuth and browser CSRF/origin controls. This work must not weaken that boundary or call provider APIs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired workflow</h2>
+    <p><code>npm --prefix frontend run dev:mocks</code> opens <code>http://localhost:5173/app</code> with a populated Calendar. Create, edit, delete, refresh, filters, rich descriptions, links, recurring scope dialogs, and read-only states behave locally against in-memory mock responses. Restarting Vite resets all mock changes.</p>
+  </section>
+
+  <section>
+    <h2>Proposed design</h2>
+    <ol>
+      <li>Move the raw, provider-safe calendar fixture data into a browser-neutral module under <code>frontend/src/dev/</code>; Playwright imports the same source so test and workbench data cannot drift.</li>
+      <li>Add a Vite development-only middleware plugin behind an explicit <code>VITE_CALENDAR_MOCKS=true</code> flag. It serves only <code>/api/ui/bootstrap</code>, event reads, refreshes, and Calendar event mutations from an in-memory store.</li>
+      <li>Add <code>dev:mocks</code>; keep the existing <code>dev</code> command untouched. The mock plugin is absent from production build/preview and ordinary dev unless the flag is set.</li>
+      <li>Support Calendar-only routes. Control-plane/diagnostics APIs are deliberately out of scope and retain their normal unavailable behavior until a separate request.</li>
+      <li>Show a compact, development-only “Mock data” indicator in the Calendar toolbar so screenshots or demos cannot be mistaken for live data.</li>
+      <li>Use a deterministic local clock/date only in mock mode, so the supplied events are visible immediately and UI sessions are repeatable.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>frontend/src/dev/calendarMockData.ts</code> — shared raw bootstrap/events and in-memory mutation helpers.</li>
+      <li><code>frontend/src/dev/calendarMockServer.ts</code> — Vite middleware handler and request/response behavior.</li>
+      <li><code>frontend/e2e/fixtures/calendar.ts</code> — reduce to the Playwright adapter over the shared fixture.</li>
+      <li><code>frontend/vite.config.ts</code> and <code>frontend/package.json</code> — opt-in dev command and Vite plugin wiring.</li>
+      <li><code>frontend/src/features/calendar/CalendarPage.tsx</code> or a small app-level helper — mock-only visible indicator, if it can remain isolated from live behavior.</li>
+      <li><code>README.md</code> — local command, scope, reset behavior, and “never production data” boundary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Safety and behavior boundaries</h2>
+    <ul>
+      <li>No API keys, cookies, credentials, Authentik headers, provider SDKs, network calls, or real calendar data enter the mock mode.</li>
+      <li>Mock mode is Vite-development-only and opt-in; production builds and the Go-embedded SPA do not expose mock endpoints or bypass authorization.</li>
+      <li>Mutations modify memory only and reset on Vite restart. They do not create invitations or notifications.</li>
+      <li>Fixture HTML remains sanitized by the existing production component; the workbench must not add unsafe HTML rendering.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification and manual QA</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend run test</code>, <code>npm --prefix frontend run test:e2e</code>, and <code>npm --prefix frontend run build</code>.</li>
+      <li>Add focused tests for mock read/mutation behavior and an E2E smoke that loads the app through the Vite mock middleware rather than Playwright interception.</li>
+      <li>Manual: run <code>dev:mocks</code>; verify populated Calendar, rich event, create/edit/delete, filter selection, and restart reset. Then run plain <code>dev</code> and confirm it does not supply mock data.</li>
+      <li>Inspect the production build for no mock endpoint/source import in the output path.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and trade-offs</h2>
+    <ul>
+      <li>A large mock could become a second backend. Scope it to Calendar CRUD and reuse raw wire fixtures; do not imitate every control-plane endpoint.</li>
+      <li>Shared fixtures need small, explicit adapters because Playwright's <code>Page.route</code> API must remain out of browser/Vite runtime code.</li>
+      <li>A mock banner is intentionally visible; hiding it would make accidental demo screenshots misleading.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Model allocation</h2>
+    <p>One GPT-5.6-Sol lead will implement and integrate the mock transport because the boundary between dev middleware, shared fixture contracts, and production exclusion is security-sensitive. No subagent lane is planned: the implementation is compact and parallel edits would increase fixture-drift risk. No model receives credentials or production data.</p>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <ul>
+      <li>Added <code>frontend/src/dev/calendarMockData.ts</code> with the shared raw fixture and an in-memory Calendar CRUD store; the Playwright adapter now uses that same store.</li>
+      <li>Added a Vite <code>serve</code>-only middleware behind <code>VITE_CALENDAR_MOCKS=true</code>, plus <code>npm --prefix frontend run dev:mocks</code>. Plain <code>dev</code>, production <code>build</code>, and <code>preview</code> do not enable it.</li>
+      <li>Added a mock-only toolbar label and deterministic initial date (<code>2026-08-25</code>) so the workbench opens with visible events.</li>
+      <li>Added shared-store unit coverage and a separate Vite middleware Playwright smoke command; CI runs the smoke separately from the production-preview visual suite.</li>
+      <li>Documented the local command, scope, and reset semantics in <code>README.md</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification record</h2>
+    <ul>
+      <li>Passed: <code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend test</code> (36 tests), <code>npm --prefix frontend run build</code>, and <code>npm --prefix frontend run test:e2e:mocks</code> (3 browser smoke scenarios).</li>
+      <li>Confirmed the normal visual command lists 26 production-preview scenarios and excludes the mock-only smoke suite.</li>
+      <li>Local macOS visual screenshot comparison remains intentionally unavailable because the repository stores Linux baselines; CI is the authoritative baseline runner. No baseline images were changed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>Revert the dedicated mock module, Vite wiring, command, tests, and documentation in one commit. Live UI, Go server, data, auth, and deployment remain unchanged.</p>
+  </section>
+
+  <section class="callout approval">
+    <h2>Approval record</h2>
+    <p>The user approved the local frontend mock-mode boundary before implementation. The approval covered only its tests/docs; it did not authorize deployment, provider calls, real-data automation, or auth changes.</p>
+  </section>
+</main>
+</body>
+</html>

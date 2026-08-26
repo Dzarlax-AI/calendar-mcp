@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Unified Sync Activity</title>
+  <style>
+    body { margin: 0; background: #f6f7f9; color: #1f2937; font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 920px; margin: 0 auto; padding: 32px 20px; } section { margin: 16px 0; padding: 20px; border: 1px solid #e5e7eb; border-radius: 9px; background: #fff; }
+    h1, h2 { line-height: 1.2; } code { padding: 2px 5px; border-radius: 4px; background: #f0f2f6; } .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fff3d7; color: #8a5a00; font-weight: 650; font-size: 12px; }
+    .approval { border-left: 4px solid #d97706; } .risk { border-left: 4px solid #dc2626; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Unified sync activity</h1>
+  <p class="badge">Implemented locally — CI review in progress</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Replace the separate “Sync Rules” and “Runs” navigation items with one sync-management entry and one combined screen. The screen keeps rule controls and shows recent run history directly below them.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li><code>frontend/src/app/App.tsx</code> exposes distinct <code>/rules</code> and <code>/runs</code> routes and navigation entries.</li>
+      <li><code>ControlPlanePage</code> renders <code>Rules</code> and <code>Runs</code> as separate sections, both sourced from the already-loaded bootstrap payload.</li>
+      <li>The Calendar sidebar’s Manage menu repeats those two links.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ul>
+      <li>One navigation item, labelled <strong>Sync activity</strong>, opens <code>/rules</code>.</li>
+      <li><code>/rules</code> shows rule creation/control first, then a clearly separated “Recent activity” list of runs.</li>
+      <li>Existing <code>/runs</code> deep links redirect to <code>/rules</code>; no run data or existing rule actions disappear.</li>
+      <li>Manage menu and app navigation show only the consolidated entry.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Impact and boundary</h2>
+    <p>No backend/API, migration, provider, auth, or permission changes. This is a frontend route and information-architecture change over existing bootstrap data. The existing <code>/rules/new</code> creation path remains unchanged.</p>
+  </section>
+
+  <section>
+    <h2>Likely files and steps</h2>
+    <ol>
+      <li><code>frontend/src/app/App.tsx</code>: collapse navigation, render the combined rules section at <code>/rules</code>, and redirect <code>/runs</code> compatibly.</li>
+      <li><code>frontend/src/features/control-plane/ControlPlanePage.tsx</code>: compose the existing Rules and Runs panels into the rules screen, with concise section hierarchy and empty states.</li>
+      <li><code>frontend/src/features/calendar/CalendarPage.tsx</code>: replace the two Manage links with the one consolidated link.</li>
+      <li>Update route/menu tests and the focused browser check. No visual baseline refresh unless the approved UI change intentionally changes a captured surface.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>QA</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code></li>
+      <li><code>npm --prefix frontend test</code></li>
+      <li>Focused Playwright: open Calendar → Manage → Sync activity; verify rules and recent runs are on one screen; open <code>/runs</code> and verify redirect.</li>
+      <li>Manual: create a rule from the unified screen, return/cancel correctly, and confirm Settings/Connections remain reachable.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and edge cases</h2>
+    <ul>
+      <li>Run history can be empty while rules exist; retain its explicit empty state rather than hiding the section.</li>
+      <li>External bookmarks may use <code>/runs</code>; redirect rather than remove the route.</li>
+      <li>The combined page can become visually dense with many rules/runs; keep panels independently scannable and defer filtering/pagination to a separate request.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Model allocation and integration</h2>
+    <ul>
+      <li><strong>GPT-5.6-Sol — lead/integration:</strong> owns the route contract (<code>/rules</code>, compatibility redirect from <code>/runs</code>), composes the unified screen, resolves cross-file conflicts, and runs the final typecheck/build.</li>
+      <li><strong>GPT-5.6-Terra — UI review lane:</strong> independently reviews the existing Rules/Runs panel hierarchy and the combined empty/long-list states; returns bounded UX/test recommendations, without modifying routes or API behavior.</li>
+      <li><strong>GPT-5.6-Luna — navigation/test lane:</strong> updates or proposes the focused browser checks for the Calendar Manage menu, unified route, and legacy redirect; verifies menu labels do not duplicate.</li>
+    </ul>
+    <p>Sol integrates only the reviewed, scoped outputs. All lanes use the existing synthetic frontend data; no model receives credentials, production data, or deployment access.</p>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>One frontend revert restores the two navigation entries and the old <code>/runs</code> screen. No backend data or provider state is changed.</p>
+  </section>
+
+  <section>
+    <h2>Open question</h2>
+    <p>The default label is “Sync activity” to cover both configuration and history. If you prefer “Sync” or “Rules &amp; runs”, change only the label before approval.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Approval record</h2>
+    <p>The user approved this frontend-only navigation and combined-screen boundary before implementation. It did not authorize backend, API, provider, auth, or deployment changes.</p>
+  </section>
+
+  <section>
+    <h2>Implementation record</h2>
+    <ul>
+      <li><code>/rules</code> is now titled “Sync activity” and vertically composes the existing Sync rules and Recent activity panels.</li>
+      <li>App navigation and the Calendar Manage menu now have one <code>Sync activity</code> link to <code>/rules</code>; the separate Runs entry is removed.</li>
+      <li><code>/runs</code> is a replace redirect to <code>/rules</code>; <code>/rules/new</code> is unchanged.</li>
+      <li>Added a component test for the combined screen and updated Manage-menu/browser assertions.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification record</h2>
+    <ul>
+      <li>Passed: <code>npm --prefix frontend run typecheck</code>, <code>npm --prefix frontend test</code> (37 tests), <code>npm --prefix frontend run test:e2e:mocks</code> (3 browser smoke scenarios, including <code>/runs → /rules</code>), <code>npm --prefix frontend run build</code>, and <code>git diff --check</code>.</li>
+      <li>Mock mode now uses a Vite-only root base so local routes such as <code>/rules</code> can be exercised; ordinary development and production retain the <code>/spa/</code> base. The existing production-preview visual regression suite remains CI-authoritative because this Mac has Linux-only baselines.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

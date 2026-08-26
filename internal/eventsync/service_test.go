@@ -382,7 +382,7 @@ func TestRunOneInitialAndMultipageIncremental(t *testing.T) {
 	})
 }
 
-func TestRunOneWarningsDegradeAttemptAndAdvanceCursor(t *testing.T) {
+func TestRunOneWarningsDegradeAttemptAndSuppressCursor(t *testing.T) {
 	t.Run("intermediate warning followed by clean terminal page", func(t *testing.T) {
 		provider := &fakeProvider{pages: []calendar.EventSyncPage{
 			{NextPageToken: "next", Warnings: []calendar.EventSyncWarning{{Code: calendar.EventSyncProtocol, ObjectID: "bad-object"}}},
@@ -392,7 +392,7 @@ func TestRunOneWarningsDegradeAttemptAndAdvanceCursor(t *testing.T) {
 		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 2 || !store.applied[0].batch.Degraded || !store.applied[1].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.NextCursor != "advanced" {
+		if len(store.applied) != 2 || !store.applied[0].batch.Degraded || !store.applied[1].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[1].batch.NextCursor != "" {
 			t.Fatalf("applied pages = %#v", store.applied)
 		}
 		if got, want := *store.applied[1].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {
@@ -410,7 +410,7 @@ func TestRunOneWarningsDegradeAttemptAndAdvanceCursor(t *testing.T) {
 		if err := newService(store, provider).RunOne(t.Context(), testState("saved")); err != nil {
 			t.Fatal(err)
 		}
-		if len(store.applied) != 1 || !store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[0].batch.NextCursor != "advanced" {
+		if len(store.applied) != 1 || !store.applied[0].batch.Degraded || store.applied[0].batch.ErrorCode != string(calendar.EventSyncProtocol) || store.applied[0].batch.NextCursor != "" {
 			t.Fatalf("applied page = %#v", store.applied)
 		}
 		if got, want := *store.applied[0].batch.NextSyncAt, time.Date(2026, 8, 22, 12, 10, 0, 0, time.UTC); !got.Equal(want) {

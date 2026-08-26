@@ -32,7 +32,8 @@ for (const viewport of primaryViewports) {
     await page.setViewportSize(viewport);
     await openCalendar(page);
     await expectNoHorizontalOverflow(page);
-    await expect(page.getByRole("button", { name: "Manage" })).toBeVisible();
+    if (viewport.width < 1440) await expect(page.getByRole("button", { name: "Choose calendars" })).toBeVisible();
+    else await expect(page.getByRole("button", { name: "Manage" })).toBeVisible();
     await expect(page.locator(".calendar-screen")).toHaveScreenshot(`calendar-populated-${viewport.name}.png`, { animations: "disabled" });
   });
 
@@ -62,24 +63,49 @@ for (const viewport of primaryViewports) {
     await expectNoHorizontalOverflow(page);
     await expect(dialog).toHaveScreenshot(`calendar-create-${viewport.name}.png`, { animations: "disabled" });
     await page.getByRole("button", { name: "Close dialog" }).click();
-    await page.getByRole("button", { name: /Choose calendars|Calendars/ }).first().click();
+    if (viewport.width < 1440) {
+      await page.getByRole("button", { name: /Choose calendars|Calendars/ }).first().click();
+    }
     await expect(page.getByText("Imported calendar with a very long disabled label")).toBeVisible();
     await expect(page.getByLabel(/Imported calendar.*calendar/)).toBeDisabled();
     await expectNoHorizontalOverflow(page);
-    await expect(page.locator(".calendar-screen")).toHaveScreenshot(`calendar-filters-${viewport.name}.png`, { animations: "disabled" });
+    if (viewport.width < 1440) {
+      await expect(page.locator(".calendar-screen")).toHaveScreenshot(`calendar-filters-${viewport.name}.png`, { animations: "disabled" });
+    }
   });
 }
 
-test("toolbar actions, Manage menu, and every view selector stay reachable", async ({ page }) => {
+test("toolbar actions, sidebar Manage menu, and every view selector stay reachable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openCalendar(page);
-  await page.getByRole("button", { name: "Manage" }).click();
-  await expect(page.getByRole("menu", { name: "Manage calendar" })).toBeVisible();
   for (const name of ["Day", "Week", "Month", "List"]) {
     const viewButton = page.getByRole("button", { name, exact: true });
     await viewButton.click();
     await expect(viewButton).toHaveAttribute("aria-pressed", "true");
   }
+  await page.getByRole("button", { name: "Choose calendars" }).click();
+  const sidebar = page.getByRole("dialog", { name: "Calendar" });
+  await expect(sidebar.getByRole("button", { name: "Refresh selected calendars" })).toBeVisible();
+  await sidebar.getByRole("button", { name: "Manage" }).click();
+  const manageMenu = page.getByRole("menu", { name: "Manage calendar" });
+  await expect(manageMenu).toBeVisible();
+  await expect(manageMenu.getByRole("menuitem", { name: "Sync activity" })).toHaveAttribute("href", "/rules");
+  await expect(manageMenu.getByRole("menuitem", { name: "Runs" })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("toolbar keeps phone actions compact at 731px", async ({ page }) => {
+  await page.setViewportSize({ width: 731, height: 900 });
+  await openCalendar(page);
+  const create = page.getByRole("button", { name: "New event" });
+  const filters = page.getByRole("button", { name: "Choose calendars" });
+  await expect(create).toBeVisible();
+  await expect(filters).toBeVisible();
+  const createBox = await create.boundingBox();
+  const filtersBox = await filters.boundingBox();
+  expect(createBox?.width).toBeLessThanOrEqual(44);
+  expect(filtersBox?.width).toBeLessThanOrEqual(44);
+  expect(Math.abs((createBox?.y ?? 0) - (filtersBox?.y ?? 0))).toBeLessThanOrEqual(4);
   await expectNoHorizontalOverflow(page);
 });
 

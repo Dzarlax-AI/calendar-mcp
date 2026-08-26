@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Plan: Calendar Platform Control Plane</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6fa;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --line: #dfe5ee;
+      --text: #172033;
+      --muted: #5f6f85;
+      --primary: #4338ca;
+      --primary-soft: #eef2ff;
+      --success: #166534;
+      --success-soft: #f0fdf4;
+      --warning: #9a3412;
+      --warning-soft: #fff7ed;
+      --danger: #991b1b;
+      --danger-soft: #fef2f2;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 1120px; margin: 0 auto; padding: 34px 24px 70px; }
+    header { margin-bottom: 24px; padding: 28px; border-radius: 18px; background: linear-gradient(135deg, #172033, #312e81); color: #fff; }
+    header p { max-width: 820px; color: #dbe4ff; }
+    h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
+    h1 { margin: 8px 0 12px; font-size: 34px; }
+    h2 { margin: 0 0 14px; font-size: 21px; }
+    h3 { margin: 20px 0 8px; font-size: 16px; }
+    p { margin: 8px 0 12px; }
+    ul, ol { padding-left: 23px; }
+    li { margin: 6px 0; }
+    section { margin: 16px 0; padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    code { padding: 2px 5px; border-radius: 5px; background: #edf1f6; color: #26344a; font-size: .92em; }
+    pre { overflow-x: auto; margin: 12px 0; padding: 16px; border-radius: 10px; background: #111827; color: #e5e7eb; font-size: 12.5px; line-height: 1.5; }
+    pre code { padding: 0; background: transparent; color: inherit; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 11px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--surface-soft); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .045em; }
+    .badge { display: inline-block; padding: 5px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 750; }
+    .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+    .meta div { padding: 12px; border-radius: 10px; background: rgba(255,255,255,.1); }
+    .meta span { display: block; color: #bfcaf0; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .callout { border-left: 4px solid var(--primary); background: var(--primary-soft); }
+    .risk { border-left: 4px solid #dc2626; background: var(--danger-soft); }
+    .rollback { border-left: 4px solid #0f766e; background: #f0fdfa; }
+    .approval { border: 2px solid #f59e0b; background: var(--warning-soft); }
+    .done { color: var(--success); }
+    .task { margin: 18px 0; padding: 17px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
+    .task h3 { margin-top: 0; }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li::before { content: "☐"; margin-right: 8px; color: var(--primary); }
+    .small { color: var(--muted); font-size: 12px; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    @media (max-width: 760px) {
+      main { padding: 18px 12px 50px; }
+      header, section { padding: 18px; }
+      h1 { font-size: 27px; }
+      .meta, .two-col { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Approval required before implementation</span>
+    <h1>Calendar Platform Control Plane</h1>
+    <p>Consolidate Calendar MCP and Calendar Sync into one Go platform with one image, a shared control plane, separate serve and worker containers, encrypted calendar connections, configurable sync depth, operational history, and capability-safe synchronization between Google, Microsoft, and Apple calendars in every directed pairing.</p>
+    <div class="meta">
+      <div><span>Plan date</span>2026-08-20</div>
+      <div><span>Primary repository</span>calendar-mcp</div>
+      <div><span>Execution status</span>Blocked on approval</div>
+    </div>
+  </header>
+
+  <section class="callout">
+    <h2>Execution Contract</h2>
+    <p>This plan is the required implementation gate. Approval authorizes local source changes and test execution only. It does <strong>not</strong> authorize commits, pushes, pull requests, production database changes, deployments, removal of the existing containers, or archival of <code>calendar-sync</code>. Each of those actions requires separate explicit permission.</p>
+    <p>The implementation will use TDD and preserve unrelated work. The modified <code>calendar-sync/README.md</code>, local <code>.claude/</code> directories, existing worktrees, and untracked <code>AGENTS.md</code> are user-owned and must not be overwritten.</p>
+  </section>
+
+  <section>
+    <h2>1. Current Architecture and Verified Starting Point</h2>
+    <ul>
+      <li><code>calendar-mcp</code> currently provides Google Calendar, Microsoft Graph, and Apple CalDAV adapters, MCP on port 8080, and an internal REST API on port 8081.</li>
+      <li>GitHub PR #2, “Add unified calendar event lifecycle,” is merged. After a read-only fetch, <code>origin/main</code> points to merge commit <code>285c038</code>; the local working tree is four commits behind and must not be fast-forwarded until execution begins.</li>
+      <li>The merged V2 implementation already contains typed events, recurrence identity, mutation scopes, notification safety, Google recurrence writes, and Microsoft expanded recurrence reads. This work will be reused rather than recreated.</li>
+      <li><code>calendar-sync</code> is a separate Go service with no third-party dependencies or tests. It polls the Calendar MCP REST API every ten minutes, synchronizes M365 to Google, persists JSON mappings, omits attendees, and currently reads only the next 14 days.</li>
+      <li>The current sync treats expanded occurrences as independent events. Its data model has no series master, exception, cancellation, lookback, or lookahead fields.</li>
+      <li>Book is a separate deployed product and consumes Calendar MCP through the internal REST API. Its API compatibility must be preserved.</li>
+      <li>Production deployment definitions live in <code>personal_ai_stack/deploy/calendar-mcp/</code> and <code>personal_ai_stack/deploy/calendar-sync/</code>. The shared PostgreSQL 17 instance uses per-service users and schemas.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>2. Desired Architecture and Boundaries</h2>
+    <div class="two-col">
+      <div>
+        <h3>One artifact</h3>
+        <ul>
+          <li>One repository and Go module.</li>
+          <li>One multicall binary: <code>calendar</code>.</li>
+          <li>One immutable OCI image and digest.</li>
+          <li>No runtime CDN assets.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Two production processes</h3>
+        <ul>
+          <li><code>calendar serve</code>: MCP, REST, UI, OAuth, migrations.</li>
+          <li><code>calendar worker</code>: jobs, sync execution, reconciliation.</li>
+          <li>Shared PostgreSQL or SQLite storage.</li>
+          <li>Independent health, logs, restart, and network policies.</li>
+        </ul>
+      </div>
+    </div>
+    <p>The UI and MCP use the same backend domain model and connection records but retain different ingress and authorization boundaries. Book remains outside this repository and image.</p>
+  </section>
+
+  <section>
+    <h2>3. Assumptions Confirmed by Plan Approval</h2>
+    <ul>
+      <li>Each installation is single-user but may connect multiple Google, Microsoft, and Apple accounts. Every connection has its own encrypted credentials, discovered calendars, verification state, and reconnect/delete lifecycle.</li>
+      <li>The writable sync matrix includes Google, Microsoft, and Apple as both source and target: all nine provider pairings, including same-provider rules across different calendars and accounts.</li>
+      <li>Every rule remains one-way. A true bidirectional rule with conflict resolution is outside this execution; users compose independent one-way rules only where cycle validation allows it.</li>
+      <li>Standalone portable events are supported across the full matrix. Recurrence is synchronized only when the target can represent it without semantic loss; dry run blocks an unsupported rule or event with a structured explanation instead of flattening or approximating it.</li>
+      <li>Rule validation rejects direct and transitive calendar cycles. Mirror events carry private origin metadata and are never allowed to feed back into their originating rule.</li>
+      <li>The production UI hostname is <code>calendar.${DOMAIN}</code>. MCP remains at <code>mcp.${DOMAIN}/calendar</code>; REST remains internal.</li>
+      <li>Authentik ForwardAuth protects every UI route except provider callbacks. Callback routes remain protected by expiring, single-use state and PKCE.</li>
+      <li>PostgreSQL uses the existing convention: database <code>aistack</code>, schema <code>calendar</code>, role <code>calendar_user</code>, and a service-specific password supplied outside source control.</li>
+      <li>SQLite is supported through <code>DATABASE_URL=sqlite:///data/calendar.db</code>, WAL mode, foreign keys, busy timeout, and exactly one worker.</li>
+      <li>Rule defaults are: interval 10 minutes, lookback 0 days, lookahead 14 days, attendees excluded, notifications disabled, and initial state paused.</li>
+      <li>Accepted depth bounds are lookback 0–365 days and lookahead 1–365 days. Values outside these bounds are rejected by the domain layer and HTTP handlers.</li>
+      <li>The existing API key remains valid for MCP and internal REST. UI access does not reuse the API key.</li>
+      <li>The old <code>calendar-sync</code> repository remains intact as a rollback and history reference until a separately approved archival step.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. Data, API, Security, and UX Impact</h2>
+    <h3>Database records</h3>
+    <pre><code>connections(
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  account_fingerprint TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  encrypted_credentials BLOB/BYTEA NOT NULL,
+  credential_version INTEGER NOT NULL,
+  scopes_json TEXT/JSONB NOT NULL,
+  last_verified_at TIMESTAMP,
+  last_error_code TEXT,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(provider, account_fingerprint)
+)
+
+calendars(id, connection_id, provider_calendar_id, public_id, name, timezone,
+          can_read, can_write, supports_recurrence, discovered_at,
+          UNIQUE(connection_id, provider_calendar_id), UNIQUE(public_id))
+
+sync_rules(id, source_calendar_id, target_calendar_id, state,
+           interval_seconds DEFAULT 600,
+           lookback_days DEFAULT 0,
+           lookahead_days DEFAULT 14,
+           recurrence_mode, copy_attendees DEFAULT false,
+           notification_policy DEFAULT 'none', next_run_at,
+           consecutive_failures, created_at, updated_at)
+
+sync_jobs(id, rule_id, kind, state, available_at, claimed_at,
+          claimed_by, attempt, created_at, finished_at)
+
+sync_runs(id, job_id, rule_id, trigger, outcome, started_at, finished_at,
+          created_count, updated_count, deleted_count, skipped_count,
+          warning_count, error_code, error_summary, dry_run)
+
+event_mappings(id, rule_id, object_kind, source_event_id,
+               source_series_id, original_start, target_event_id,
+               target_series_id, content_hash, last_seen_at,
+               reconciliation_state,
+               UNIQUE(rule_id, source_event_id, original_start))
+
+oauth_attempts(state_hash PRIMARY KEY, provider, connection_id, mode,
+               encrypted_verifier, return_path, expires_at, consumed_at)
+
+schema_migrations(version PRIMARY KEY, applied_at)</code></pre>
+    <h3>Credential envelope</h3>
+    <p><code>CALENDAR_ENCRYPTION_KEY</code> is base64-decoded to exactly 32 bytes. Credentials use AES-256-GCM with a random nonce and a versioned envelope. Associated data binds ciphertext to the connection ID and provider. A missing or invalid key fails closed; secrets and raw provider payloads never enter logs or run history.</p>
+    <h3>HTTP surfaces</h3>
+    <ul>
+      <li>MCP listener: existing <code>/mcp</code> behavior and API-key authentication.</li>
+      <li>REST listener: existing <code>/api/calendars</code>, <code>/api/events</code>, and V2 routes preserved for Book and internal consumers.</li>
+      <li>UI listener: <code>/</code>, <code>/connections</code>, <code>/rules</code>, <code>/runs</code>, <code>/settings</code>, and HTMX fragments.</li>
+      <li>OAuth: <code>/oauth/google/start</code>, <code>/oauth/google/callback</code>, <code>/oauth/microsoft/start</code>, and <code>/oauth/microsoft/callback</code>.</li>
+      <li>Mutating UI handlers require same-origin requests, Authentik ingress, and CSRF tokens. OAuth callbacks atomically consume state.</li>
+    </ul>
+    <h3>Sync depth semantics</h3>
+    <p>Every run computes <code>[now - lookback_days, now + lookahead_days]</code> in UTC for provider queries while preserving event timezones in the portable model. Increasing depth adds newly visible events. Decreasing depth does not delete mappings merely because events fall outside the window; deletion requires a provider tombstone, explicit cancellation, or reconciliation evidence.</p>
+  </section>
+
+  <section>
+    <h2>5. Files Likely to Change</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Path</th><th>Action</th><th>Responsibility</th></tr></thead>
+        <tbody>
+          <tr><td><code>cmd/calendar/main.go</code></td><td>Create</td><td>Dispatch <code>serve</code>, <code>worker</code>, and maintenance commands.</td></tr>
+          <tr><td><code>cmd/server/main.go</code></td><td>Remove after parity</td><td>Replaced only after serve-mode tests pass.</td></tr>
+          <tr><td><code>internal/runtime/serve.go</code>, <code>worker.go</code></td><td>Create</td><td>Compose dependencies and process lifecycle without domain logic.</td></tr>
+          <tr><td><code>internal/config/config.go</code>, <code>config_test.go</code></td><td>Modify</td><td>Database, encryption, UI, OAuth, and worker configuration with fail-closed validation.</td></tr>
+          <tr><td><code>internal/storage/*.go</code></td><td>Create</td><td>Shared store contract, PostgreSQL and SQLite implementations, job claiming, transactions, and contract tests.</td></tr>
+          <tr><td><code>internal/storage/migrations/{postgres,sqlite}/*.sql</code></td><td>Create</td><td>Dialect-specific embedded schema with identical domain behavior.</td></tr>
+          <tr><td><code>internal/credentials/crypto.go</code></td><td>Create</td><td>AES-GCM credential envelope, validation, and tests.</td></tr>
+          <tr><td><code>internal/token/store.go</code></td><td>Refactor</td><td>Convert the concrete file token store into an interface; retain file compatibility for migration.</td></tr>
+          <tr><td><code>internal/connections/*.go</code></td><td>Create</td><td>Connection lifecycle, encrypted credentials, verification, and calendar discovery.</td></tr>
+          <tr><td><code>internal/oauth/*.go</code></td><td>Create</td><td>Google/Microsoft authorization, PKCE, one-time state, callback consumption, and token persistence.</td></tr>
+          <tr><td><code>internal/providers/factory.go</code></td><td>Create</td><td>Build provider adapters from database-backed connections rather than process-wide refresh-token environment variables.</td></tr>
+          <tr><td><code>internal/web/*.go</code></td><td>Create</td><td>UI router, CSRF checks, handlers, HTMX fragments, view models, and HTTP tests.</td></tr>
+          <tr><td><code>internal/web/templates/*.html</code></td><td>Create</td><td>Dashboard, Connections, Sync Rules, rule form, Runs, and Settings pages.</td></tr>
+          <tr><td><code>internal/web/static/app.css</code>, <code>vendor/htmx-2.0.4.min.js</code></td><td>Create</td><td>Embedded same-origin UI assets; no production CDN dependency.</td></tr>
+          <tr><td><code>internal/syncengine/*.go</code></td><td>Create</td><td>Rule planning, dry run, hashing, mappings, jobs, retries, reconciliation, and run recording.</td></tr>
+          <tr><td><code>internal/microsoft/recurrence.go</code>, <code>delta.go</code></td><td>Create</td><td>Graph series-master recurrence conversion, exceptions, cancellation tombstones, and delta cursors.</td></tr>
+          <tr><td><code>internal/google/mapping_v2.go</code>, <code>writes_v2.go</code></td><td>Modify narrowly</td><td>Add private sync metadata and lookup needed for idempotent recovery.</td></tr>
+          <tr><td><code>internal/migration/legacy_sync.go</code></td><td>Create</td><td>Preview and import the existing source, target, and JSON mappings without mutating providers.</td></tr>
+          <tr><td><code>Dockerfile</code>, <code>.dockerignore</code></td><td>Modify</td><td>Build one binary/image containing embedded templates and assets.</td></tr>
+          <tr><td><code>.github/workflows/ci.yml</code>, <code>Makefile</code></td><td>Modify/Create</td><td>Unit, race, vet, build, storage integration, and image checks.</td></tr>
+          <tr><td><code>README.md</code>, <code>.env.example</code>, <code>AGENTS.md</code></td><td>Modify carefully</td><td>Document modes, commands, architecture, OAuth redirects, storage, encryption, and self-hosting.</td></tr>
+          <tr><td><code>personal_ai_stack/deploy/calendar-mcp/docker-compose.yml</code></td><td>Modify after local verification</td><td>Serve and worker services from the same reviewed digest, UI ingress, DB, encryption, and health checks.</td></tr>
+          <tr><td><code>personal_ai_stack/deploy/infra/init.sql</code></td><td>Modify for clean installs</td><td>Add the established per-service <code>calendar_user</code> and <code>calendar</code> schema convention.</td></tr>
+          <tr><td><code>personal_ai_stack/deploy/calendar-sync/docker-compose.yml</code></td><td>Preserve initially</td><td>Rollback definition; removal requires a later explicit decision.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. Implementation Sequence</h2>
+    <p class="small">Each task ends with a reviewable local diff. Proposed commit checkpoints are listed for structure, but no commit will be executed without explicit permission.</p>
+
+    <div class="task">
+      <h3>Task 0 — Establish an isolated, current baseline</h3>
+      <ul class="checklist">
+        <li>Use the worktree workflow to create <code>feat/calendar-platform-control-plane</code> from <code>origin/main</code> at merge commit <code>285c038</code>.</li>
+        <li>Copy only the reviewed design, mockup, and this plan into the feature worktree; leave unrelated untracked files in the current tree.</li>
+        <li>Run the merged baseline before changes.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./...
+go vet ./...
+CGO_ENABLED=0 go build ./...
+git diff --check</code></pre>
+      <p><strong>Expected:</strong> all commands exit 0. If the merged baseline fails, stop and diagnose before implementing.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 1 — Add the multicall binary without changing behavior</h3>
+      <ul class="checklist">
+        <li>Write command-dispatch tests for missing, unknown, <code>serve</code>, and <code>worker</code> subcommands.</li>
+        <li>Move current server composition into <code>internal/runtime/serve.go</code> and keep MCP/REST routes byte-compatible.</li>
+        <li>Add <code>calendar worker</code> as a validated no-op process that fails clearly until storage exists.</li>
+        <li>Change the Dockerfile to build <code>/app/calendar</code>; set an explicit default command <code>serve</code>.</li>
+        <li>Remove <code>cmd/server</code> only after parity tests cover both HTTP listeners and graceful shutdown.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./cmd/calendar ./internal/runtime
+CGO_ENABLED=0 go build -o /tmp/calendar ./cmd/calendar
+/tmp/calendar --help</code></pre>
+      <p><strong>Expected:</strong> tests pass; help lists serve and worker; existing MCP and REST server tests remain green.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 2 — Introduce storage, migrations, and credential encryption</h3>
+      <ul class="checklist">
+        <li>Add storage drivers with <code>go get github.com/jackc/pgx/v5/stdlib modernc.org/sqlite</code>, then pin resolved versions in <code>go.mod</code> and <code>go.sum</code>.</li>
+        <li>Write storage contract tests first for connections, calendars, rules, jobs, runs, mappings, OAuth attempts, and schema version checks.</li>
+        <li>Create separate PostgreSQL and SQLite migrations matching the approved model.</li>
+        <li>Implement transactional PostgreSQL job claiming and single-worker SQLite claiming.</li>
+        <li>Write AES-GCM tests for round trip, tampering, wrong associated data, wrong key, invalid key length, and version rejection.</li>
+        <li>Make <code>serve</code> apply migrations under a lock and make <code>worker</code> fail on schema mismatch.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/credentials ./internal/storage
+go test -count=1 -tags=integration ./internal/storage
+go vet ./internal/credentials ./internal/storage</code></pre>
+      <p><strong>Expected:</strong> the same contract suite passes for a temporary SQLite file and an ephemeral PostgreSQL 17 container; tampered credentials never decrypt.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 3 — Move provider connections from environment tokens to the database</h3>
+      <ul class="checklist">
+        <li>Refactor <code>internal/token</code> behind a Load/Save interface while retaining FileStore for legacy import.</li>
+        <li>Write connection service tests for multiple accounts of every provider, duplicate-account rejection, encryption, verification state, safe deletion, reconnect-in-place, and connection-scoped calendar discovery.</li>
+        <li>Add a provider factory that receives decrypted credentials only while constructing an account-scoped adapter.</li>
+        <li>Route canonical calendar IDs as <code>provider@connection-id:provider-calendar-id</code>. Continue accepting the existing <code>provider:provider-calendar-id</code> form when it resolves unambiguously, preserving current Book and MCP callers.</li>
+        <li>Carry add-versus-reconnect intent and an optional connection ID inside the encrypted, single-use OAuth attempt; never infer the target account from provider name.</li>
+        <li>Keep OAuth application client IDs/secrets in environment variables; remove refresh-token environment variables only after legacy import exists.</li>
+        <li>Preserve provider-prefixed public calendar IDs so Book and existing MCP clients do not require migration.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/token ./internal/connections ./internal/providers
+go test -race -count=1 ./internal/google ./internal/microsoft ./internal/apple</code></pre>
+      <p><strong>Expected:</strong> existing provider adapter tests pass, database token refresh persists encrypted state, and no secret appears in formatted errors.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 4 — Add OAuth and the HTMX control plane</h3>
+      <ul class="checklist">
+        <li>Write OAuth tests for state hashing, PKCE, expiration, single-use consumption, callback replay, redirect allowlisting, provider rejection, and encrypted token storage.</li>
+        <li>Write handler tests for Dashboard, Connections, Sync Rules, Runs, Settings, CSRF rejection, and Authentik-header-aware audit context.</li>
+        <li>Implement the approved mockup with Go templates and HTMX fragments.</li>
+        <li>Vendor HTMX 2.0.4 as a same-origin embedded asset and record its upstream source; do not reference jsdelivr, unpkg, statically.io, or another runtime CDN.</li>
+        <li>Add Google and Microsoft Connect/Reconnect flows and Apple credential verification.</li>
+        <li>Ensure UI errors expose provider category and recovery action without credentials or raw event data.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/oauth ./internal/web
+go test -run TestNoRuntimeCDN -count=1 ./internal/web
+go test -run TestOAuthCallbackReplayRejected -count=1 ./internal/oauth</code></pre>
+      <p><strong>Expected:</strong> all routes render, HTMX fragments return the correct content type, callback replay is rejected, and static HTML contains no external asset URL.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 5 — Import the sync worker with rules, depth, dry run, and operations</h3>
+      <ul class="checklist">
+        <li>Port the tracked sync logic into <code>internal/syncengine</code> without changing the separate <code>calendar-sync</code> working tree.</li>
+        <li>Write rule validation tests for all nine directed provider pairings, readable/writable capabilities, interval, lookback 0–365, lookahead 1–365, source/target inequality, cycle rejection, notifications disabled, and attendees disabled.</li>
+        <li>Write planner tests proving the query window is <code>now-lookback</code> through <code>now+lookahead</code>.</li>
+        <li>Write a dry-run test proving zero provider writes, zero mapping mutations, and zero cursor changes.</li>
+        <li>Implement scheduled/manual/reconciliation jobs, per-rule exclusion, run counters, sanitized errors, and attention-required state.</li>
+        <li>Replace absence-based deletion with explicit cancellation/tombstone/reconciliation evidence.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/syncengine ./internal/jobs
+go test -run 'TestDepthWindow|TestDryRunDoesNotWrite|TestWindowAbsenceDoesNotDelete' -count=1 ./internal/syncengine</code></pre>
+      <p><strong>Expected:</strong> all safety invariants pass; every Google/Microsoft/Apple source-target pairing is available through paused database rules with explicit depth and a required dry run.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 6 — Make recurrence provider-neutral across the full sync matrix</h3>
+      <ul class="checklist">
+        <li>Extend the Microsoft adapter to fetch each unique series master and convert Graph daily, weekly, monthly, yearly, numbered, end-date, and no-end recurrence patterns into the portable recurrence representation.</li>
+        <li>Preserve Graph event type, series master ID, original occurrence start, cancellation state, source timezone, and delta tombstones.</li>
+        <li>Write fixture-driven tests for master series, unchanged occurrence, moved exception, cancelled occurrence, series cancellation, all-day series, DST transition, and unsupported Graph patterns.</li>
+        <li>Create one Google recurring series per source master, then apply modified or cancelled occurrences to target instances.</li>
+        <li>For Google sources, compare each expanded source instance with the corresponding generated target instance. Update and map only instances whose portable content differs, because Google does not label modified exceptions separately from ordinary occurrences.</li>
+        <li>Add portable recurrence-to-Graph conversion for Microsoft targets, covering the lossless Graph pattern subset and rejecting non-representable RRULE/RDATE/EXDATE combinations during dry run.</li>
+        <li>Expand Apple CalDAV series into masters, exceptions, and cancellations; implement single-instance writes by updating the containing iCalendar resource with RECURRENCE-ID components.</li>
+        <li>For Apple targets, preserve iCalendar recurrence lines and exception components in one calendar object. For Microsoft targets, resolve modified and cancelled instances through Graph instance identity.</li>
+        <li>Add private Google sync metadata and lookup-by-marker before retrying ambiguous writes.</li>
+        <li>Skip unsupported recurrence during dry run with a structured warning; never silently flatten it.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/microsoft ./internal/google ./internal/apple ./internal/syncengine
+go test -run 'TestProviderMatrix|TestRecurringSeries|TestMovedOccurrence|TestCancelledOccurrence|TestDST|TestLosslessRecurrenceGate' -count=1 ./internal/syncengine</code></pre>
+      <p><strong>Expected:</strong> one source master produces one target series; exceptions and cancellations affect only the intended occurrence; retries do not duplicate series.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 7 — Add legacy preview/import and compatibility checks</h3>
+      <ul class="checklist">
+        <li>Add <code>calendar import-legacy --state-file ... --source ... --target ... --preview</code>.</li>
+        <li>Write tests against representative existing JSON state and reject malformed, duplicate, cross-rule, or missing-target mappings.</li>
+        <li>Import the current source/target as one paused rule and mark imported mappings as legacy until reconciliation confirms them.</li>
+        <li>Do not revoke OAuth grants, delete token files, mutate provider events, or stop the old worker during import.</li>
+        <li>Run API contract tests for legacy MCP tools, V2 MCP tools, REST routes, and Book’s current REST usage.</li>
+      </ul>
+      <pre><code>go test -race -count=1 ./internal/migration ./internal/mcpserver ./internal/restapi
+/tmp/calendar import-legacy --state-file testdata/legacy_sync_state.json --source microsoft:primary --target google:working --preview</code></pre>
+      <p><strong>Expected:</strong> preview reports the rule and mapping count without database or provider writes; compatibility tests remain green.</p>
+    </div>
+
+    <div class="task">
+      <h3>Task 8 — Integrate CI, image, self-hosting, and deployment definitions</h3>
+      <ul class="checklist">
+        <li>Add Make targets for unit, race, integration, vet, build, image, and HTML checks.</li>
+        <li>Build one amd64 image containing <code>/app/calendar</code>, CA certificates, timezone data, templates, CSS, and vendored HTMX.</li>
+        <li>Document PostgreSQL and SQLite compose examples with separate serve and worker services using the same digest.</li>
+        <li>Update the production compose definition only after the local image and migration tests pass; preserve the old calendar-sync compose for rollback.</li>
+        <li>Add explicit health/readiness endpoints for serve and worker dependency checks.</li>
+        <li>Update the approved HTML plan after implementation with actual changes and verification evidence.</li>
+      </ul>
+      <pre><code>make test
+make test-integration
+make vet
+make build
+make image
+docker run --rm ghcr.io/dzarlax-ai/calendar-platform:local serve --help
+docker run --rm ghcr.io/dzarlax-ai/calendar-platform:local worker --help</code></pre>
+      <p><strong>Expected:</strong> all checks exit 0; both commands run from the same local image; no production change is performed.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>7. Test Plan and Acceptance Gates</h2>
+    <h3>Automated gate</h3>
+    <pre><code>go test -race -count=1 ./...
+go vet ./...
+CGO_ENABLED=0 go build ./...
+git diff --check
+make test-integration
+docker build --platform linux/amd64 -t calendar-platform:local .</code></pre>
+    <ul>
+      <li>Storage contract suite passes against temporary SQLite and PostgreSQL 17.</li>
+      <li>Legacy and V2 MCP tool registration and authentication remain compatible.</li>
+      <li>Book REST contract tests pass without changing Book.</li>
+      <li>OAuth replay, CSRF, wrong encryption key, sanitized errors, and no-runtime-CDN tests pass.</li>
+      <li>Depth, dry-run, idempotency, rate-limit, partial-failure, recurrence, exception, cancellation, all-day, timezone, and DST cases pass.</li>
+    </ul>
+    <h3>Manual QA checklist</h3>
+    <ul class="checklist">
+      <li>Open the UI through Authentik and confirm direct unauthenticated UI access is rejected.</li>
+      <li>Connect and reconnect Google and Microsoft; connect and verify Apple without exposing credentials in the browser after submission.</li>
+      <li>Discover calendars and verify read/write/recurrence capabilities.</li>
+      <li>Create paused M365 → Google and Google → Google rules with 0-day lookback and 14-day lookahead.</li>
+      <li>Run dry run and verify no target event, mapping, or provider cursor changes.</li>
+      <li>Enable the rule and verify a standalone meeting, recurring series, moved occurrence, cancelled occurrence, and all-day event.</li>
+      <li>Increase and decrease depth; verify decreasing the window does not delete events merely because they leave the window.</li>
+      <li>Inspect counters and sanitized errors in Runs; trigger manual run and pause the rule.</li>
+      <li>Call MCP and Book REST paths using calendars connected through the UI.</li>
+      <li>Restart worker during a run and verify the job becomes recoverable without duplicate writes.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>8. Risks and Edge Cases</h2>
+    <ul>
+      <li><strong>Recurrence expressiveness mismatch:</strong> Google and Apple accept broader iCalendar recurrence constructs than Microsoft Graph. Unsupported conversions must remain visible dry-run blockers, not approximations.</li>
+      <li><strong>Exceptions around DST:</strong> mappings require original occurrence time plus series identity; UTC event time alone is insufficient.</li>
+      <li><strong>Ambiguous remote writes:</strong> provider timeout may occur after success. Private target metadata and lookup must precede retry.</li>
+      <li><strong>Notification side effects:</strong> attendees stay excluded and notification policy stays none. The worker must reject any path that cannot suppress scheduling side effects.</li>
+      <li><strong>Depth shrinkage:</strong> absence from the active window is never deletion evidence.</li>
+      <li><strong>SQLite concurrency:</strong> only one worker is supported; WAL and busy timeout reduce contention but do not make multi-worker claiming supported.</li>
+      <li><strong>Credential loss:</strong> loss of the encryption key requires reconnecting providers. Backup documentation must cover the key separately from the database.</li>
+      <li><strong>Schema rollout:</strong> serve migrates before worker starts. A worker with mismatched schema must stay unready rather than partially run.</li>
+      <li><strong>Local branch drift:</strong> local main is behind merged origin/main; implementation must branch from fetched <code>origin/main</code>, not the stale local commit.</li>
+      <li><strong>User-owned changes:</strong> the dirty calendar-sync README and untracked local tooling files must not be included in implementation diffs.</li>
+      <li><strong>Third-party assets:</strong> HTMX and CSS must be served from the image. Runtime CDN use is prohibited.</li>
+    </ul>
+  </section>
+
+  <section class="rollback">
+    <h2>9. Rollback Plan</h2>
+    <ol>
+      <li>Before any production migration, back up the calendar-mcp environment and token volume plus the calendar-sync environment and JSON state.</li>
+      <li>Record the exact current immutable image digests for both services.</li>
+      <li>Create the new PostgreSQL schema without altering existing service schemas. SQLite self-hosters keep a file copy before migration.</li>
+      <li>Run legacy import in preview mode, then import into a new empty database. Do not overwrite old state.</li>
+      <li>Keep the old worker stopped but deployable during the validation window; do not run both writers concurrently.</li>
+      <li>If validation fails, stop the new worker, restore the previous calendar-mcp and calendar-sync images/configurations, and reuse the untouched token and mapping files.</li>
+      <li>Do not revoke provider grants or archive the old repository until rollback is no longer required and the user explicitly approves.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>10. Open Questions</h2>
+    <p>No implementation-blocking question remains if the assumptions in section 3 are accepted. Multi-account support uses connection-scoped canonical IDs and keeps the legacy calendar-ID form as an unambiguous compatibility alias. To change the UI hostname, depth bounds, PostgreSQL schema/role names, or HTMX 2.0.4 pin, revise this plan before approval.</p>
+  </section>
+
+  <section class="approval">
+    <h2>11. Approval Gate</h2>
+    <p><strong>Implementation must not start until the user explicitly approves this HTML plan.</strong></p>
+    <p>Approval means: create an isolated feature worktree from current <code>origin/main</code>, implement Tasks 0–8 locally, and run the stated tests. Commit, push, PR, database mutation outside disposable test databases, production deployment, container removal, and repository archival remain separately approval-gated.</p>
+    <hr>
+    <h3>Scope-change gate: multiple accounts and full provider matrix</h3>
+    <p><strong>Approved and implemented locally on 2026-08-20.</strong> The initial single-connection and Microsoft → Google restrictions were replaced with the multi-account, full-matrix model described above.</p>
+    <p>This approval authorizes local schema version 1 edits before release, account-scoped provider routing, add/reconnect UI changes, compatibility aliases, all nine directed provider pairings, cycle prevention, target-specific recurrence adapters, lossless-recurrence dry-run gates, and the corresponding tests. It still does not authorize a commit, push, pull request, deployment, real database migration, OAuth grant change, or shutdown of the legacy worker.</p>
+  </section>
+
+  <section>
+    <h2>12. Implementation Record — 2026-08-20</h2>
+    <p><strong>Status:</strong> implementation and local verification are complete in the isolated <code>feat/calendar-platform-control-plane</code> worktree. Commit <code>8594747</code> was pushed and Draft PR <a href="https://github.com/Dzarlax-AI/calendar-mcp/pull/3">#3</a> was opened after explicit approval. No merge, production deployment, real provider mutation, or legacy-worker shutdown was performed.</p>
+
+    <h3>What changed</h3>
+    <ul>
+      <li>Added the <code>calendar serve</code>, <code>calendar worker</code>, and <code>calendar import-legacy</code> commands while retaining <code>cmd/server</code> as a compatibility entry point.</li>
+      <li>Added PostgreSQL and SQLite schema version 1 for encrypted provider connections, discovered calendars, rules, jobs, runs, mappings, and single-use OAuth attempts.</li>
+      <li>Added Google and Microsoft OAuth with state and PKCE, Apple app-password connection flow, multi-account routing, reconnect-in-place, duplicate-account rejection, and safe deletion checks.</li>
+      <li>Added the embedded single-user control plane for connections, rule creation, independent lookback/lookahead depth, dry-run gating, state changes, manual runs, and sanitized history.</li>
+      <li>Enabled all nine directed Google/Microsoft/Apple pairings, including same-provider copies, with capability checks and direct/transitive cycle rejection.</li>
+      <li>Added bounded recurrence handling for Google, Microsoft, and Apple series, modified instances, and cancellations. Unsupported target recurrence fails before mutation and is surfaced as <code>recurrence_unsupported</code>.</li>
+      <li>Added Google private sync-marker lookup before create, bounded-window deletion protection, per-rule execution exclusion, and recovery of jobs whose 15-minute worker lease expires.</li>
+      <li>Added a worker readiness endpoint on <code>127.0.0.1:8082/health</code>, one-image SQLite/PostgreSQL compose examples, vendored checksum-verified HTMX, and local production deployment definitions for separate serve and worker containers.</li>
+      <li>Added legacy JSON preview/import with account-scoped alias resolution. Ambiguous legacy provider references are rejected and imported rules remain paused.</li>
+      <li>Rewrote the repository README around the unified platform architecture, supported operating modes, full provider matrix, recurrence and write-safety model, configuration, APIs, migration, development, and production rollout.</li>
+    </ul>
+
+    <h3>Verification evidence</h3>
+    <ul class="checklist">
+      <li><code>go test -race -count=1 ./...</code> passed for every package.</li>
+      <li><code>go vet ./...</code>, <code>go build ./...</code>, <code>git diff --check</code>, and <code>make html-check</code> passed.</li>
+      <li>The storage contract passed against disposable PostgreSQL 17 and SQLite databases.</li>
+      <li>Both SQLite and PostgreSQL compose examples and the local production compose definition passed <code>docker compose config --quiet</code>.</li>
+      <li>A fresh <code>linux/amd64</code> image built successfully. Separate serve and worker containers started from that same image against one empty SQLite database; serve health and worker readiness both returned success.</li>
+      <li>The local UI was visually checked with multiple seeded provider accounts and independent 0-day lookback / 14-day lookahead controls.</li>
+      <li>Static scans found no runtime CDN references, private keys, or token-shaped credentials in the implementation diff.</li>
+    </ul>
+
+    <h3>Known limitations and remaining manual gates</h3>
+    <ul>
+      <li>Real Google, Microsoft, and Apple credentials were not used. OAuth consent, calendar discovery, provider writes, recurrence exceptions around DST, and notification suppression still require dedicated empty-calendar QA before production.</li>
+      <li>Google, Microsoft, and Apple now carry provider-side sync markers and perform exact lookup before create. Real-provider verification of Microsoft extended-property filtering and Apple CalDAV property round-trips still requires dedicated empty-calendar QA.</li>
+      <li>Microsoft accepts only recurrence forms that can be represented without semantic loss in Graph. Broader Google or Apple rules remain explicit blockers rather than approximations.</li>
+      <li>SQLite supports a single worker only. PostgreSQL is the production multi-process backend.</li>
+      <li>The production compose and database bootstrap files are changed locally only. Their credentials, Authentik route, immutable image digest, backup, and migration sequence must be reviewed before a separately approved deployment.</li>
+    </ul>
+
+    <h3>Rollback readiness</h3>
+    <p>The legacy repository and worker configuration remain untouched. The new import is additive and paused by default. Before deployment, record immutable old and new image digests, back up token/state files and the target database, and never run the legacy and new writers concurrently.</p>
+  </section>
+
+  <section class="approval">
+    <h2>13. PR #3 Review Remediation Plan</h2>
+    <p><strong>Added 2026-08-20 after automated review.</strong> PR #3 remains ready for review as requested. This section is a new approval gate for the broad local remediation pass; commit, push, remote replies, and thread resolution remain separately authorized actions.</p>
+
+    <h3>13.1 Confirmed merge blockers</h3>
+    <ul>
+      <li><strong>PostgreSQL rule exclusion:</strong> two workers can claim different pending jobs for one rule before either transaction observes the other's uncommitted running state.</li>
+      <li><strong>Lease ownership:</strong> long jobs have no heartbeat, stale recovery can reissue live work, and an old worker can finish a newer attempt.</li>
+      <li><strong>Remote-create recovery:</strong> Google has provider-side markers, while Microsoft and Apple remain vulnerable when remote create succeeds but the local mapping write does not.</li>
+      <li><strong>Control-plane boundary:</strong> local and PostgreSQL examples can publish an unauthenticated UI; ForwardAuth headers are safe only behind a proxy that strips client-supplied identity headers.</li>
+      <li><strong>OAuth redirect validation:</strong> empty return paths should normalize to <code>/connections</code>, and network-path/backslash variants must be rejected.</li>
+      <li><strong>Dependency security:</strong> upgrade indirect <code>google.golang.org/grpc</code> from 1.79.3 to at least 1.82.1 for GO-2026-6061.</li>
+      <li><strong>Provider correctness:</strong> fix Apple recurrence overlap/time parsing/EXDATE timezone behavior, Microsoft combined-view pagination/instance normalization/recurrence payloads, Google marker pagination, and the event hash fields.</li>
+    </ul>
+
+    <h3>13.2 Implementation decisions</h3>
+    <ol>
+      <li>Add database-level partial uniqueness for one running job per rule and one mapped target event per rule. Serialize PostgreSQL claim selection by rule and treat uniqueness conflicts as contention, not job failure.</li>
+      <li>Carry worker ID plus attempt through lease renewal and completion. Heartbeat active jobs, cancel execution when ownership is lost, use a fresh clock value for every claim, and condition <code>FinishRun</code> on the exact live owner/attempt.</li>
+      <li>Add Microsoft extended-property and Apple iCalendar-property sync markers with exact lookup before create. Keep Google lookup, but follow pagination and reject duplicate markers.</li>
+      <li>Require an explicit <code>UI_ALLOW_UNAUTHENTICATED=true</code> for local UI bypass, bind the SQLite example to loopback, require ForwardAuth in the PostgreSQL example, and document that the trusted proxy must strip and replace identity headers.</li>
+      <li>Normalize and validate OAuth return paths before persistence. Validate form numbers without converting invalid strings to accepted zero values.</li>
+      <li>Apply connection-local SQLite pragmas through the DSN, check row iteration and close errors, validate Apple reconnect credentials, and keep provider construction fail-closed when required application credentials are absent.</li>
+      <li>Apply valid accessibility, logging, timezone, linter, and error-reporting fixes from the minor review list.</li>
+    </ol>
+
+    <h3>13.3 Review items not accepted as defects</h3>
+    <ul>
+      <li>The legacy import ID comment is stale: the CLI resolves legacy aliases to account-scoped canonical IDs before calling <code>migration.Import</code>. Add a regression assertion rather than change the flow.</li>
+      <li>Do not silently skip stored Google or Microsoft connections when application credentials are missing. Preserve fail-closed startup and improve the error/context if needed.</li>
+      <li>CodeRabbit's 80% docstring recommendation is not a repository merge gate and will not trigger mass boilerplate comments.</li>
+    </ul>
+
+    <h3>13.4 Likely files</h3>
+    <p><code>internal/storage/{operations.go,store.go,migrations/*,store_test.go,postgres_integration_test.go}</code>, <code>internal/runtime/{worker.go,worker_test.go}</code>, <code>internal/syncengine/{engine.go,engine_test.go}</code>, provider V2 adapters and tests under <code>internal/{google,microsoft,apple}</code>, <code>internal/oauthflow</code>, <code>internal/connections</code>, <code>internal/web</code>, <code>internal/config</code>, Compose examples, <code>.env.example</code>, <code>README.md</code>, <code>go.mod</code>, and <code>go.sum</code>.</p>
+
+    <h3>13.5 Verification</h3>
+    <ul class="checklist">
+      <li>Add a two-connection PostgreSQL integration test proving one running job per rule under concurrent claims.</li>
+      <li>Add deterministic lease-heartbeat, stale-owner completion, and fresh-claim-time tests.</li>
+      <li>Add ambiguous-create recovery tests for all three target providers and mapping uniqueness tests for both databases.</li>
+      <li>Add auth boundary, OAuth redirect, malformed numeric input, SQLite reconnection pragma, pagination, recurrence, timezone, and mirrored-hash regression tests.</li>
+      <li>Run <code>go test -race -count=1 ./...</code>, PostgreSQL 17 integration, <code>go vet ./...</code>, <code>go build ./...</code>, <code>git diff --check</code>, Compose validation, dependency vulnerability verification, final amd64 image build, and empty-calendar serve/worker smoke tests.</li>
+    </ul>
+
+    <h3>13.6 Risks and rollback</h3>
+    <ul>
+      <li>Schema version 1 is not deployed, so constraints can still be corrected in-place before release. Do not introduce a migration that assumes production data exists.</li>
+      <li>Heartbeat tests must not depend on wall-clock sleeps; inject timing/clock boundaries.</li>
+      <li>Provider marker formats must be private/non-user-visible where supported and must never add attendees or notifications.</li>
+      <li>If marker lookup cannot be made exact and bounded for a provider, keep that target blocked rather than claim ambiguous-create safety.</li>
+      <li>Rollback for this pass is the current published commit <code>8594747</code>; no production state changes are authorized.</li>
+    </ul>
+
+    <h3>13.7 Approval gate</h3>
+    <p><strong>Implementation must not start until the user approves this review-remediation section.</strong> Approval authorizes local code and test changes only. A review-fix commit, push, GitHub replies, thread resolution, ready/draft state change, merge, and deployment each remain separate actions.</p>
+  </section>
+
+  <section>
+    <h2>14. PR #3 Review Remediation Record — 2026-08-20</h2>
+    <p><strong>Status:</strong> the approved remediation was implemented, verified, committed, and pushed to PR #3 as commits <code>b68c140</code> and <code>292704f</code> after explicit authorization. PR #3 remains open and ready for reviewers. No GitHub review reply, thread resolution, merge, deployment, or production data mutation has been performed.</p>
+
+    <h3>Implemented changes</h3>
+    <ul>
+      <li>Serialized PostgreSQL claims per rule, added database uniqueness for running rule jobs and target mappings, introduced worker lease heartbeat, and made renewal/completion conditional on the exact worker and attempt.</li>
+      <li>Added provider-side idempotency markers and lookup for Google private properties, Microsoft single-value extended properties, and Apple iCalendar properties. The sync engine now blocks target creation when exact marker recovery is unavailable.</li>
+      <li>Made the control plane fail closed unless ForwardAuth or the explicit local-only UI bypass is configured. Local SQLite Compose binds to loopback; the PostgreSQL example requires ForwardAuth and README documents the trusted-header boundary.</li>
+      <li>Normalized empty OAuth return paths, rejected network-path and backslash redirect variants, moved SQLite pragmas into the DSN, validated rule numbers and Apple reconnect credentials, and upgraded gRPC to 1.82.1.</li>
+      <li>Corrected Apple overlap/time/EXDATE and series-scope behavior, Google marker pagination, Microsoft combined recurrence pagination and payload omission, Microsoft instance normalization, and mirrored visibility/transparency hashing.</li>
+      <li>Applied validated error handling, connection status, accessibility, UTC display, no-context listener, CSS, and unused-wrapper fixes. Provider construction remains intentionally fail closed when stored OAuth accounts lack application credentials.</li>
+    </ul>
+
+    <h3>Verification evidence</h3>
+    <ul class="checklist">
+      <li><code>go test -race -count=1 ./...</code> passed after the remediation.</li>
+      <li><code>CGO_ENABLED=0 go vet ./...</code>, <code>CGO_ENABLED=0 go build ./...</code>, <code>git diff --check</code>, and Go formatting checks passed.</li>
+      <li>The SQLite storage contract passed, including stale-owner rejection, lease renewal, mapping uniqueness, and legacy alias resolution.</li>
+      <li>A disposable PostgreSQL 17 database passed the storage contract and the repeated two-connection concurrent-claim regression test. The test container was removed afterward.</li>
+      <li>Provider tests passed for marker payload/lookup, empty-page pagination, combined recurrence pagination, optional Graph recurrence fields, Apple overlap parsing, and instance-kind normalization.</li>
+      <li>Both Compose examples passed <code>docker compose config --quiet</code> using <code>.env.example</code>.</li>
+    </ul>
+
+    <h3>Known limitations and remaining gates</h3>
+    <ul>
+      <li>No real Google, Microsoft, or Apple calendar was mutated. Marker round-trip, recurrence edge cases, and notification suppression still require an empty dedicated calendar before production use.</li>
+      <li>The final amd64 image rebuild and serve/worker container smoke test have not been repeated for this remediation pass.</li>
+      <li>The legacy-import finding was rejected after verifying that the CLI resolves aliases to canonical calendar IDs before import; the storage contract now asserts the alias resolution.</li>
+      <li>CodeRabbit's generic docstring percentage is not a repository merge gate and no mass boilerplate was added.</li>
+    </ul>
+
+    <h3>Next approval gate</h3>
+    <p>The review-fix commits are now present in PR #3 and CI is green. Replies to reviewers, resolving review threads, merge, and deployment still require explicit user authorization. The PR must remain non-draft unless the user requests otherwise.</p>
+  </section>
+
+  <section class="approval">
+    <h2>15. PR #3 Final Review Fix Plan — 2026-08-20</h2>
+    <p><strong>Task summary:</strong> address every substantive actionable item in the latest CodeRabbit review, including comments posted in the review body outside the diff range, then rerun the full merge gate. This is a broad compatibility, concurrency, recurrence, and deployment pass; implementation must wait for explicit approval of this section.</p>
+
+    <h3>15.1 Current behavior and confirmed findings</h3>
+    <ul>
+      <li><strong>Already fixed on the PR head:</strong> ForwardAuth is explicit opt-in, worker shutdown no longer turns a context-caused heartbeat error into a failed job, PostgreSQL claims are serialized per rule, and active jobs renew their leases.</li>
+      <li><strong>Canonical IDs:</strong> discovered calendars currently use <code>provider@connection-id:provider-calendar-id</code>. This is account-scoped but violates the public contract that calendar IDs begin with <code>google:</code>, <code>microsoft:</code>, or <code>apple:</code>.</li>
+      <li><strong>Recovery lock order:</strong> <code>RecoverStaleJobs</code> updates <code>sync_runs</code> before <code>sync_jobs</code>, while <code>FinishRun</code> uses the opposite order, allowing a PostgreSQL deadlock.</li>
+      <li><strong>Provider availability:</strong> one connected OAuth account with missing application credentials aborts construction of every stored provider. Partial legacy direct-provider environment variables also fail global validation before complete unrelated providers can start.</li>
+      <li><strong>Apple recurrence:</strong> remaining moved exceptions are filtered by <code>OriginalStart</code> rather than overlap of the actual moved interval.</li>
+      <li><strong>Run counters:</strong> marker recovery increments <code>CreatedCount</code> even when no remote create occurs.</li>
+      <li><strong>Deployment examples:</strong> the PostgreSQL example contains a predictable password placeholder and both examples use mutable image tags. The trusted ForwardAuth boundary is documented in README but not sufficiently explicit beside the environment setting.</li>
+    </ul>
+
+    <h3>15.2 Desired behavior and implementation decisions</h3>
+    <ol>
+      <li>Adopt <code>provider:connection-id:provider-calendar-id</code> as the canonical stored and public calendar ID. Parse only the first two separators so provider-native IDs may still contain colons. Translate the account component to the internal route <code>provider@connection-id</code>. Preserve <code>provider:provider-calendar-id</code> as an unambiguous legacy alias.</li>
+      <li>Update connection discovery, registry resolution/prefixing, storage alias resolution, web provider labels, legacy import resolution, tests, and documentation together. Schema version 1 is not deployed, so this pass changes the initial contract rather than adding a production data migration.</li>
+      <li>Make stale recovery identify eligible job IDs, update <code>sync_jobs</code> first, then close only the runs belonging to jobs actually recovered. Match <code>FinishRun</code>'s lock order and keep all work in one transaction.</li>
+      <li>Skip individual stored Google or Microsoft accounts whose application credentials are unavailable so unrelated accounts can initialize. A sync rule that names the skipped account must still fail as provider-unavailable; it must never report a false successful no-op.</li>
+      <li>For legacy direct-provider mode, remove global partial-provider rejection and instantiate a provider only when its full credential tuple is present. If no complete provider remains, retain the existing startup error.</li>
+      <li>Include non-cancelled Apple exceptions when their actual <code>Start</code>/<code>End</code> overlaps the requested window. Continue using <code>OriginalStart</code> for cancellation identity.</li>
+      <li>Increment <code>CreatedCount</code> only for a dry-run create prediction or an actual <code>CreateEventV2</code> call. Marker recovery that only repairs a mapping must not count as a create.</li>
+      <li>Require one externally supplied PostgreSQL password variable and interpolate it consistently into PostgreSQL and both service DSNs. Require externally supplied immutable <code>CALENDAR_IMAGE</code> and <code>POSTGRES_IMAGE</code> references, reusing the same calendar reference for serve and worker. Do not invent repository digests.</li>
+      <li>Expand <code>.env.example</code> guidance for the trusted proxy/header boundary and local-only unauthenticated combination. Keep the generic 80% docstring suggestion out of scope because it is not a configured repository gate and mass boilerplate would not improve correctness.</li>
+    </ol>
+
+    <h3>15.3 Likely files and impact</h3>
+    <p><code>internal/calendar/{provider.go,registry.go,registry_test.go}</code>, <code>internal/connections/{service.go,service_test.go}</code>, <code>internal/storage/{store.go,operations.go,store_test.go,postgres_integration_test.go}</code>, <code>internal/migration/*</code>, <code>internal/providers/{factory.go,factory_test.go}</code>, <code>internal/config/*</code>, <code>internal/runtime/{serve.go,serve_test.go}</code>, <code>internal/apple/{recurrence_v2.go,recurrence_v2_test.go}</code>, <code>internal/syncengine/{engine.go,engine_test.go}</code>, <code>internal/web/*</code>, Compose examples, <code>.env.example</code>, and <code>README.md</code>.</p>
+    <ul>
+      <li><strong>Data/API:</strong> calendar IDs change before first deployment; legacy aliases remain read-compatible only when unambiguous.</li>
+      <li><strong>Availability:</strong> one broken account no longer prevents unrelated accounts from running, while rules targeting that account remain visibly failed.</li>
+      <li><strong>Deployment:</strong> Compose intentionally refuses to render until password and immutable image inputs are supplied.</li>
+      <li><strong>UX:</strong> account-scoped IDs remain selectable in the UI and provider icons continue to derive from the leading provider segment.</li>
+    </ul>
+
+    <h3>15.4 Test plan and manual QA</h3>
+    <ul class="checklist">
+      <li>Add registry and storage tests for the new canonical form, provider-native IDs containing colons, two accounts with the same provider calendar ID, unambiguous legacy aliases, and ambiguous alias rejection.</li>
+      <li>Add provider-factory and serve tests proving incomplete accounts/configurations are skipped, unrelated complete providers initialize, and a configuration with no complete provider still fails.</li>
+      <li>Add PostgreSQL coverage for concurrent <code>FinishRun</code>/<code>RecoverStaleJobs</code> behavior and verify only the exact stale attempt is recovered.</li>
+      <li>Add Apple tests for moved-before-to-inside, moved-inside-to-outside, cancellation identity, and interval overlap boundaries.</li>
+      <li>Add sync-engine tests distinguishing dry-run prediction, actual create, and marker-only mapping recovery counters.</li>
+      <li>Render both Compose files with explicit test password and digest-shaped image inputs; verify missing required inputs fail rendering.</li>
+      <li>Run <code>go test -race -count=1 ./...</code>, PostgreSQL 17 integration tests, <code>CGO_ENABLED=0 go vet ./...</code>, <code>CGO_ENABLED=0 go build ./...</code>, formatting, <code>git diff --check</code>, and both Compose validations.</li>
+      <li>Manual QA after implementation: inspect Connections and Rules pages for the new IDs, verify a legacy alias resolves only with one matching account, and confirm no calendar invitations or notifications are sent. Real-provider writes remain prohibited until dedicated empty calendars are configured.</li>
+    </ul>
+
+    <h3>15.5 Risks, edge cases, and rollback</h3>
+    <ul>
+      <li><strong>ID ambiguity:</strong> parsing must preserve the complete provider-native suffix; tests must cover colons and duplicate native IDs across accounts.</li>
+      <li><strong>Pre-release data:</strong> any local development database created from the previous PR commits may contain old IDs. Recreate disposable databases or provide a bounded development-only conversion; do not claim a production migration exists.</li>
+      <li><strong>Recovery races:</strong> stale selection and mutation must be rechecked transactionally so a heartbeat between selection and update cannot recover a live job.</li>
+      <li><strong>Secret interpolation:</strong> document that the Compose password must be URL-safe when embedded in a PostgreSQL URL.</li>
+      <li><strong>Rollback:</strong> revert the final review-fix commit to PR head <code>292704f</code>. No deployment or database mutation is authorized by this plan.</li>
+    </ul>
+
+    <h3>15.6 Open questions and approval gate</h3>
+    <p>No implementation-blocking question remains. Approval accepts the canonical ID form, partial-provider availability behavior, required Compose inputs, and the test/rollback strategy above.</p>
+    <p><strong>Implementation must not start until the user explicitly approves this section.</strong> Approval authorizes local source changes and test execution. Because the user requested review fixes to be pushed immediately, approval of this section also authorizes one conventional review-fix commit and push to the existing open PR #3 after all required checks pass. It does not authorize GitHub replies, thread resolution, merge, deployment, or real-calendar mutation.</p>
+  </section>
+
+  <section>
+    <h2>16. PR #3 Final Review Fix Record — 2026-08-20</h2>
+    <p><strong>Status:</strong> section 15 was explicitly approved and implemented in the isolated <code>feat/calendar-platform-control-plane</code> worktree. The changes below passed the required local merge gate. The approved commit and push remain the final execution step; no GitHub reply, thread resolution, merge, deployment, or real-calendar mutation is included.</p>
+
+    <h3>What actually changed</h3>
+    <ul>
+      <li>Changed account-scoped calendar IDs to <code>provider:connection-id:provider-calendar-id</code>, kept internal routes separate, preserved provider-native suffixes containing colons, and retained unambiguous legacy alias resolution.</li>
+      <li>Changed stale recovery to lock and update <code>sync_jobs</code> before closing related runs, matching completion lock order and limiting run mutation to jobs actually recovered.</li>
+      <li>Allowed incomplete stored and legacy direct-provider configurations to be skipped independently, while keeping missing-provider rule execution as an error and retaining the no-provider startup failure.</li>
+      <li>Filtered moved Apple exceptions by their actual interval and kept cancellation identity based on original start.</li>
+      <li>Counted creates only for dry-run predictions and actual provider creates; sync-marker mapping recovery no longer inflates the counter.</li>
+      <li>Required externally supplied immutable calendar/PostgreSQL image references and one URL-safe PostgreSQL password in Compose, and expanded trusted ForwardAuth guidance.</li>
+    </ul>
+
+    <h3>Verification evidence</h3>
+    <ul class="checklist">
+      <li><code>go test -race -count=1 ./...</code> passed for all packages.</li>
+      <li><code>CGO_ENABLED=0 go vet ./...</code> and <code>CGO_ENABLED=0 go build ./...</code> passed.</li>
+      <li>SQLite storage and all provider, registry, connection, runtime, and sync-engine tests passed.</li>
+      <li>A clean disposable PostgreSQL 17 database passed the storage contract, repeated per-rule claim test, and 20 concurrent finish/recovery iterations. The first integration run exposed stale test fixture IDs after the canonical-ID change; the fixtures were corrected, the test passed on a clean database, and the temporary container was removed.</li>
+      <li>Both Compose examples rendered with explicit digest-shaped test image inputs and a URL-safe test password. Rendering without <code>CALENDAR_IMAGE</code> failed as required.</li>
+      <li><code>git diff --check</code> and Go formatting checks passed.</li>
+    </ul>
+
+    <h3>Known limitations and follow-up</h3>
+    <ul>
+      <li>No real provider account or calendar was mutated. Canonical IDs, recurrence exceptions, marker recovery, and notification suppression still require empty-calendar QA before deployment.</li>
+      <li>Existing disposable development databases from pre-release PR commits may contain the former <code>provider@connection:id</code> shape and should be recreated. No production migration is claimed because schema version 1 has not been deployed.</li>
+      <li>Compose requires operators to supply real reviewed image digests; the repository intentionally does not fabricate or pin unknown release digests.</li>
+      <li>The generic docstring coverage suggestion remains excluded because it is not a configured repository merge gate.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>17. PR #3 Follow-up Review Fix Record — 2026-08-20</h2>
+    <p><strong>Status:</strong> the subsequent review findings were implemented under the already approved review-remediation boundary. The feature worktree contains only the focused source, test, deployment-example, and documentation changes listed below. No review reply, thread resolution, merge, deployment, or real-calendar mutation is included.</p>
+
+    <h3>What actually changed</h3>
+    <ul>
+      <li>Expanded recurring-instance lookup to include the exception's <code>OriginalStart</code> when it lies outside the current sync window. Timed instances receive an exclusive one-second boundary and all-day instances receive the complete original date.</li>
+      <li>Added timed and all-day regression coverage with a fake provider that filters returned instances by the requested window, reproducing the moved-exception lookup failure.</li>
+      <li>Added a canonical Compose wrapper that renders and validates every resolved calendar and PostgreSQL service image as an exact <code>image@sha256:&lt;64-hex-digest&gt;</code> reference before starting services. CI now validates both examples and proves that a mutable tag is rejected.</li>
+      <li>Explicitly forced <code>UI_ALLOW_UNAUTHENTICATED=false</code> in the ForwardAuth PostgreSQL service so an env file cannot enable the bypass.</li>
+      <li>Clarified that the bundled PostgreSQL connection is the only non-TLS path, added a <code>CALENDAR_DATABASE_URL</code> override for external databases, and documented certificate-verified <code>sslmode=verify-full</code> with a trusted CA.</li>
+      <li>Changed the version claim to a configurable PostgreSQL image with PostgreSQL 17 as the tested/recommended reviewed digest.</li>
+    </ul>
+
+    <h3>Verification evidence</h3>
+    <ul class="checklist">
+      <li><code>go test -race -count=1 ./...</code> passed for all packages after rerunning outside the filesystem sandbox so <code>httptest</code> could open loopback ports.</li>
+      <li><code>CGO_ENABLED=0 go vet ./...</code> and <code>CGO_ENABLED=0 go build ./...</code> passed.</li>
+      <li>The focused sync-engine test passed, including both timed and all-day original-start cases.</li>
+      <li>Both Compose examples passed <code>config --quiet</code> through the validation wrapper; a mutable calendar tag exited non-zero as required.</li>
+      <li>Shell syntax checks and <code>git diff --check</code> passed.</li>
+    </ul>
+
+    <h3>Known limitations and follow-up</h3>
+    <ul>
+      <li>Direct raw <code>docker compose</code> invocation cannot express a digest regular-expression policy; the documented and CI-enforced entry point is <code>scripts/compose.sh</code>.</li>
+      <li>An external PostgreSQL deployment must mount its trusted CA certificate at the path used by <code>sslrootcert</code>; the bundled example does not invent an environment-specific secret mount.</li>
+      <li>Real-provider recurrence behavior remains subject to dedicated empty-calendar QA with invitations and notifications disabled.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

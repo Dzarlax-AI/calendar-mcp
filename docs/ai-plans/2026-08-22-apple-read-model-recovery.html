@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: Apple Read-Model Recovery</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1050px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    h1, h2, h3 { line-height: 1.2; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .risk { border-left: 4px solid #dc2626; }
+    .approval { border-left: 4px solid #d97706; background: #fffbeb; }
+    li { margin: 7px 0; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Implementation Plan: Apple Read-Model Recovery</h1>
+  <p class="badge">Implemented locally; production canary still requires approval</p>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Make Apple read-model synchronization resilient to malformed individual iCalendar resources without deleting the last valid snapshot or falsely reporting the source as ready. Warnings accumulate across the complete attempt, including multi-page syncs.</p>
+    <p><strong>Base revision:</strong> <code>58dcadc50fad4ec3983c8cb234b0d11dbef25107</code></p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li><code>appleSyncMembers</code> errors currently fail the whole Apple page with <code>protocol</code>.</li>
+      <li>The coordinator parks protocol failures and applies no valid sibling objects.</li>
+      <li>Production direct reads returned valid events while the cache remained empty for the affected source.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ol>
+      <li>Apply valid objects from the attempt.</li>
+      <li>Mark the attempt recoverable with the existing public <code>failed/protocol</code> source status.</li>
+      <li>Do not advance the provider cursor or sweep old generations, even if a later page is clean.</li>
+      <li>Keep unresolved-object membership intact and retry from the unchanged cursor.</li>
+      <li>Only a later complete attempt can transition the source to <code>ready</code>; the retry state must be claimable when due.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Extend <code>EventSyncPage</code> with per-page recoverable warnings and accumulate them across <code>RunOne</code>.</li>
+      <li>Add an atomic storage path that applies valid rows but preserves cursor/generation and records internal retryable <code>degraded/protocol</code> status, exposed publicly as <code>failed/protocol</code>.</li>
+      <li>Change Apple replacement/incremental parsing to isolate only typed object parser failures; keep HTTP/auth/transport failures fatal.</li>
+      <li>Add tests for multi-page warnings, retryable state claiming, no-master recurrence data, cursor preservation, and no-sweep behavior.</li>
+      <li>Add an opt-in Postgres parity fixture and run a canary only after explicit deployment approval.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Model-led execution</h2>
+    <table>
+      <tr><th>Workstream</th><th>Model</th><th>Effort</th><th>Gate</th></tr>
+      <tr><td>Contract/coordinator</td><td><code>gpt-5.6-terra</code></td><td>High</td><td>Cursor and status invariants</td></tr>
+      <tr><td>Apple adapter</td><td><code>gpt-5.6-terra</code></td><td>High</td><td>Parse-vs-transport boundary</td></tr>
+      <tr><td>Storage semantics</td><td><code>gpt-5.6-terra</code></td><td>High</td><td>No cursor advance/no sweep; claim retry state</td></tr>
+      <tr><td>Fixtures/documentation</td><td><code>gpt-5.6-luna</code></td><td>Medium</td><td>Parity evidence and factual update</td></tr>
+      <tr><td>Integration/release</td><td><code>gpt-5.6-terra</code>; Sol only for explicit release gates</td><td>High</td><td>Full verification and separate production approval</td></tr>
+    </table>
+    <p>At least 90% of delegable work is allocated to <code>gpt-5.6-terra</code>/<code>gpt-5.6-luna</code>. <code>gpt-5.6-sol</code> owns no implementation lane; it defaults to <code>medium</code> reasoning and escalates to <code>high</code> only for a named unresolved cross-cutting risk. Shared model types are frozen before storage work; at most two implementation lanes plus one fixture/documentation lane run beside the root coordinator.</p>
+  </section>
+
+  <section>
+    <h2>Tests and QA</h2>
+    <pre><code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./internal/apple ./internal/eventsync ./internal/storage -count=1
+GOCACHE=/private/tmp/calendar-mcp-go-build go test -race ./... -count=1
+go vet ./...
+go test -tags=integration ./internal/storage -count=1</code></pre>
+    <ul>
+      <li>Verify valid event IDs match between direct and cached paths for the same fixture/window.</li>
+      <li>Verify the existing API reports safe <code>failed/protocol</code> status while valid cached events remain queryable.</li>
+      <li>Verify repaired resources become ready and complete a safe sweep on a later retry; advance the cursor only when the provider returns one, since the Apple fallback may intentionally remain cursorless.</li>
+      <li>Skip Postgres tests only when <code>TEST_POSTGRES_URL</code> is absent, and report that limitation explicitly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Execution record</h2>
+    <p class="good"><strong>Implemented on the working branch.</strong> Contract warnings, attempt-level degradation, atomic storage handling, Apple per-resource isolation, retryable degraded state, and the synthetic Postgres parity fixture are now present.</p>
+    <ul>
+      <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./... -count=1</code> — passed.</li>
+      <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go test -race ./... -count=1</code> — passed.</li>
+      <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go vet ./...</code> — passed.</li>
+      <li><code>go test -tags=integration ./internal/storage -count=1</code> — passed; PostgreSQL-backed tests skipped because <code>TEST_POSTGRES_URL</code> is unset.</li>
+      <li>The Apple suite required an approved local-listener escalation in this sandbox; the same tests passed after escalation.</li>
+    </ul>
+    <p><strong>Known limitation:</strong> the new parity fixture has not executed against a live PostgreSQL instance. A follow-up <code>gpt-5.6-sol/medium</code> review approved the two corrected boundaries: invalid/missing per-object <code>Content-Type</code> is hard protocol failure, and degraded retries use the bounded provider retry base. No commit, push, production migration, feature-flag enablement, or deployment was performed.</p>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and mitigations</h2>
+    <ul>
+      <li>Stale unresolved-object data: retain it but expose the existing <code>failed/protocol</code> status and retry.</li>
+      <li>Accidental sweep/cursor advancement: enforce with transaction tests.</li>
+      <li>Retry storms: current Apple retry is one-minute based rather than exponential; monitor fetch volume during canary.</li>
+      <li>Direct/read-model drift: require production-shaped parity before canary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <ol>
+      <li>Disable <code>EVENT_READ_MODEL_ENABLED</code> for both <code>calendar-serve</code> and <code>calendar-worker</code>.</li>
+      <li>Stop the worker if retry volume is abnormal.</li>
+      <li>Keep additive schema and rows for diagnosis; do not drop tables or reset provider cursors.</li>
+      <li>Return to direct-provider reads and redeploy the previous immutable image only with explicit approval.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Open questions</h2>
+    <ul>
+      <li>Expose the existing generic <code>failed/protocol</code> status initially; do not expose Apple object paths.</li>
+      <li>Use the existing one-minute Apple retry base initially; tune after canary request-volume evidence.</li>
+      <li>No webhook or migration work is required for this fix.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval record</h2>
+    <p>The approval gate was completed before the implementation recorded in the companion execution plan. Its scope was multi-page warning accumulation, retryable state lifecycle, the existing <code>failed/protocol</code> API behavior, typed Apple error classification, no-master safety, tests, and staged canary design; it did not authorize production deployment.</p>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calendar Platform public legal pages — implementation plan</title>
+  <style>
+    :root { color-scheme: light; --bg:#f6f7f9; --card:#fff; --text:#17202a; --muted:#5f6b76; --line:#dfe4e8; --accent:#185abc; --warn:#8a4b08; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(980px,calc(100% - 32px)); margin:40px auto 72px; }
+    header,section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px 28px; margin-bottom:18px; }
+    h1 { margin:0 0 8px; font-size:2rem; line-height:1.2; }
+    h2 { margin:0 0 12px; font-size:1.25rem; }
+    h3 { margin:20px 0 8px; font-size:1rem; }
+    p { margin:8px 0; }
+    ul,ol { margin:8px 0; padding-left:24px; }
+    code { background:#eef1f4; border-radius:5px; padding:2px 5px; }
+    .meta,.muted { color:var(--muted); }
+    .decision { border-left:5px solid var(--accent); }
+    .warning { border-left:5px solid var(--warn); }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th,td { padding:9px 10px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:#f2f4f7; }
+    .gate { background:#edf4ff; border-color:#b8cff2; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Public homepage, Privacy Policy, and Terms of Service</h1>
+    <p class="meta">Implementation plan · 2026-08-21 · calendar-mcp</p>
+  </header>
+
+  <section class="decision">
+    <h2>Task summary</h2>
+    <p>Add repository-maintained Markdown documents for the product homepage, Privacy Policy, and Terms of Service, then expose the same content on the verified application domain for Google OAuth verification.</p>
+    <p><strong>Proposed production URLs:</strong> <code>https://calendar.dzarlax.dev/</code> for the public product landing page, plus <code>/privacy</code> and <code>/terms</code>. The authenticated control plane moves to <code>/app</code>. GitHub renders the policy source documents for repository visitors, but Google OAuth configuration will use the owned-domain URLs.</p>
+  </section>
+
+  <section>
+    <h2>Current behavior</h2>
+    <ul>
+      <li>The Calendar Platform dashboard and all UI pages are protected by application authentication and production Authentik ForwardAuth.</li>
+      <li>Only Google and Microsoft OAuth callback paths bypass ForwardAuth.</li>
+      <li>The repository already contains the internal embedded legal sources <code>legal/privacy.md</code> and <code>legal/terms.md</code>; they are not yet anonymously exposed on the public domain.</li>
+      <li>The production proxy has no anonymous router for legal or product-information pages. The existing embedded legal render contract will be reused rather than creating duplicate policy sources or changing the server unnecessarily.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired behavior</h2>
+    <ul>
+      <li>Anyone can open the public landing page, Privacy Policy, and Terms without signing in.</li>
+      <li>The public homepage identifies Calendar Platform, explains its calendar connection and synchronization purpose, and links prominently to Privacy and Terms.</li>
+      <li>The homepage includes a clear sign-in/open-control-plane action that leads to the Authentik-protected <code>/app</code> route.</li>
+      <li>The Privacy Policy explains the calendar data and OAuth credentials accessed, how they are used and stored, when event data is sent to a user-selected target provider, retention/deletion controls, revocation, security measures, and contact options.</li>
+      <li>The Terms explain service scope, account authorization, calendar mutation risks, user responsibilities, open-source/self-hosted use, availability, warranty limitations, and termination.</li>
+      <li>The authenticated application remains protected; no operational state, connection metadata, secrets, or actions become public.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Assumptions and decisions</h2>
+    <ul>
+      <li>English is the publication language for OAuth review and repository-facing documentation.</li>
+      <li>The Privacy and Terms Markdown files are the canonical policy text and are embedded into the Go binary at build time. The small product landing page is a normal local HTML template. No runtime GitHub request or CDN is introduced.</li>
+      <li>A bundled Go Markdown renderer may be added; generated HTML is rendered inside a local template with unsafe raw HTML disabled.</li>
+      <li>The hosted instance remains a single-user service, while the wording also distinguishes independent self-hosted installations.</li>
+      <li>The policy describes the broad Google Calendar access actually requested today. Scope minimization is a separate security change and will not be implied as already complete.</li>
+      <li>The effective date will be the publication date.</li>
+      <li>Google Search Console/domain ownership verification and Google Console field entry remain operator actions after deployment.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely file changes</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Expected change</th></tr></thead>
+      <tbody>
+        <tr><td><code>internal/web/legal/*.md</code></td><td>Add canonical Privacy and Terms Markdown source, visible and linkable on GitHub.</td></tr>
+        <tr><td><code>internal/web/templates/public.html</code></td><td>Add a minimal landing page and shared policy-page shell with navigation and no authenticated application data.</td></tr>
+        <tr><td><code>internal/web/assets/app.css</code></td><td>Add responsive public-page styles using only bundled assets.</td></tr>
+        <tr><td><code>internal/web/server.go</code></td><td>Embed/render Markdown, make the exact root path public, move the protected dashboard to <code>/app</code>, and register the policy routes outside the protected handler chain.</td></tr>
+        <tr><td><code>internal/web/server_test.go</code></td><td>Verify public access, safe rendering, links, and continued protection of application pages.</td></tr>
+        <tr><td><code>README.md</code></td><td>Link to the canonical legal documents and document the production URL contract.</td></tr>
+        <tr><td><code>go.mod</code>, <code>go.sum</code></td><td>Add a pinned Markdown renderer only if needed by the selected implementation.</td></tr>
+        <tr><td>Private deployment Compose</td><td>Add a higher-priority Traefik router for the exact public root, policy paths, and bundled public assets without Authentik; keep the catch-all UI router protected.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Bring the local branch to the current <code>origin/main</code> without overwriting existing untracked planning artifacts.</li>
+      <li>Draft factual Privacy and Terms Markdown based on implemented provider, storage, sync, and deletion behavior; avoid promises not enforced by code.</li>
+      <li>Add a concise public landing page describing Google, Microsoft, and Apple calendar connections, one-way synchronization, MCP access, and the single-user/self-hosted model.</li>
+      <li>Embed the Markdown and render it through the public template. Disable embedded/raw HTML and keep all assets local.</li>
+      <li>Register exact public routes for <code>GET /</code>, <code>GET /privacy</code>, and <code>GET /terms</code>. Move the protected dashboard to <code>GET /app</code> and update internal dashboard links and post-action return locations.</li>
+      <li>Add visible cross-links between all public pages and legal links in the authenticated UI.</li>
+      <li>Add a narrowly matched anonymous Traefik router at higher priority than the Authentik-protected host router. Static bundled assets may be public, but no API, OAuth-start, connection, rule, run, or settings route may match it.</li>
+      <li>Run automated and manual verification, inspect the cumulative diff, commit in English, and push directly to <code>main</code> without a PR as requested.</li>
+      <li>Deploy only after separate deployment authorization, then verify the anonymous URLs and protected dashboard from outside the trusted network.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>API, data, security, and compatibility impact</h2>
+    <ul>
+      <li>No MCP, REST, provider, database-schema, or sync-rule contract changes.</li>
+      <li>No calendar access is performed while rendering public pages.</li>
+      <li>The new landing and policy routes are deliberately anonymous and read-only; <code>/app</code> and all existing stateful UI routes stay behind both proxy and application authorization.</li>
+      <li>Existing self-hosted installations continue to work without a proxy change. Their local legal pages will describe the software; each independent public operator remains responsible for supplying accurate operator/contact details.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Automated test plan</h2>
+    <ul>
+      <li>The root landing page and policy pages return <code>200</code> without ForwardAuth headers and use <code>text/html; charset=utf-8</code>.</li>
+      <li><code>/app</code> and the other authenticated application pages still return <code>401</code> without trusted authentication.</li>
+      <li>Unknown paths do not accidentally render the dashboard or a public document.</li>
+      <li>Privacy and Terms links resolve, and the homepage contains a clear product description.</li>
+      <li>Rendered Markdown does not permit raw HTML/script injection.</li>
+      <li>Run <code>go test -race -count=1 ./...</code> and <code>go vet ./...</code>.</li>
+      <li>Render/validate the private Compose configuration and confirm the anonymous router matches only the exact root, policy pages, and static asset paths.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA checklist</h2>
+    <ul>
+      <li>Open the root landing page and both policy URLs in a private browser session; each must load without an Authentik redirect.</li>
+      <li>Open <code>https://calendar.dzarlax.dev/app</code> in the same session; it must require Authentik.</li>
+      <li>Check mobile and desktop readability, navigation, policy effective date, and contact link.</li>
+      <li>Verify the homepage states the product purpose and links directly to Privacy and Terms.</li>
+      <li>Confirm no connection names, calendar data, credentials, environment values, or internal errors appear in page source.</li>
+      <li>After domain verification, enter the owned-domain URLs in Google OAuth branding and compare the consent-screen identity with the homepage.</li>
+    </ul>
+  </section>
+
+  <section class="warning">
+    <h2>Risks and mitigations</h2>
+    <ul>
+      <li><strong>Proxy bypass expands too far:</strong> use an exact root matcher plus explicit policy and asset paths; never make <code>PathPrefix("/")</code> anonymous.</li>
+      <li><strong>Policy overpromises:</strong> derive every data-handling statement from current code and call out hosted versus self-hosted responsibility.</li>
+      <li><strong>Markdown injection:</strong> disable raw HTML and keep templates/assets embedded in the reviewed binary.</li>
+      <li><strong>Text drifts from behavior:</strong> keep one canonical Markdown source and require policy review when OAuth scopes, retention, sync payloads, or hosting change.</li>
+      <li><strong>Google still rejects verification:</strong> confirm domain ownership, homepage visibility, branding consistency, and exact scopes separately from document publication.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback plan</h2>
+    <p>Revert the application commit and immutable image, then remove the anonymous landing/policy router. The protected catch-all router and OAuth callbacks remain unchanged throughout. Repository Markdown can remain published even if the application routes are rolled back.</p>
+  </section>
+
+  <section>
+    <h2>Open questions before implementation</h2>
+    <ol>
+      <li>Which public email address should receive privacy and account-deletion requests? A private contact channel is preferable to GitHub Issues.</li>
+      <li>Should the legal operator be named as Alexey Panfilov, or use a neutral “Calendar Platform operator” label with the contact email?</li>
+    </ol>
+  </section>
+
+  <section class="gate">
+    <h2>Approval gate</h2>
+    <p>No application, legal-text, proxy, commit, push, or deployment changes are made by this plan. Implementation starts only after explicit approval. Approval may also provide the contact email/operator wording; deployment remains a separate explicit action after the code is pushed and CI produces an immutable image.</p>
+  </section>
+</main>
+</body>
+</html>

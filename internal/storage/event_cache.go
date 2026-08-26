@@ -659,7 +659,7 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 		if finalDegraded {
 			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
 				SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), batch.NextCursor, "degraded", nextSyncAt, syncedAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), state.Cursor, "degraded", nextSyncAt, syncedAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 			if err != nil {
 				return fmt.Errorf("degrade calendar sync: %w", err)
 			}
