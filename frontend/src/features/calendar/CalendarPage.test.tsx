@@ -116,21 +116,26 @@ describe("calendar event density", () => {
 });
 
 describe("mobile month data", () => {
-  const timedEvent: EventRecord = { id: "review", calendarId: "google:primary", title: "Review", start: "2026-08-26T08:30:00Z", end: "2026-08-26T09:00:00Z", allDay: false, timezone: "Europe/Belgrade" };
+  const timedEvent: EventRecord = { id: "review", calendarId: "google:primary", title: "Review", start: "2026-08-27T06:30:00Z", end: "2026-08-27T07:00:00Z", allDay: false, timezone: "America/Los_Angeles" };
   const allDayEvent: EventRecord = { id: "holiday", calendarId: "google:primary", title: "Holiday", start: "2026-08-27", end: "2026-08-29", allDay: true };
+  const crossingStart = new Date(2026, 7, 26, 23, 30);
+  const crossingEnd = new Date(2026, 7, 27, 1, 30);
+  const crossingEvent: EventRecord = { id: "overnight", calendarId: "google:primary", title: "Overnight work", start: crossingStart.toISOString(), end: crossingEnd.toISOString(), allDay: false, timezone: "America/Los_Angeles" };
 
-  it("uses the event timezone for timed events and preserves all-day dates", () => {
-    expect(calendarDayKey(new Date("2026-08-26T08:30:00Z"), "Europe/Belgrade")).toBe("2026-08-26");
-    expect(eventDayKey(timedEvent)).toBe("2026-08-26");
+  it("uses the display timezone for timed events and preserves all-day dates", () => {
+    expect(calendarDayKey(new Date(timedEvent.start), "America/Los_Angeles")).toBe("2026-08-26");
+    expect(eventDayKey(timedEvent)).toBe(calendarDayKey(new Date(timedEvent.start)));
     expect(eventDayKey(allDayEvent)).toBe("2026-08-27");
   });
 
-  it("builds a Monday-first six-week grid and groups events into the visible month", () => {
-    const days = monthDays(new Date(2026, 7, 25), [timedEvent, allDayEvent]);
+  it("builds a Monday-first six-week grid and groups all affected event days", () => {
+    const days = monthDays(new Date(2026, 7, 25), [timedEvent, allDayEvent, crossingEvent]);
     expect(days).toHaveLength(42);
     expect(days[0].key).toBe("2026-07-27");
-    expect(days.find((day) => day.key === "2026-08-26")?.events).toEqual([timedEvent]);
-    expect(days.find((day) => day.key === "2026-08-27")?.events).toEqual([allDayEvent]);
+    expect(days.find((day) => day.key === calendarDayKey(new Date(timedEvent.start)))?.events).toContain(timedEvent);
+    expect(days.find((day) => day.key === "2026-08-27")?.events).toContain(allDayEvent);
     expect(days.find((day) => day.key === "2026-08-28")?.events).toEqual([allDayEvent]);
+    expect(days.find((day) => day.key === calendarDayKey(crossingStart))?.events).toContain(crossingEvent);
+    expect(days.find((day) => day.key === calendarDayKey(crossingEnd))?.events).toContain(crossingEvent);
   });
 });

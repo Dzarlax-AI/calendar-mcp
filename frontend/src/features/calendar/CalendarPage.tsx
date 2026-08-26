@@ -50,11 +50,25 @@ export function calendarDayKey(date: Date, timeZone = Intl.DateTimeFormat().reso
 }
 
 export function eventDayKey(event: EventRecord) {
-  return event.allDay ? event.start.slice(0, 10) : calendarDayKey(new Date(event.start), event.timezone);
+  return event.allDay ? event.start.slice(0, 10) : calendarDayKey(new Date(event.start));
 }
 
 function eventDayKeys(event: EventRecord) {
-  if (!event.allDay) return [eventDayKey(event)];
+  if (!event.allDay) {
+    const start = new Date(event.start);
+    const end = new Date(event.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return [eventDayKey(event)];
+    const cursor = new Date(start);
+    cursor.setHours(0, 0, 0, 0);
+    const lastIncluded = new Date(end.getTime() - 1);
+    lastIncluded.setHours(0, 0, 0, 0);
+    const days: string[] = [];
+    while (cursor <= lastIncluded) {
+      days.push(calendarDayKey(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return days;
+  }
   const start = event.start.slice(0, 10);
   const end = event.end.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) return [start];

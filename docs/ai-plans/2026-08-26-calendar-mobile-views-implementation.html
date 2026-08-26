@@ -94,7 +94,7 @@
   <section>
     <h2>Implementation result — 2026-08-26</h2>
     <ul>
-      <li><code>CalendarPage.tsx</code> now has timezone-aware day-key helpers and a phone-only Month surface. It groups timed and multi-day all-day normalized events into a Monday-first, six-week grid; keeps two compact, source-coloured event pills per day; exposes keyboard-reachable <code>+N</code>; and routes day, event, filter, create, Today, and next-month actions to the existing calendar and surface state.</li>
+      <li><code>CalendarPage.tsx</code> now has display-timezone day-key helpers and a phone-only Month surface. It groups timed and all-day event spans across every affected calendar day in a Monday-first, six-week grid; keeps two compact, source-coloured event pills per day; exposes keyboard-reachable <code>+N</code>; and routes day, event, filter, create, Today, and next-month actions to the existing calendar and surface state.</li>
       <li>Phone Week is now a FullCalendar custom <code>mobileThreeDay</code> time-grid view, while the persisted preference remains the standard Week value. The earlier 820 px horizontal canvas applies only to the 561–760 px layout, not phones.</li>
       <li><code>app.css</code> adds scoped ≤560 px styles for a full-height Month grid, current-date emphasis, compact event affordances, a sticky bottom control row, and more legible phone Week slots. Desktop and tablet layout rules remain unchanged.</li>
       <li><code>CalendarPage.test.tsx</code> adds coverage for timezone-aware timed events, all-day dates, Monday-first six-week Month construction, and event grouping.</li>
