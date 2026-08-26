@@ -109,6 +109,20 @@ test("toolbar actions, sidebar Manage menu, and every view selector stay reachab
   await expectNoHorizontalOverflow(page);
 });
 
+test("phone Month pager follows a horizontal swipe", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openCalendar(page);
+  await page.getByRole("button", { name: "Month", exact: true }).click();
+  const pager = page.locator(".mobile-month-pager");
+  await pager.evaluate((element) => {
+    const touch = (x: number, y: number) => new Touch({ identifier: 7, target: element, clientX: x, clientY: y });
+    element.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(320, 260)], changedTouches: [touch(320, 260)] }));
+    element.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, touches: [touch(72, 264)], changedTouches: [touch(72, 264)] }));
+    element.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(72, 264)] }));
+  });
+  await expect(page.getByRole("heading", { name: "September", exact: true })).toBeVisible({ timeout: 1_000 });
+});
+
 test("toolbar keeps phone actions compact at 731px", async ({ page }) => {
   await page.setViewportSize({ width: 731, height: 900 });
   await openCalendar(page);
