@@ -470,9 +470,9 @@ a { color: inherit; text-decoration: none; }
   .mobile-month-next { display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: 0; background: transparent; color: #39455b; font-size: 12px; font-weight: 700; }
 
   /* The phone Week view is a real three-day time grid, so it should use the available width. */
-  .calendar-canvas-wrap:not(.has-mobile-month) .fc .fc-timegrid-slot { height: 48px; }
-  .calendar-canvas-wrap:not(.has-mobile-month) .fc .fc-col-header-cell-cushion { padding: 9px 2px; font-size: 11px; }
-  .calendar-canvas-wrap:not(.has-mobile-month) .fc .fc-timegrid-axis-cushion { padding-inline: 4px; font-size: 10px; }
-  .calendar-canvas-wrap:not(.has-mobile-month) .fc .fc-timegrid-event { padding: 3px 4px 4px; }
-  .calendar-canvas-wrap:not(.has-mobile-month) .fc-event-location { display: none; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-slot { height: 48px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-col-header-cell-cushion { padding: 9px 2px; font-size: 11px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-axis-cushion { padding-inline: 4px; font-size: 10px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-event { padding: 3px 4px 4px; }
+  .calendar-canvas-wrap.is-phone-week .fc-event-location { display: none; }
 }
