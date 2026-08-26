@@ -329,7 +329,7 @@ func TestApplyEventSyncPageAdvancesCursorAndSweepsOnlyCompletedFullGeneration(t 
 	}
 }
 
-func TestApplyEventSyncPageDegradedFinalAdvancesCursorAndRetries(t *testing.T) {
+func TestApplyEventSyncPageDegradedFinalPreservesCursorAndRetries(t *testing.T) {
 	store, now := newEventCacheStore(t)
 	ctx := context.Background()
 	initial, err := store.ClaimDueCalendarSync(ctx, "snapshot-worker", now, now.Add(time.Hour))
@@ -392,7 +392,7 @@ func TestApplyEventSyncPageDegradedFinalAdvancesCursorAndRetries(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, "SELECT cursor, status, generation, last_success_at, last_error_code, next_sync_at, lease_owner, lease_until FROM calendar_sync_state WHERE calendar_id='calendar'").Scan(&cursor, &status, &generation, &success, &code, &next, &leaseOwner, &leaseUntil); err != nil {
 		t.Fatal(err)
 	}
-	if cursor != degraded.NextCursor || generation != claim.Generation || !success.Equal(degradedAt) || status != "degraded" || code != "protocol" || !next.Equal(retryAt) || leaseOwner.Valid || leaseUntil.Valid {
+	if cursor != claim.Cursor || generation != claim.Generation || !success.Equal(degradedAt) || status != "degraded" || code != "protocol" || !next.Equal(retryAt) || leaseOwner.Valid || leaseUntil.Valid {
 		t.Fatalf("degraded final state cursor=%q generation=%d success=%s status=%q code=%q next=%s lease=%q/%v", cursor, generation, success, status, code, next, leaseOwner.String, leaseUntil)
 	}
 	var afterUnresolvedGeneration int64

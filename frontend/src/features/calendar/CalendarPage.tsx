@@ -35,7 +35,7 @@ export const COMPACT_LAYOUT_MAX_WIDTH = 1439;
 const COMPACT_LAYOUT_QUERY = `(max-width: ${COMPACT_LAYOUT_MAX_WIDTH}px)`;
 const NARROW_CALENDAR_QUERY = "(max-width: 760px)";
 const PHONE_CALENDAR_QUERY = "(max-width: 560px)";
-const usingCalendarMocks = import.meta.env.VITE_CALENDAR_MOCKS === "true";
+const usingCalendarMocks = import.meta.env.DEV && import.meta.env.VITE_CALENDAR_MOCKS === "true";
 
 export function usesCompactCalendarLayout(viewportWidth: number) {
   return viewportWidth <= COMPACT_LAYOUT_MAX_WIDTH;
@@ -84,6 +84,7 @@ export default function CalendarPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<EventRecord | null>(null);
   const lastPolledDataUpdatedAtRef = useRef(0);
   const [pollingAttempts, setPollingAttempts] = useState(0);
+  const refreshStartedAtRef = useRef(0);
   const [pollingCapped, setPollingCapped] = useState(false);
   const sortedSelectedCalendarIds = useMemo(() => sortCalendarIds(selectedCalendarIds), [selectedCalendarIds]);
 
@@ -127,6 +128,7 @@ export default function CalendarPage() {
         const unknown = result.unknown.length ? ` ${result.unknown.length} outcome${result.unknown.length === 1 ? "" : "s"} unconfirmed.` : "";
         setNotice({ message: `${result.queued.length} refresh${result.queued.length === 1 ? "" : "es"} queued.${rejected}${unknown} No automatic retry was attempted.`, intent: "warning" });
       } else if (result.queued.length) {
+        refreshStartedAtRef.current = eventsQuery.dataUpdatedAt;
         setShowUpdatedStatus(true);
         setNotice({ message: `${result.queued.length} calendar refresh${result.queued.length === 1 ? "" : "es"} queued.`, intent: "success" });
       } else if (result.rejected.length || result.unknown.length) {
@@ -155,10 +157,10 @@ export default function CalendarPage() {
     }
   }, [hasPendingSources, eventsQuery.dataUpdatedAt]);
   useEffect(() => {
-    if (!showUpdatedStatus || eventStatus?.kind !== "updated") return;
+    if (!showUpdatedStatus || eventStatus?.kind !== "updated" || eventsQuery.dataUpdatedAt <= refreshStartedAtRef.current) return;
     const timeout = window.setTimeout(() => setShowUpdatedStatus(false), SUCCESS_STATUS_DURATION_MS);
     return () => window.clearTimeout(timeout);
-  }, [eventStatus?.kind, showUpdatedStatus]);
+  }, [eventStatus?.kind, eventsQuery.dataUpdatedAt, showUpdatedStatus]);
   const createMutation = useMutation({
     mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
     onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
