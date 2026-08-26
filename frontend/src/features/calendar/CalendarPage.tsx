@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, TouchEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
@@ -29,6 +29,7 @@ type Surface =
 type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toReschedulePayload> | ReturnType<typeof toUpdatePayload> };
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 type MonthDay = { date: Date; key: string; events: EventRecord[] };
+type MonthSwipe = { identifier: number; startX: number; startY: number; width: number };
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
 const SUCCESS_STATUS_DURATION_MS = 4_000;
@@ -163,7 +164,6 @@ export default function CalendarPage() {
   const calendarById = useMemo(() => new Map(calendars.map((calendar) => [calendar.id, calendar])), [calendars]);
   const calendarEvents = useMemo(() => events.map((event) => toCalendarEvent(event, calendarById.get(event.calendarId))), [events, calendarById]);
   const showMobileMonth = phoneCalendarLayout && view === "dayGridMonth";
-  const mobileMonthDays = useMemo(() => monthDays(miniCalendarDate, events), [miniCalendarDate, events]);
 
   const invalidateEvents = () => void queryClient.invalidateQueries({ queryKey: ["events"] });
   useEffect(() => {
@@ -339,9 +339,9 @@ export default function CalendarPage() {
     {persistentSidebar && <aside className="calendar-sidebar is-open" aria-label="Calendar filters"><CalendarSidebar showClose={false} visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onRefresh={refreshSelectedCalendars} refreshDisabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} refreshing={refreshMutation.isPending} onClose={() => undefined} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); }} /></aside>}
     {surface.kind === "filters" && compactLayout && <SurfaceSheet className="calendar-sidebar" labelledBy="calendar-filters-title" onClose={() => setSurface({ kind: "none" })}><CalendarSidebar visibleDate={miniCalendarDate} calendars={calendars} selected={selectedCalendarIds} onToggle={toggleCalendar} onCreate={() => openCreate()} onRefresh={refreshSelectedCalendars} refreshDisabled={refreshMutation.isPending || !sortedSelectedCalendarIds.length} refreshing={refreshMutation.isPending} onClose={() => setSurface({ kind: "none" })} onJumpToDate={(date) => { calendarRef.current?.getApi().gotoDate(date); setSurface({ kind: "none" }); }} /></SurfaceSheet>}
     <main className="calendar-main" inert={sheetOpen} aria-hidden={sheetOpen || undefined}>
-      <div className="calendar-toolbar">
-        <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><span className="date-title" aria-live="polite">{calendarRef.current?.getApi().view.title ?? "Calendar"}</span></div>
-        <div className="toolbar-actions"><div className="toolbar-scroll-controls">{!persistentSidebar && <><button className="button button-primary calendar-create-button" onClick={() => openCreate()} aria-label="New event" title="New event"><Plus size={16} /><span>New event</span></button><button className="button button-outline calendar-filter-button" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars" title="Choose calendars"><CalendarDays size={17} /><span className="calendar-filter-label">Calendars</span></button></>}</div>{usingCalendarMocks && <span className="mock-data-indicator" role="status">Mock data</span>}{phoneCalendarLayout || !narrowCalendarLayout ? <div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div> : <label className="compact-view-picker"><span className="visually-hidden">Calendar view</span><select value={view} onChange={(event) => changeView(event.target.value as ViewName)}>{VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}</div>
+      <div className={`calendar-toolbar ${showMobileMonth ? "is-mobile-month-toolbar" : ""}`}>
+        {!showMobileMonth && <div className="toolbar-primary"><button className="button button-outline today-button" onClick={() => navigate("today")}>Today</button><div className="nav-arrows"><button className="icon-button bordered" onClick={() => navigate("prev")} aria-label="Previous period"><ChevronLeft size={19} /></button><button className="icon-button bordered" onClick={() => navigate("next")} aria-label="Next period"><ChevronRight size={19} /></button></div><span className="date-title" aria-live="polite">{calendarRef.current?.getApi().view.title ?? "Calendar"}</span></div>}
+        <div className="toolbar-actions">{!showMobileMonth && <div className="toolbar-scroll-controls">{!persistentSidebar && <><button className="button button-primary calendar-create-button" onClick={() => openCreate()} aria-label="New event" title="New event"><Plus size={16} /><span>New event</span></button><button className="button button-outline calendar-filter-button" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars" title="Choose calendars"><CalendarDays size={17} /><span className="calendar-filter-label">Calendars</span></button></>}</div>}{usingCalendarMocks && !showMobileMonth && <span className="mock-data-indicator" role="status">Mock data</span>}{phoneCalendarLayout || !narrowCalendarLayout ? <div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div> : <label className="compact-view-picker"><span className="visually-hidden">Calendar view</span><select value={view} onChange={(event) => changeView(event.target.value as ViewName)}>{VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}</div>
       </div>
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
       {visibleEventStatus && <div className={`event-status-strip event-status-row event-status-row--${visibleEventStatus.kind}`} role={visibleEventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{visibleEventStatus.label}</span>{(visibleEventStatus.kind === "failed" || visibleEventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{visibleEventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}
@@ -349,7 +349,7 @@ export default function CalendarPage() {
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className={`calendar-canvas-wrap ${narrowCalendarLayout && !phoneCalendarLayout && view === "timeGridWeek" ? "is-narrow-week" : ""} ${phoneCalendarLayout && view === "timeGridWeek" ? "is-phone-week" : ""} ${showMobileMonth ? "has-mobile-month" : ""}`}>
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
-        {showMobileMonth && <MobileMonth visibleDate={miniCalendarDate} days={mobileMonthDays} calendars={calendarById} onNavigate={navigate} onSelectDay={(date) => { calendarRef.current?.getApi().gotoDate(date); changeView("timeGridDay"); }} onSelectEvent={(event) => setSurface({ kind: "event", event })} onCreate={() => openCreate()} onFilters={() => setSurface({ kind: "filters" })} />}
+        {showMobileMonth && <MobileMonth visibleDate={miniCalendarDate} events={events} calendars={calendarById} onNavigate={navigate} onSelectDay={(date) => { calendarRef.current?.getApi().gotoDate(date); changeView("timeGridDay"); }} onSelectEvent={(event) => setSurface({ kind: "event", event })} onCreate={() => openCreate()} onFilters={() => setSurface({ kind: "filters" })} />}
         <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={phoneCalendarLayout && view === "timeGridWeek" ? "mobileThreeDay" : view} initialDate={usingCalendarMocks ? "2026-08-25" : undefined} firstDay={1} scrollTime={initialScrollTime} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator slotEventOverlap={false} dayMaxEventRows={3} moreLinkClick="popover" views={{ mobileThreeDay: { type: "timeGrid", duration: { days: 3 } } }} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => { setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() }); setMiniCalendarDate(arg.view.calendar.getDate()); }} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
@@ -470,22 +470,81 @@ export function shouldShowDetailedEventContent(start: Date | null, end: Date | n
   return !allDay && Boolean(start && end && end.getTime() - start.getTime() >= 60 * 60 * 1000);
 }
 
-function MobileMonth({ visibleDate, days, calendars, onNavigate, onSelectDay, onSelectEvent, onCreate, onFilters }: { visibleDate: Date; days: MonthDay[]; calendars: Map<string, CalendarRecord>; onNavigate: (direction: "prev" | "next" | "today") => void; onSelectDay: (date: Date) => void; onSelectEvent: (event: EventRecord) => void; onCreate: () => void; onFilters: () => void }) {
+function addMonths(date: Date, amount: number) {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
+}
+
+function MobileMonthGrid({ visibleDate, days, calendars, todayKey, onSelectDay, onSelectEvent, hidden = false }: { visibleDate: Date; days: MonthDay[]; calendars: Map<string, CalendarRecord>; todayKey: string; onSelectDay: (date: Date) => void; onSelectEvent: (event: EventRecord) => void; hidden?: boolean }) {
+  return <div className="mobile-month-grid" aria-hidden={hidden || undefined} inert={hidden || undefined}>{Array.from({ length: 6 }, (_, row) => <div className="mobile-month-row" key={row}>{days.slice(row * 7, row * 7 + 7).map((day) => {
+    const inMonth = day.date.getMonth() === visibleDate.getMonth();
+    const visibleEvents = day.events.slice(0, MOBILE_MONTH_EVENT_LIMIT);
+    const overflow = day.events.length - visibleEvents.length;
+    if (!inMonth) return <div className="mobile-month-day is-outside" key={day.key} aria-hidden="true" />;
+    const dateLabel = new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(day.date);
+    return <div className={`mobile-month-day ${day.key === todayKey ? "is-today" : ""}`} key={day.key} role="gridcell" aria-label={`${dateLabel}${day.events.length ? `, ${day.events.length} events` : ""}`}><button type="button" className="mobile-month-day-number" onClick={() => onSelectDay(day.date)} aria-label={`Open ${dateLabel}`}>{day.date.getDate()}</button>{visibleEvents.map((event) => <button type="button" key={`${event.calendarId}:${event.id}`} className="mobile-month-event" style={{ "--event-color": calendars.get(event.calendarId)?.color ?? "#4762ee" } as React.CSSProperties} onClick={() => onSelectEvent(event)} title={event.title || "Untitled event"}>{event.title || "Untitled event"}</button>)}{overflow > 0 && <button type="button" className="mobile-month-more" onClick={() => onSelectDay(day.date)} aria-label={`Open ${overflow} more events on ${dateLabel}`}>+{overflow}</button>}</div>;
+  })}</div>)}</div>;
+}
+
+function MobileMonth({ visibleDate, events, calendars, onNavigate, onSelectDay, onSelectEvent, onCreate, onFilters }: { visibleDate: Date; events: EventRecord[]; calendars: Map<string, CalendarRecord>; onNavigate: (direction: "prev" | "next" | "today") => void; onSelectDay: (date: Date) => void; onSelectEvent: (event: EventRecord) => void; onCreate: () => void; onFilters: () => void }) {
   const monthLabel = new Intl.DateTimeFormat(undefined, { month: "long" }).format(visibleDate);
   const year = new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(visibleDate);
   const todayKey = calendarDayKey(new Date());
+  const months = useMemo(() => [-1, 0, 1].map((offset) => addMonths(visibleDate, offset)), [visibleDate]);
+  const monthGrids = useMemo(() => months.map((month) => monthDays(month, events)), [months, events]);
+  const monthSwipe = useRef<MonthSwipe | null>(null);
+  const suppressMonthClick = useRef(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<"prev" | "next" | null>(null);
+  const startMonthSwipe = (event: TouchEvent<HTMLDivElement>) => {
+    monthSwipe.current = null;
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    monthSwipe.current = { identifier: touch.identifier, startX: touch.clientX, startY: touch.clientY, width: event.currentTarget.getBoundingClientRect().width };
+    setIsDragging(true);
+  };
+  const moveMonthSwipe = (event: TouchEvent<HTMLDivElement>) => {
+    const gesture = monthSwipe.current;
+    if (!gesture || event.touches.length !== 1) return;
+    const touch = Array.from(event.touches).find((candidate) => candidate.identifier === gesture.identifier);
+    if (!touch) return;
+    setSwipeOffset(Math.max(-gesture.width, Math.min(gesture.width, touch.clientX - gesture.startX)));
+  };
+  const completeMonthSwipe = (event: TouchEvent<HTMLDivElement>) => {
+    const gesture = monthSwipe.current;
+    monthSwipe.current = null;
+    setIsDragging(false);
+    if (!gesture || event.touches.length !== 0) { setSwipeOffset(0); return; }
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === gesture.identifier);
+    if (!touch) { setSwipeOffset(0); return; }
+    const horizontalDistance = touch.clientX - gesture.startX;
+    const verticalDistance = touch.clientY - gesture.startY;
+    if (Math.abs(horizontalDistance) < 48 || Math.abs(horizontalDistance) <= Math.abs(verticalDistance)) { setSwipeOffset(0); return; }
+    suppressMonthClick.current = true;
+    const direction = horizontalDistance > 0 ? "prev" : "next";
+    setPendingNavigation(direction);
+    setSwipeOffset(direction === "prev" ? gesture.width : -gesture.width);
+  };
+  const cancelMonthSwipe = () => { monthSwipe.current = null; setIsDragging(false); setSwipeOffset(0); };
+  const preventMonthClickAfterSwipe = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressMonthClick.current) return;
+    suppressMonthClick.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const finishMonthSwipe = (event: React.TransitionEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || event.propertyName !== "transform" || !pendingNavigation) return;
+    onNavigate(pendingNavigation);
+    setPendingNavigation(null);
+    setIsDragging(true);
+    setSwipeOffset(0);
+    requestAnimationFrame(() => setIsDragging(false));
+  };
   return <section className="mobile-month" aria-label={`${monthLabel} ${year}`}>
-    <header className="mobile-month-header"><button className="button button-outline" onClick={() => onNavigate("prev")} aria-label="Previous month"><ChevronLeft size={19} /> {year}</button><div className="mobile-month-actions"><button className="icon-button bordered" onClick={onFilters} aria-label="Choose calendars"><CalendarDays size={18} /></button><button className="icon-button bordered" onClick={onCreate} aria-label="New event"><Plus size={20} /></button></div></header>
+    <header className="mobile-month-header"><div className="mobile-month-navigation"><button className="button button-outline" onClick={() => onNavigate("prev")} aria-label="Previous month"><ChevronLeft size={19} /> {year}</button><button type="button" className="icon-button bordered" onClick={() => onNavigate("next")} aria-label="Next month"><ChevronRight size={19} /></button></div><div className="mobile-month-actions"><button className="icon-button bordered" onClick={onFilters} aria-label="Choose calendars"><CalendarDays size={18} /></button><button className="icon-button bordered" onClick={onCreate} aria-label="New event"><Plus size={20} /></button></div></header>
     <h1>{monthLabel}</h1><div className="mobile-month-weekdays">{["M", "T", "W", "T", "F", "S", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div>
-    <div className="mobile-month-grid">{Array.from({ length: 6 }, (_, row) => <div className="mobile-month-row" key={row}>{days.slice(row * 7, row * 7 + 7).map((day) => {
-      const inMonth = day.date.getMonth() === visibleDate.getMonth();
-      const visibleEvents = day.events.slice(0, MOBILE_MONTH_EVENT_LIMIT);
-      const overflow = day.events.length - visibleEvents.length;
-      if (!inMonth) return <div className="mobile-month-day is-outside" key={day.key} aria-hidden="true" />;
-      const dateLabel = new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(day.date);
-      return <div className={`mobile-month-day ${day.key === todayKey ? "is-today" : ""}`} key={day.key} role="gridcell" aria-label={`${dateLabel}${day.events.length ? `, ${day.events.length} events` : ""}`}><button type="button" className="mobile-month-day-number" onClick={() => onSelectDay(day.date)} aria-label={`Open ${dateLabel}`}>{day.date.getDate()}</button>{visibleEvents.map((event) => <button type="button" key={`${event.calendarId}:${event.id}`} className="mobile-month-event" style={{ "--event-color": calendars.get(event.calendarId)?.color ?? "#4762ee" } as React.CSSProperties} onClick={() => onSelectEvent(event)} title={event.title || "Untitled event"}>{event.title || "Untitled event"}</button>)}{overflow > 0 && <button type="button" className="mobile-month-more" onClick={() => onSelectDay(day.date)} aria-label={`Open ${overflow} more events on ${dateLabel}`}>+{overflow}</button>}</div>;
-    })}</div>)}</div>
-    <footer className="mobile-month-footer"><button className="button button-outline" onClick={() => onNavigate("today")}>Today</button><button className="mobile-month-next" onClick={() => onNavigate("next")}>Next month <ChevronRight size={18} /></button><button className="button button-outline" onClick={onFilters}>Calendars</button></footer>
+    <div className="mobile-month-pager" onTouchStart={startMonthSwipe} onTouchMove={moveMonthSwipe} onTouchEnd={completeMonthSwipe} onTouchCancel={cancelMonthSwipe} onClickCapture={preventMonthClickAfterSwipe}><div className={`mobile-month-track ${isDragging ? "is-dragging" : ""}`} style={{ "--swipe-offset": `${swipeOffset}px` } as React.CSSProperties} onTransitionEnd={finishMonthSwipe}>{months.map((month, index) => <MobileMonthGrid key={`${month.getFullYear()}-${month.getMonth()}`} visibleDate={month} days={monthGrids[index]} calendars={calendars} todayKey={todayKey} onSelectDay={onSelectDay} onSelectEvent={onSelectEvent} hidden={index !== 1} />)}</div></div>
+    <footer className="mobile-month-footer"><button className="button button-outline" onClick={() => onNavigate("today")}>Today</button></footer>
   </section>;
 }
 

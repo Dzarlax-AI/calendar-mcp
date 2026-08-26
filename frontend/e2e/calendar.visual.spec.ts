@@ -86,7 +86,17 @@ test("toolbar actions, sidebar Manage menu, and every view selector stay reachab
       await expect(page.locator(".calendar-canvas-wrap")).toHaveClass(/is-phone-week/);
       await expect(page.locator(".fc-col-header-cell")).toHaveCount(3);
     }
-    if (name === "Month") await expect(page.locator(".mobile-month")).toBeVisible();
+    if (name === "Month") {
+      await expect(page.locator(".mobile-month")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Today", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "New event", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Choose calendars", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("heading", { name: "August", exact: true })).toHaveCount(1);
+      const nextMonth = page.getByRole("button", { name: "Next month", exact: true });
+      await expect(nextMonth).toHaveCount(1);
+      await nextMonth.click();
+      await expect(page.getByRole("heading", { name: "September", exact: true })).toBeVisible();
+    }
   }
   await page.getByRole("button", { name: "Choose calendars" }).click();
   const sidebar = page.getByRole("dialog", { name: "Calendar" });
@@ -97,6 +107,20 @@ test("toolbar actions, sidebar Manage menu, and every view selector stay reachab
   await expect(manageMenu.getByRole("menuitem", { name: "Sync activity" })).toHaveAttribute("href", "/rules");
   await expect(manageMenu.getByRole("menuitem", { name: "Runs" })).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
+});
+
+test("phone Month pager follows a horizontal swipe", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openCalendar(page);
+  await page.getByRole("button", { name: "Month", exact: true }).click();
+  const pager = page.locator(".mobile-month-pager");
+  await pager.evaluate((element) => {
+    const touch = (x: number, y: number) => new Touch({ identifier: 7, target: element, clientX: x, clientY: y });
+    element.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(320, 260)], changedTouches: [touch(320, 260)] }));
+    element.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, touches: [touch(72, 264)], changedTouches: [touch(72, 264)] }));
+    element.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(72, 264)] }));
+  });
+  await expect(page.getByRole("heading", { name: "September", exact: true })).toBeVisible({ timeout: 1_000 });
 });
 
 test("toolbar keeps phone actions compact at 731px", async ({ page }) => {
