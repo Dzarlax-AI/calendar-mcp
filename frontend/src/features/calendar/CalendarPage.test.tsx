@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CalendarSidebar, ManageMenu, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
-import type { CalendarRecord } from "../../lib/types";
+import { CalendarSidebar, ManageMenu, calendarDayKey, eventDayKey, monthDays, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
+import type { CalendarRecord, EventRecord } from "../../lib/types";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -112,5 +112,25 @@ describe("calendar event density", () => {
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-26T10:00:00Z"), false)).toBe(true);
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-26T09:30:00Z"), false)).toBe(false);
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-27T09:00:00Z"), true)).toBe(false);
+  });
+});
+
+describe("mobile month data", () => {
+  const timedEvent: EventRecord = { id: "review", calendarId: "google:primary", title: "Review", start: "2026-08-26T08:30:00Z", end: "2026-08-26T09:00:00Z", allDay: false, timezone: "Europe/Belgrade" };
+  const allDayEvent: EventRecord = { id: "holiday", calendarId: "google:primary", title: "Holiday", start: "2026-08-27", end: "2026-08-29", allDay: true };
+
+  it("uses the event timezone for timed events and preserves all-day dates", () => {
+    expect(calendarDayKey(new Date("2026-08-26T08:30:00Z"), "Europe/Belgrade")).toBe("2026-08-26");
+    expect(eventDayKey(timedEvent)).toBe("2026-08-26");
+    expect(eventDayKey(allDayEvent)).toBe("2026-08-27");
+  });
+
+  it("builds a Monday-first six-week grid and groups events into the visible month", () => {
+    const days = monthDays(new Date(2026, 7, 25), [timedEvent, allDayEvent]);
+    expect(days).toHaveLength(42);
+    expect(days[0].key).toBe("2026-07-27");
+    expect(days.find((day) => day.key === "2026-08-26")?.events).toEqual([timedEvent]);
+    expect(days.find((day) => day.key === "2026-08-27")?.events).toEqual([allDayEvent]);
+    expect(days.find((day) => day.key === "2026-08-28")?.events).toEqual([allDayEvent]);
   });
 });
