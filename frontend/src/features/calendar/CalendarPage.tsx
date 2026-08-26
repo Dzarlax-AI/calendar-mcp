@@ -29,6 +29,7 @@ type Surface =
 type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toReschedulePayload> | ReturnType<typeof toUpdatePayload> };
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 type MonthDay = { date: Date; key: string; events: EventRecord[] };
+type MonthSwipe = { identifier: number; startX: number; startY: number };
 
 const CALENDAR_VIEW_STORAGE_KEY = "calendar:view";
 const SUCCESS_STATUS_DURATION_MS = 4_000;
@@ -474,23 +475,37 @@ function MobileMonth({ visibleDate, days, calendars, onNavigate, onSelectDay, on
   const monthLabel = new Intl.DateTimeFormat(undefined, { month: "long" }).format(visibleDate);
   const year = new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(visibleDate);
   const todayKey = calendarDayKey(new Date());
-  const swipeStartX = useRef<number | null>(null);
+  const monthSwipe = useRef<MonthSwipe | null>(null);
+  const suppressMonthClick = useRef(false);
   const startMonthSwipe = (event: TouchEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button") || event.touches.length !== 1) return;
-    swipeStartX.current = event.touches[0].clientX;
+    monthSwipe.current = null;
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    monthSwipe.current = { identifier: touch.identifier, startX: touch.clientX, startY: touch.clientY };
   };
   const completeMonthSwipe = (event: TouchEvent<HTMLDivElement>) => {
-    const startX = swipeStartX.current;
-    swipeStartX.current = null;
-    if (startX === null || event.changedTouches.length !== 1) return;
-    const distance = event.changedTouches[0].clientX - startX;
-    if (Math.abs(distance) < 48) return;
-    onNavigate(distance > 0 ? "prev" : "next");
+    const gesture = monthSwipe.current;
+    monthSwipe.current = null;
+    if (!gesture || event.touches.length !== 0) return;
+    const touch = Array.from(event.changedTouches).find((candidate) => candidate.identifier === gesture.identifier);
+    if (!touch) return;
+    const horizontalDistance = touch.clientX - gesture.startX;
+    const verticalDistance = touch.clientY - gesture.startY;
+    if (Math.abs(horizontalDistance) < 48 || Math.abs(horizontalDistance) <= Math.abs(verticalDistance)) return;
+    suppressMonthClick.current = true;
+    onNavigate(horizontalDistance > 0 ? "prev" : "next");
+  };
+  const cancelMonthSwipe = () => { monthSwipe.current = null; };
+  const preventMonthClickAfterSwipe = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressMonthClick.current) return;
+    suppressMonthClick.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   };
   return <section className="mobile-month" aria-label={`${monthLabel} ${year}`}>
-    <header className="mobile-month-header"><button className="button button-outline" onClick={() => onNavigate("prev")} aria-label="Previous month"><ChevronLeft size={19} /> {year}</button><div className="mobile-month-actions"><button className="icon-button bordered" onClick={onFilters} aria-label="Choose calendars"><CalendarDays size={18} /></button><button className="icon-button bordered" onClick={onCreate} aria-label="New event"><Plus size={20} /></button></div></header>
+    <header className="mobile-month-header"><div className="mobile-month-navigation"><button className="button button-outline" onClick={() => onNavigate("prev")} aria-label="Previous month"><ChevronLeft size={19} /> {year}</button><button type="button" className="icon-button bordered" onClick={() => onNavigate("next")} aria-label="Next month"><ChevronRight size={19} /></button></div><div className="mobile-month-actions"><button className="icon-button bordered" onClick={onFilters} aria-label="Choose calendars"><CalendarDays size={18} /></button><button className="icon-button bordered" onClick={onCreate} aria-label="New event"><Plus size={20} /></button></div></header>
     <h1>{monthLabel}</h1><div className="mobile-month-weekdays">{["M", "T", "W", "T", "F", "S", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div>
-    <div className="mobile-month-grid" onTouchStart={startMonthSwipe} onTouchEnd={completeMonthSwipe}>{Array.from({ length: 6 }, (_, row) => <div className="mobile-month-row" key={row}>{days.slice(row * 7, row * 7 + 7).map((day) => {
+    <div className="mobile-month-grid" onTouchStart={startMonthSwipe} onTouchEnd={completeMonthSwipe} onTouchCancel={cancelMonthSwipe} onClickCapture={preventMonthClickAfterSwipe}>{Array.from({ length: 6 }, (_, row) => <div className="mobile-month-row" key={row}>{days.slice(row * 7, row * 7 + 7).map((day) => {
       const inMonth = day.date.getMonth() === visibleDate.getMonth();
       const visibleEvents = day.events.slice(0, MOBILE_MONTH_EVENT_LIMIT);
       const overflow = day.events.length - visibleEvents.length;
