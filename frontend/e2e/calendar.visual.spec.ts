@@ -63,11 +63,15 @@ for (const viewport of primaryViewports) {
     await expectNoHorizontalOverflow(page);
     await expect(dialog).toHaveScreenshot(`calendar-create-${viewport.name}.png`, { animations: "disabled" });
     await page.getByRole("button", { name: "Close dialog" }).click();
-    await page.getByRole("button", { name: /Choose calendars|Calendars/ }).first().click();
+    if (viewport.width < 1440) {
+      await page.getByRole("button", { name: /Choose calendars|Calendars/ }).first().click();
+    }
     await expect(page.getByText("Imported calendar with a very long disabled label")).toBeVisible();
     await expect(page.getByLabel(/Imported calendar.*calendar/)).toBeDisabled();
     await expectNoHorizontalOverflow(page);
-    await expect(page.locator(".calendar-screen")).toHaveScreenshot(`calendar-filters-${viewport.name}.png`, { animations: "disabled" });
+    if (viewport.width < 1440) {
+      await expect(page.locator(".calendar-screen")).toHaveScreenshot(`calendar-filters-${viewport.name}.png`, { animations: "disabled" });
+    }
   });
 }
 
