@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CalendarSidebar, ManageMenu, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
-import type { CalendarRecord } from "../../lib/types";
+import { CalendarSidebar, ManageMenu, calendarDayKey, eventDayKey, monthDays, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
+import type { CalendarRecord, EventRecord } from "../../lib/types";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -112,5 +112,30 @@ describe("calendar event density", () => {
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-26T10:00:00Z"), false)).toBe(true);
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-26T09:30:00Z"), false)).toBe(false);
     expect(shouldShowDetailedEventContent(new Date("2026-08-26T09:00:00Z"), new Date("2026-08-27T09:00:00Z"), true)).toBe(false);
+  });
+});
+
+describe("mobile month data", () => {
+  const timedEvent: EventRecord = { id: "review", calendarId: "google:primary", title: "Review", start: "2026-08-27T06:30:00Z", end: "2026-08-27T07:00:00Z", allDay: false, timezone: "America/Los_Angeles" };
+  const allDayEvent: EventRecord = { id: "holiday", calendarId: "google:primary", title: "Holiday", start: "2026-08-27", end: "2026-08-29", allDay: true };
+  const crossingStart = new Date(2026, 7, 26, 23, 30);
+  const crossingEnd = new Date(2026, 7, 27, 1, 30);
+  const crossingEvent: EventRecord = { id: "overnight", calendarId: "google:primary", title: "Overnight work", start: crossingStart.toISOString(), end: crossingEnd.toISOString(), allDay: false, timezone: "America/Los_Angeles" };
+
+  it("uses the display timezone for timed events and preserves all-day dates", () => {
+    expect(calendarDayKey(new Date(timedEvent.start), "America/Los_Angeles")).toBe("2026-08-26");
+    expect(eventDayKey(timedEvent)).toBe(calendarDayKey(new Date(timedEvent.start)));
+    expect(eventDayKey(allDayEvent)).toBe("2026-08-27");
+  });
+
+  it("builds a Monday-first six-week grid and groups all affected event days", () => {
+    const days = monthDays(new Date(2026, 7, 25), [timedEvent, allDayEvent, crossingEvent]);
+    expect(days).toHaveLength(42);
+    expect(days[0].key).toBe("2026-07-27");
+    expect(days.find((day) => day.key === calendarDayKey(new Date(timedEvent.start)))?.events).toContain(timedEvent);
+    expect(days.find((day) => day.key === "2026-08-27")?.events).toContain(allDayEvent);
+    expect(days.find((day) => day.key === "2026-08-28")?.events).toEqual([allDayEvent]);
+    expect(days.find((day) => day.key === calendarDayKey(crossingStart))?.events).toContain(crossingEvent);
+    expect(days.find((day) => day.key === calendarDayKey(crossingEnd))?.events).toContain(crossingEvent);
   });
 });

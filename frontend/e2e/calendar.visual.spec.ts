@@ -82,6 +82,11 @@ test("toolbar actions, sidebar Manage menu, and every view selector stay reachab
     const viewButton = page.getByRole("button", { name, exact: true });
     await viewButton.click();
     await expect(viewButton).toHaveAttribute("aria-pressed", "true");
+    if (name === "Week") {
+      await expect(page.locator(".calendar-canvas-wrap")).toHaveClass(/is-phone-week/);
+      await expect(page.locator(".fc-col-header-cell")).toHaveCount(3);
+    }
+    if (name === "Month") await expect(page.locator(".mobile-month")).toBeVisible();
   }
   await page.getByRole("button", { name: "Choose calendars" }).click();
   const sidebar = page.getByRole("dialog", { name: "Calendar" });

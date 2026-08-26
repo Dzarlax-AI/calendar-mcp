@@ -440,4 +440,39 @@ a { color: inherit; text-decoration: none; }
   .calendar-create-button span, .calendar-filter-label { display: none; }
   .toolbar-actions .view-switcher { grid-column: 1 / -1; grid-row: 2; display: flex; width: 100%; }
   .toolbar-actions .view-switcher button { flex: 1 1 0; min-width: 0; height: 38px; }
+
+  /* A purpose-built month keeps the complete month visible without a blank canvas below it. */
+  .calendar-canvas-wrap.has-mobile-month { overflow-y: auto; background: #fff; }
+  .calendar-canvas-wrap.has-mobile-month > .fc { display: none; }
+  .mobile-month { display: flex; min-height: 100%; flex-direction: column; color: #151d2b; background: #fff; }
+  .mobile-month-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 13px; }
+  .mobile-month-header .button { min-height: 42px; border-radius: 999px; padding-inline: 13px; font-size: 16px; font-weight: 650; }
+  .mobile-month-actions { display: flex; gap: 8px; }
+  .mobile-month-actions .icon-button { width: 42px; height: 42px; border-radius: 50%; }
+  .mobile-month > h1 { margin: 5px 20px 20px; font-size: 34px; line-height: 1; letter-spacing: -.045em; }
+  .mobile-month-weekdays, .mobile-month-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .mobile-month-weekdays { padding: 0 8px 8px; border-bottom: 1px solid var(--line); color: #596171; font-size: 11px; font-weight: 750; text-align: center; }
+  .mobile-month-grid { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+  .mobile-month-row { min-height: 94px; flex: 1 0 94px; border-bottom: 1px solid #e8ebf0; }
+  .mobile-month-day { position: relative; display: flex; min-width: 0; flex: 1 1 0; flex-direction: column; gap: 3px; padding: 7px 3px 5px; overflow: hidden; }
+  .mobile-month-day + .mobile-month-day { border-left: 1px solid rgba(231, 234, 240, .72); }
+  .mobile-month-day.is-outside { background: #fbfcfd; }
+  .mobile-month-day-number { width: 27px; min-height: 27px; align-self: center; border: 0; border-radius: 50%; background: transparent; color: #202838; font-size: 17px; font-weight: 650; line-height: 27px; }
+  .mobile-month-day-number:hover, .mobile-month-day-number:focus-visible { background: #eff1ff; color: var(--accent); outline: 0; }
+  .mobile-month-day.is-today .mobile-month-day-number { background: #ef4655; color: #fff; }
+  .mobile-month-event, .mobile-month-more { width: 100%; min-width: 0; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--event-color, #4762ee) 13%, white); color: #38465b; font-size: 10px; font-weight: 650; line-height: 16px; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-month-event { border-left: 2px solid var(--event-color, #4762ee); padding: 0 3px; }
+  .mobile-month-event:hover, .mobile-month-event:focus-visible { background: color-mix(in srgb, var(--event-color, #4762ee) 23%, white); outline: 0; }
+  .mobile-month-more { padding: 0 4px; background: transparent; color: #657087; font-weight: 700; }
+  .mobile-month-more:hover, .mobile-month-more:focus-visible { color: var(--accent); outline: 0; }
+  .mobile-month-footer { position: sticky; bottom: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 12px 15px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid rgba(223, 227, 235, .92); background: rgba(255, 255, 255, .94); backdrop-filter: blur(10px); }
+  .mobile-month-footer .button { min-height: 39px; border-radius: 999px; }
+  .mobile-month-next { display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: 0; background: transparent; color: #39455b; font-size: 12px; font-weight: 700; }
+
+  /* The phone Week view is a real three-day time grid, so it should use the available width. */
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-slot { height: 48px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-col-header-cell-cushion { padding: 9px 2px; font-size: 11px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-axis-cushion { padding-inline: 4px; font-size: 10px; }
+  .calendar-canvas-wrap.is-phone-week .fc .fc-timegrid-event { padding: 3px 4px 4px; }
+  .calendar-canvas-wrap.is-phone-week .fc-event-location { display: none; }
 }

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation plan: responsive calendar views</title>
+  <style>
+    :root { color:#1d2739; background:#f4f6fa; font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.5; }
+    body { margin:0; } main { max-width:980px; margin:0 auto; padding:32px 20px 56px; } section { margin:15px 0; padding:20px; border:1px solid #dfe4ee; border-radius:12px; background:#fff; box-shadow:0 1px 2px rgba(30,42,70,.03); } h1 { margin:0 0 8px; font-size:30px; letter-spacing:-.035em; } h2 { margin:0 0 10px; font-size:18px; } h3 { margin:14px 0 6px; font-size:14px; } p, li { color:#455167; } code { padding:2px 5px; border-radius:4px; background:#f0f2f7; color:#273450; } .badge { display:inline-block; padding:4px 9px; border-radius:999px; background:#e9edff; color:#4052c8; font-size:12px; font-weight:750; } .callout { border-left:4px solid #d8911d; } .risk { border-left:4px solid #c63d55; } table { width:100%; border-collapse:collapse; font-size:14px; } th, td { padding:9px; border-bottom:1px solid #e6e9f0; text-align:left; vertical-align:top; } th { color:#667187; font-size:12px; } .approval { border-left:4px solid #4456ee; background:#f7f8ff; }
+  </style>
+</head>
+<body>
+<main>
+  <span class="badge">Implemented locally — not committed or deployed</span>
+  <h1>Responsive calendar views</h1>
+  <p>Port the accepted HTML direction into the existing React/FullCalendar client, with mobile Week and Month treated as first-class calendar surfaces rather than squeezed desktop controls.</p>
+
+  <section>
+    <h2>Current architecture</h2>
+    <p><code>frontend/src/features/calendar/CalendarPage.tsx</code> owns visible date, selected sources, queries, event mutation, filters, drawers, and the FullCalendar ref. It currently persists one of <code>timeGridDay</code>, <code>timeGridWeek</code>, <code>dayGridMonth</code>, or <code>listWeek</code> in <code>calendar:view</code>. On phones, FullCalendar remains the single canvas; Week gets an 820 px minimum width and horizontal scrolling below 760 px.</p>
+    <p><code>frontend/src/styles/app.css</code> provides the responsive toolbar, FullCalendar event styling, sidebar-sheet behavior, and the 1440 px persistent-sidebar threshold. Existing unit coverage asserts the sidebar threshold and event-density helper in <code>CalendarPage.test.tsx</code>.</p>
+  </section>
+
+  <section>
+    <h2>Desired behavior and accepted direction</h2>
+    <ul>
+      <li><strong>Desktop (≥1440 px):</strong> retain the persistent source sidebar and existing calendar behavior.</li>
+      <li><strong>Laptop/tablet:</strong> retain an overlay calendar filter, not a compressed permanent sidebar.</li>
+      <li><strong>Phone Schedule:</strong> keep a readable selected-day agenda as the default view.</li>
+      <li><strong>Phone Week:</strong> show a genuine, readable three-day time grid around the selected day; changing date keeps the same calendar context.</li>
+      <li><strong>Phone Month:</strong> use a full-height month surface inspired by the supplied reference: large month title, weekday row, six rows of days, compact event pills, explicit <code>+N more</code>, and bottom controls. No empty area under a tiny grid.</li>
+      <li>Filters remain an accessible sheet; event click, create, edit, delete, refresh, and provider permissions keep their existing behavior.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation boundary</h2>
+    <p>This is a frontend-only responsive presentation change. It will reuse the existing event query, calendar selection, mutation APIs, event capability checks, and mock data. No backend endpoint, database migration, OAuth scope, provider behavior, real-calendar write semantics, or deployment configuration will change.</p>
+    <p>Mobile Month will be a small React presentation component fed by the already-normalized <code>EventRecord</code> collection and visible date. It will send date/event actions back through the existing <code>calendarRef</code> and surface state instead of creating a parallel source of truth.</p>
+  </section>
+
+  <section>
+    <h2>Model and cost allocation</h2>
+    <table>
+      <thead><tr><th>Workstream</th><th>Model</th><th>Allocation</th><th>Product/runtime cost</th></tr></thead>
+      <tbody>
+        <tr><td>Implementation, code review, tests, and browser QA</td><td>Primary Codex model</td><td>Own the React/CSS changes and verification end to end.</td><td>None: no model is added to the application or called at runtime.</td></tr>
+        <tr><td>Independent design checkpoint</td><td>GPT-5.6 SOL</td><td>Already used for the mobile-calendar critique; re-engage only if the first production rendering materially diverges from the approved Month/Week direction.</td><td>No product/runtime cost; bounded development-time review only.</td></tr>
+        <tr><td>Image generation / external design tooling</td><td>Not planned</td><td>The supplied reference, local prototype, and existing design system are sufficient.</td><td>Zero.</td></tr>
+      </tbody>
+    </table>
+    <p>There is deliberately no AI feature scope, inference budget, user-data transmission, or new vendor dependency in this implementation.</p>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <table>
+      <thead><tr><th>File</th><th>Change</th></tr></thead>
+      <tbody>
+        <tr><td><code>frontend/src/features/calendar/CalendarPage.tsx</code></td><td>Add responsive mobile view composition, calendar navigation hooks, and a Month component derived from current normalized events. Keep existing mutation and filter ownership.</td></tr>
+        <tr><td><code>frontend/src/features/calendar/CalendarPage.test.tsx</code></td><td>Cover view selection/defaults, month event grouping/overflow, and date/event callbacks with representative mock events.</td></tr>
+        <tr><td><code>frontend/src/styles/app.css</code></td><td>Add scoped phone-only Month/Week/Schedule styles; adjust FullCalendar phone rules without changing desktop sizing.</td></tr>
+        <tr><td><code>frontend/src/dev/calendarMockData.ts</code> (only if needed)</td><td>Add or reposition synthetic events so the dense Month and three-day Week states are exercised. No production data changes.</td></tr>
+        <tr><td><code>docs/ai-plans/2026-08-26-calendar-mobile-views-implementation.html</code></td><td>Record actual files, checks, limitations, and follow-ups after implementation.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Steps</h2>
+    <ol>
+      <li>Extract view/date helpers with explicit timezone-safe day boundaries from the existing event model; write focused tests before using them in Month.</li>
+      <li>Introduce phone-only rendering selection. Keep FullCalendar as the shared date/navigation authority and preserve the persisted view preference.</li>
+      <li>Implement the three-day Week grid using FullCalendar configuration/styles where possible; it must show time, readable event names, current/selected day, and event click/create selection.</li>
+      <li>Implement the dense Month component from normalized events: group by local day, cap visible pills per cell, expose an interactive <code>+N more</code>, navigate or open details on day/event action, and retain source colors.</li>
+      <li>Implement the phone header/bottom controls and filter sheet affordances without duplicating calendar/provider state.</li>
+      <li>Apply the smaller audit polish shared by all widths: robust current-day hierarchy, readable event truncation, and clear interactive more-links.</li>
+      <li>Run typecheck/tests/build and verify local synthetic-data paths in the browser at phone, laptop, and wide-desktop breakpoints.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>QA plan</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code></li>
+      <li><code>npm --prefix frontend test -- --runInBand</code> if supported; otherwise <code>npm --prefix frontend test</code></li>
+      <li><code>npm --prefix frontend run build</code></li>
+      <li>Start <code>npm --prefix frontend run dev:mocks</code> and manually check at 390×844, 768 px, 1280 px, and ≥1440 px.</li>
+      <li>On phone: default Schedule; change to Week and Month; navigate date; click a day; click an event; open/close filters; toggle a source; use <code>+N more</code>; invoke create. Confirm event content and selected sources stay consistent.</li>
+      <li>On wide desktop: persistent sidebar remains open by default; Week/Month/List controls, current-day style, event editing, and refresh continue to work.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation result — 2026-08-26</h2>
+    <ul>
+      <li><code>CalendarPage.tsx</code> now has display-timezone day-key helpers and a phone-only Month surface. It groups timed and all-day event spans across every affected calendar day in a Monday-first, six-week grid; keeps two compact, source-coloured event pills per day; exposes keyboard-reachable <code>+N</code>; and routes day, event, filter, create, Today, and next-month actions to the existing calendar and surface state.</li>
+      <li>Phone Week is now a FullCalendar custom <code>mobileThreeDay</code> time-grid view, while the persisted preference remains the standard Week value. The earlier 820 px horizontal canvas applies only to the 561–760 px layout, not phones.</li>
+      <li><code>app.css</code> adds scoped ≤560 px styles for a full-height Month grid, current-date emphasis, compact event affordances, a sticky bottom control row, and more legible phone Week slots. Desktop and tablet layout rules remain unchanged.</li>
+      <li><code>CalendarPage.test.tsx</code> adds coverage for timezone-aware timed events, all-day dates, Monday-first six-week Month construction, and event grouping.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks actually run</h2>
+    <ul>
+      <li><code>npm --prefix frontend run typecheck</code> — passed.</li>
+      <li><code>npm --prefix frontend test</code> — passed: 6 files, 40 tests.</li>
+      <li><code>npm --prefix frontend run build</code> — passed.</li>
+      <li>Local synthetic-data browser QA at 390×844: Month renders as a full six-week surface; Next month and Today work; an event opens the existing Event details dialog; Week renders three columns without horizontal overflow.</li>
+      <li>Browser QA at 768 px and 1280 px: calendar filters remain overlay-based rather than a compressed persistent sidebar. At 1440×960, the persistent calendar sidebar remains present and standard FullCalendar Month renders.</li>
+    </ul>
+    <p>Not exercised against real providers: this run used only <code>dev:mocks</code>, so no real calendar data was read or changed.</p>
+  </section>
+
+  <section class="risk">
+    <h2>Risks and edge cases</h2>
+    <ul>
+      <li>All-day, multi-day, recurring, timezone-boundary, and overlapping events must not be silently dropped by the mobile Month grouping.</li>
+      <li>Month overflow must be keyboard reachable and must not rely on color alone to identify an event.</li>
+      <li>A custom phone surface can drift from FullCalendar navigation if it owns its own date. The implementation must route every date change through the existing calendar API.</li>
+      <li>FullCalendar custom-view capabilities may not express the intended three-day Week cleanly. If inspection shows that limitation, use a small derived phone grid while keeping date/event authority in the existing page; do not weaken event mutation constraints.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <p>Revert the frontend files in this change set. No server-side state is created, so rollback restores the present FullCalendar-only responsive layout immediately.</p>
+  </section>
+
+  <section class="callout">
+    <h2>Open questions resolved for this scope</h2>
+    <ul><li>The supplied Month reference is the mobile visual target; it is an inspiration, not a pixel-for-pixel clone.</li><li>The implementation keeps a full Month mode because it was explicitly requested, despite the phone default being Schedule.</li><li>“Week” means the validated three-day readable time grid, not a seven-column horizontal-scroll heatmap.</li></ul>
+  </section>
+
+  <section class="approval">
+    <h2>Approval gate</h2>
+    <p><strong>Do not modify production React/CSS files until this plan is explicitly approved.</strong> Approval authorizes only the frontend scope above; it does not authorize commit, push, deployment, or changes to real calendar data.</p>
+  </section>
+</main>
+</body>
+</html>
