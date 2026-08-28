@@ -147,6 +147,9 @@ func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
 	if err != nil || parsed.Hostname() == "" {
 		return fmt.Errorf("NATIVE_APP_TOKEN requires a valid CALENDAR_PUBLIC_URL")
 	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("NATIVE_APP_TOKEN requires CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
+	}
 	isLoopback := parsed.Hostname() == "localhost"
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsLoopback() {
 		isLoopback = true

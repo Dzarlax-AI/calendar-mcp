@@ -132,6 +132,10 @@ func TestValidateRejectsUnsafeNativeAppTransport(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() accepted an external HTTP native API URL")
 	}
+	cfg.PublicURL = "ftp://localhost"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted a non-HTTP loopback native API URL")
+	}
 }
 
 func TestValidateRejectsNativeAppTokenWithoutPlatformStorage(t *testing.T) {
