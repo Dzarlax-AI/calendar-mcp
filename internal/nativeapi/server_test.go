@@ -112,3 +112,22 @@ func TestNativeAPIListsReadOnlyDataAndHasNoMutationRoutes(t *testing.T) {
 		t.Fatalf("mutation status = %d, want %d", got, http.StatusMethodNotAllowed)
 	}
 }
+
+func TestSortEventsByStartUsesInstantsAndPlacesAllDayFirstOnATie(t *testing.T) {
+	items := []calendar.EventV2{
+		{ID: "later", CalendarID: "google:primary", Start: calendar.EventTime{DateTime: "2026-08-22T09:00:00+02:00", TimeZone: "Europe/Belgrade"}},
+		{ID: "earlier", CalendarID: "google:primary", Start: calendar.EventTime{DateTime: "2026-08-22T08:30:00+03:00", TimeZone: "Europe/Moscow"}},
+	}
+	sortEventsByStart(items)
+	if items[0].ID != "earlier" {
+		t.Fatalf("first event = %q, want earlier instant", items[0].ID)
+	}
+	items = []calendar.EventV2{
+		{ID: "timed", CalendarID: "google:primary", Start: calendar.EventTime{DateTime: "2026-08-22T00:00:00Z", TimeZone: "UTC"}},
+		{ID: "all-day", CalendarID: "google:primary", Start: calendar.EventTime{Date: "2026-08-22"}},
+	}
+	sortEventsByStart(items)
+	if items[0].ID != "all-day" {
+		t.Fatalf("first equal-instant event = %q, want all-day", items[0].ID)
+	}
+}

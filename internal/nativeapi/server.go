@@ -133,10 +133,36 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		sources = append(sources, page.Sources...)
 		complete = complete && page.Complete
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Start.DateTime+items[i].Start.Date < items[j].Start.DateTime+items[j].Start.Date
-	})
+	sortEventsByStart(items)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "sources": sources, "complete": complete})
+}
+
+func sortEventsByStart(items []calendar.EventV2) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		leftStart, leftErr := left.Start.Instant()
+		rightStart, rightErr := right.Start.Instant()
+		if leftErr == nil && rightErr == nil && !leftStart.Equal(rightStart) {
+			return leftStart.Before(rightStart)
+		}
+		if leftErr == nil && rightErr == nil && left.Start.IsAllDay() != right.Start.IsAllDay() {
+			return left.Start.IsAllDay()
+		}
+		if leftErr == nil && rightErr != nil {
+			return true
+		}
+		if leftErr != nil && rightErr == nil {
+			return false
+		}
+		leftValue, rightValue := left.Start.Date+left.Start.DateTime, right.Start.Date+right.Start.DateTime
+		if leftValue != rightValue {
+			return leftValue < rightValue
+		}
+		if left.CalendarID != right.CalendarID {
+			return left.CalendarID < right.CalendarID
+		}
+		return left.ID < right.ID
+	})
 }
 
 func unique(values []string) []string {

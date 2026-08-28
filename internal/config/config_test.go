@@ -115,6 +115,25 @@ func TestValidateAllowsDedicatedNativeAppToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsafeNativeAppTransport(t *testing.T) {
+	cfg := &Config{
+		NativeAppToken: "native-token",
+		DatabaseURL:    "sqlite:///tmp/calendar.db",
+		PublicURL:      "https://calendar.example.com",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted an external native API without an explicit trusted proxy")
+	}
+	cfg.NativeAppTrustedProxy = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected HTTPS native API behind a trusted proxy: %v", err)
+	}
+	cfg.PublicURL = "http://calendar.example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted an external HTTP native API URL")
+	}
+}
+
 func TestValidateRejectsNativeAppTokenWithoutPlatformStorage(t *testing.T) {
 	cfg := &Config{NativeAppToken: "native-token"}
 	if err := cfg.Validate(); err == nil {
