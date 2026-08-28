@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Implementation Plan: transient calendar sync status grace</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2937; line-height: 1.5; }
+    main { max-width: 1050px; margin: 0 auto; padding: 32px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; } h1 { margin-bottom: 8px; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    li { margin: 6px 0; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 700; }
+    .good { border-left: 4px solid #059669; } .risk { border-left: 4px solid #dc2626; } .approval { border-left: 4px solid #d97706; }
+    table { width: 100%; border-collapse: collapse; } th, td { padding: 9px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; } th { background: #f9fafb; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Transient calendar sync status grace</h1>
+  <span class="badge">Implemented locally; not committed or deployed</span>
+
+  <section>
+    <h2>Task summary</h2>
+    <p>Do not alarm the user for a short, retryable calendar-sync failure when cached events are available and the worker has already scheduled another attempt. Preserve immediate, actionable warnings for states that do not self-heal.</p>
+  </section>
+
+  <section>
+    <h2>Inspected current behavior</h2>
+    <ul>
+      <li>The worker stores <code>status</code>, a safe <code>last_error_code</code>, and <code>next_sync_at</code> in <code>calendar_sync_state</code>.</li>
+      <li><code>ListCachedEvents</code> reads <code>next_sync_at</code>, but the public event-source response does not expose it.</li>
+      <li>The React summary treats every <code>failed</code> or <code>parked</code> source as an immediate red <em>“N calendar(s) failed”</em> alert. Its polling stops unless a source is <code>pending</code> or <code>syncing</code>.</li>
+      <li>A successful next sync clears the stored error. The production read-only check on 2026-08-28 found all six sources ready and no active quarantined objects.</li>
+    </ul>
+  </section>
+
+  <section class="good">
+    <h2>Desired UX and decision table</h2>
+    <table>
+      <thead><tr><th>Source state</th><th>Browser presentation</th><th>Polling</th></tr></thead>
+      <tbody>
+        <tr><td><code>failed</code> + safe error code <code>transient</code> or <code>rate_limited</code>, with a future <code>next_sync_at</code></td><td>No red alert. Show the existing neutral <em>Syncing</em> state while cached events remain usable.</td><td>Continue the existing 2-second bounded poll until the next attempt resolves or the 60-second client cap is reached.</td></tr>
+        <tr><td>Same retryable failure after <code>next_sync_at</code>, missing retry time, or another non-retryable failure</td><td>Red <em>calendar failed</em> alert.</td><td>Stop automatic polling, preserving current behavior.</td></tr>
+        <tr><td><code>degraded</code></td><td>Existing amber repair state and Refresh affected calendars action.</td><td>Existing behavior.</td></tr>
+        <tr><td><code>parked</code>, <code>auth</code>, <code>permission</code>, or <code>unsupported</code></td><td>Immediate red alert; these require operator/user action.</td><td>Stop automatic polling.</td></tr>
+      </tbody>
+    </table>
+    <p>The grace is bounded by the worker-provided next-attempt time, not a guessed five-minute client timer. No provider payloads, calendar IDs, or unsafe provider reasons will be added to the browser response.</p>
+  </section>
+
+  <section>
+    <h2>Likely files</h2>
+    <ul>
+      <li><code>internal/storage/event_cache.go</code> — retain <code>next_sync_at</code> on the cached source-status value already read from storage.</li>
+      <li><code>internal/web/api.go</code> — serialize that timestamp in the cached event-source status only.</li>
+      <li><code>frontend/src/lib/types.ts</code> — model optional <code>next_sync_at</code>.</li>
+      <li><code>frontend/src/lib/calendar.ts</code> — classify only active scheduled transient/rate-limit retries as syncing; make polling follow that classification.</li>
+      <li><code>frontend/src/lib/calendar.test.ts</code> and focused API/storage tests — lock down the contract and edge cases.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation steps</h2>
+    <ol>
+      <li>Add an optional next-sync timestamp to the storage-to-UI source model and expose it from the cached-events endpoint.</li>
+      <li>Add one pure frontend predicate for an active retryable source: <code>status === failed</code>, a safe retryable code, and a parseable future retry timestamp.</li>
+      <li>Use that predicate before the failed aggregate, returning the existing <code>syncing</code> summary for active retries; retain failed precedence for parked/auth/permission/unsupported and expired or unknown retries.</li>
+      <li>Let <code>eventStatusPollInterval</code> continue polling for active retries, subject to its existing 30-attempt cap. Do not change data fetching, mutations, refresh semantics, provider behavior, or worker retry policy.</li>
+      <li>Add regression tests for: transient and rate-limited future retry; timestamp passed; malformed/missing timestamp; parked; degraded; and serialized API timestamp.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Model allocation and cost boundary</h2>
+    <table>
+      <thead><tr><th>Workstream</th><th>Model / owner</th><th>Boundary</th></tr></thead>
+      <tbody>
+        <tr><td>Contract, backend, frontend, and focused tests</td><td>Current root Codex model</td><td>One local implementation pass; no subagents.</td></tr>
+        <tr><td>Verification</td><td>Current root Codex model</td><td>Run only the focused Go/frontend checks listed below, then expand only if they fail.</td></tr>
+        <tr><td>Frontier review</td><td>Not allocated</td><td>No separate Sol review: the additive, bounded source-status contract does not justify it. Add one only if implementation reveals a contract ambiguity or a failed regression.</td></tr>
+      </tbody>
+    </table>
+    <p>Cost allocation: no separately dispatched model work and no parallel agents. The work is capped at one implementation-and-verification pass; it does not authorize deployment, a PR, or production changes.</p>
+  </section>
+
+  <section>
+    <h2>Impact and limits</h2>
+    <p>This is an additive API/UI contract change with no migration, credentials, authorization, provider mutation, or deployment action. It uses the server's scheduled retry as the source of truth. The UI will still surface a genuine sustained outage; it merely removes the noisy intermediate alert.</p>
+  </section>
+
+  <section>
+    <h2>Verification and manual QA</h2>
+    <ul>
+      <li><code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./internal/storage ./internal/web -count=1</code></li>
+      <li><code>npm --prefix frontend test -- --run src/lib/calendar.test.ts</code></li>
+      <li><code>npm --prefix frontend run typecheck</code> and <code>npm --prefix frontend run build</code></li>
+      <li><code>git diff --check</code></li>
+      <li>Mock/API QA: a future transient retry reads “Syncing” with cached events; once its scheduled retry time passes without recovery it reads “1 calendar failed”; a parked source is immediately failed; degraded remains repairable.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks, rollback, and open questions</h2>
+    <ul>
+      <li>A clock-skewed or malformed timestamp must never hide an error; it falls back to the existing failed alert.</li>
+      <li>A burst longer than the client polling cap becomes the existing stale/refetch state rather than spinning forever.</li>
+      <li>Rollback is a normal redeploy of the prior UI/service image; no data migration or cleanup is required.</li>
+      <li>No open product choice remains: the planned distinction follows the agreed “do not show short-term errors” intent while keeping actionable failures visible.</li>
+    </ul>
+  </section>
+
+  <section class="approval">
+    <h2>Actual implementation and verification</h2>
+    <ul>
+      <li>Added <code>next_sync_at</code> from <code>calendar_sync_state</code> to the cached source-status model and serialized it only in the browser event-source response.</li>
+      <li>The UI now identifies an active retry only when the source is <code>failed</code>, its safe code is <code>transient</code> or <code>rate_limited</code>, and <code>next_sync_at</code> is valid and in the future. It presents that state as <em>Syncing</em> and continues bounded polling.</li>
+      <li>Expired, missing, malformed, parked, auth, permission, unsupported, and degraded states retain their previous alert/repair behavior.</li>
+      <li>Regression tests cover future transient/rate-limit retries, expired and malformed timestamps, parked auth, bounded polling, storage propagation, and UI serialization.</li>
+      <li>Checks passed: <code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./internal/storage ./internal/web -count=1</code>; <code>npm --prefix frontend test -- --run src/lib/calendar.test.ts</code> (15 tests); <code>npm --prefix frontend run typecheck</code>; <code>npm --prefix frontend run build</code>; <code>git diff --check</code>.</li>
+    </ul>
+    <p>Limit: no production deployment, no browser check against a live retry, and no database migration were performed. The local production build output remains untracked and was not edited.</p>
+  </section>
+</main>
+</body>
+</html>

@@ -104,6 +104,11 @@ describe("calendar mapping", () => {
     const base = { provider: "google", calendar_id: "c1", complete: true, status: "ready" as const, last_success_at: "2026-09-15T11:00:00Z" };
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing" }, { ...base, stale: true }] }, now).kind).toBe("stale");
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "syncing", complete: false }] }, now).label).toBe("Syncing");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, status: "failed", complete: false, error_code: "transient", next_sync_at: "2026-09-15T12:01:00Z", stale: true }] }, now).label).toBe("Syncing");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, status: "failed", complete: false, error_code: "rate_limited", next_sync_at: "2026-09-15T12:01:00Z" }] }, now).kind).toBe("syncing");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, status: "failed", complete: false, error_code: "transient", next_sync_at: "2026-09-15T11:59:59Z" }] }, now).label).toBe("1 calendar failed");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, status: "failed", complete: false, error_code: "transient", next_sync_at: "not-a-date" }] }, now).label).toBe("1 calendar failed");
+    expect(summarizeEventSources({ complete: false, sources: [{ ...base, status: "parked", complete: false, error_code: "auth", next_sync_at: "2026-09-15T12:01:00Z" }] }, now).label).toBe("1 calendar failed");
     expect(summarizeEventSources({ complete: true, sources: [{ ...base, status: "failed" }, { ...base, stale: true }] }, now).label).toBe("1 calendar failed");
     expect(summarizeEventSources({ complete: false, sources: [{ ...base, calendar_id: "c1", status: "degraded", complete: false }] }, now)).toMatchObject({ kind: "degraded", label: "1 calendar needs repair", degradedCalendarIds: ["c1"] });
     expect(summarizeEventSources({ complete: true, sources: [base] }, now).label).toBe("Updated 1 hr ago");
@@ -125,6 +130,10 @@ describe("calendar mapping", () => {
     expect(eventStatusPollInterval(syncing, 0)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
     expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS - 1)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
     expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS)).toBe(false);
+    const retrying = [{ ...syncing[0], status: "failed" as const, error_code: "transient", next_sync_at: "2026-09-15T12:01:00Z" }];
+    expect(eventStatusPollInterval(retrying, 0, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:00:00Z"))).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval(retrying, EVENT_STATUS_POLL_MAX_ATTEMPTS, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:00:00Z"))).toBe(false);
+    expect(eventStatusPollInterval(retrying, 0, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:02:00Z"))).toBe(false);
     expect(eventStatusPollInterval([{ ...syncing[0], status: "ready" as const }], 0)).toBe(false);
   });
 });

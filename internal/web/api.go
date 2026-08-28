@@ -75,6 +75,7 @@ type uiSourceStatus struct {
 	Error         *uiError   `json:"error,omitempty"`
 	Status        string     `json:"status"`
 	LastSuccessAt *time.Time `json:"last_success_at"`
+	NextSyncAt    *time.Time `json:"next_sync_at,omitempty"`
 	Stale         bool       `json:"stale"`
 	ErrorCode     *string    `json:"error_code"`
 }
@@ -1122,7 +1123,7 @@ func toCachedUISource(source storage.CachedSourceStatus) uiSourceStatus {
 	if !isUISyncStatus(status) {
 		status = "failed"
 	}
-	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Status: status, LastSuccessAt: source.LastSuccessAt, Stale: source.Stale}
+	result := uiSourceStatus{Provider: source.Provider, CalendarID: source.CalendarID, Status: status, LastSuccessAt: source.LastSuccessAt, NextSyncAt: source.NextSyncAt, Stale: source.Stale}
 	result.Complete = status == "ready" && !source.Stale
 	if code, ok := safeUISyncErrorCode(source.ErrorCode); ok {
 		result.ErrorCode = &code
