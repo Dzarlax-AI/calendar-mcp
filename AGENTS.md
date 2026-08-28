@@ -48,6 +48,7 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>`
 | `LISTEN_ADDR` | `:8080` | MCP server listen address |
 | `REST_LISTEN_ADDR` | _(empty)_ | Internal REST API (optional) |
 | `API_KEY` | _(empty)_ | Auth key for MCP endpoints |
+| `NATIVE_APP_TOKEN` | _(empty)_ | Dedicated token for the read-only native app API; requires platform storage |
 | `TOKEN_DIR` | `/app/data` | OAuth2 token file storage |
 | `GOOGLE_CLIENT_ID` | | Google OAuth2 client ID |
 | `GOOGLE_CLIENT_SECRET` | | Google OAuth2 client secret |
