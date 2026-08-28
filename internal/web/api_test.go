@@ -749,6 +749,14 @@ func TestUIEventResponseSortsTimedEventsByInstant(t *testing.T) {
 	}
 }
 
+func TestCachedUISourceIncludesNextScheduledSync(t *testing.T) {
+	next := time.Date(2026, 8, 28, 12, 5, 0, 0, time.UTC)
+	source := toCachedUISource(storage.CachedSourceStatus{Provider: "google", CalendarID: "google:primary", Status: "failed", ErrorCode: "transient", NextSyncAt: &next})
+	if source.NextSyncAt == nil || !source.NextSyncAt.Equal(next) {
+		t.Fatalf("next_sync_at = %v, want %v", source.NextSyncAt, next)
+	}
+}
+
 func TestDrainUIEventPagesDrainsDefaultCalendarRequest(t *testing.T) {
 	pages := map[string]calendar.Page[calendar.EventV2]{
 		"":     {Items: []calendar.EventV2{{ID: "first"}}, NextPageToken: "next", Complete: true},

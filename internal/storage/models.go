@@ -192,5 +192,6 @@ type EventSyncRepairBatch struct {
 type CachedSourceStatus struct {
 	Provider, CalendarID, Status, ErrorCode string
 	LastSuccessAt                           *time.Time
+	NextSyncAt                              *time.Time
 	Stale                                   bool
 }

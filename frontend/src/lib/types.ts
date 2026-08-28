@@ -173,6 +173,7 @@ export type EventSourceStatus = {
   error?: string;
   status?: "pending" | "syncing" | "ready" | "failed" | "parked" | "degraded" | string;
   last_success_at?: string | null;
+  next_sync_at?: string | null;
   stale?: boolean;
   error_code?: string | null;
 };

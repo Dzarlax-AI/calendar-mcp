@@ -907,6 +907,7 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 		if lastSuccess.Valid {
 			status.LastSuccessAt = &lastSuccess.Time
 		}
+		status.NextSyncAt = &nextSync
 		status.ErrorCode = errorCode.String
 		status.Stale = status.LastSuccessAt == nil || nextSync.Before(time.Now().UTC())
 		sources = append(sources, status)

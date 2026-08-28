@@ -547,7 +547,7 @@ func TestCalendarSyncLeasesRecoverAndFailuresPreserveCursor(t *testing.T) {
 		t.Fatalf("failed state cursor=%q status=%q code=%q", cursor, status, code)
 	}
 	_, statuses, err := store.ListCachedEvents(ctx, []string{"calendar"}, now, now.Add(time.Hour))
-	if err != nil || len(statuses) != 1 || statuses[0].Status != "failed" || statuses[0].ErrorCode != "provider_down" {
+	if err != nil || len(statuses) != 1 || statuses[0].Status != "failed" || statuses[0].ErrorCode != "provider_down" || statuses[0].NextSyncAt == nil || !statuses[0].NextSyncAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
 	}
 }

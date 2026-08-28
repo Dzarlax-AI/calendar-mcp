@@ -56,11 +56,13 @@ export function formatRelativeTime(value: string | null | undefined, now = new D
 
 export function summarizeEventSources(response: Pick<EventListResponse, "sources" | "complete">, now = new Date()): EventStatusSummary {
   const sources = response.sources ?? [];
-  const failed = sources.filter((source) => source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false));
-  const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing" || source.status === "degraded") ? 1 : 0);
+  const retrying = sources.filter((source) => isActiveRetryableSource(source, now));
+  const failed = sources.filter((source) => !isActiveRetryableSource(source, now) && (source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false)));
+  const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing" || source.status === "degraded" || isActiveRetryableSource(source, now)) ? 1 : 0);
   if (failedCount) return { kind: "failed", label: `${failedCount} calendar${failedCount === 1 ? "" : "s"} failed`, failedCount };
   const degradedCalendarIds = sources.filter((source) => source.status === "degraded").map((source) => source.calendar_id).filter((id): id is string => Boolean(id));
   if (degradedCalendarIds.length) return { kind: "degraded", label: `${degradedCalendarIds.length} calendar${degradedCalendarIds.length === 1 ? " needs" : "s need"} repair`, failedCount: 0, degradedCalendarIds };
+  if (retrying.length) return { kind: "syncing", label: "Syncing", failedCount: 0 };
   if (sources.some((source) => source.stale)) return { kind: "stale", label: "Some calendars are stale", failedCount: 0 };
   if (sources.some((source) => source.status === "pending" || source.status === "syncing")) return { kind: "syncing", label: "Syncing", failedCount: 0 };
   const latest = sources.map((source) => source.last_success_at).filter((value): value is string => Boolean(value)).reduce<string | undefined>((current, value) => {
@@ -72,9 +74,19 @@ export function summarizeEventSources(response: Pick<EventListResponse, "sources
   return { kind: "updated", label: `Updated ${formatRelativeTime(latest, now)}`, failedCount: 0 };
 }
 
-export function eventStatusPollInterval(sources: EventListResponse["sources"], attempts: number, maxAttempts = EVENT_STATUS_POLL_MAX_ATTEMPTS): number | false {
-  const syncing = sources?.some((source) => source.status === "pending" || source.status === "syncing");
+export function eventStatusPollInterval(sources: EventListResponse["sources"], attempts: number, maxAttempts = EVENT_STATUS_POLL_MAX_ATTEMPTS, now = new Date()): number | false {
+  const syncing = hasActiveEventSync(sources, now);
   return syncing && attempts < maxAttempts ? EVENT_STATUS_POLL_INTERVAL_MS : false;
+}
+
+export function hasActiveEventSync(sources: EventListResponse["sources"], now = new Date()): boolean {
+  return sources?.some((source) => source.status === "pending" || source.status === "syncing" || isActiveRetryableSource(source, now)) ?? false;
+}
+
+export function isActiveRetryableSource(source: NonNullable<EventListResponse["sources"]>[number], now = new Date()): boolean {
+  if (source.status !== "failed" || (source.error_code !== "transient" && source.error_code !== "rate_limited") || !source.next_sync_at) return false;
+  const nextSyncAt = new Date(source.next_sync_at).getTime();
+  return !Number.isNaN(nextSyncAt) && nextSyncAt > now.getTime();
 }
 
 export function selectedReadableCalendarIds(calendars: CalendarRecord[], saved: unknown): string[] {
