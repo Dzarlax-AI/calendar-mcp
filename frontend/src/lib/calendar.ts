@@ -75,11 +75,15 @@ export function summarizeEventSources(response: Pick<EventListResponse, "sources
 }
 
 export function eventStatusPollInterval(sources: EventListResponse["sources"], attempts: number, maxAttempts = EVENT_STATUS_POLL_MAX_ATTEMPTS, now = new Date()): number | false {
-  const syncing = sources?.some((source) => source.status === "pending" || source.status === "syncing" || isActiveRetryableSource(source, now));
+  const syncing = hasActiveEventSync(sources, now);
   return syncing && attempts < maxAttempts ? EVENT_STATUS_POLL_INTERVAL_MS : false;
 }
 
-function isActiveRetryableSource(source: NonNullable<EventListResponse["sources"]>[number], now: Date): boolean {
+export function hasActiveEventSync(sources: EventListResponse["sources"], now = new Date()): boolean {
+  return sources?.some((source) => source.status === "pending" || source.status === "syncing" || isActiveRetryableSource(source, now)) ?? false;
+}
+
+export function isActiveRetryableSource(source: NonNullable<EventListResponse["sources"]>[number], now = new Date()): boolean {
   if (source.status !== "failed" || (source.error_code !== "transient" && source.error_code !== "rate_limited") || !source.next_sync_at) return false;
   const nextSyncAt = new Date(source.next_sync_at).getTime();
   return !Number.isNaN(nextSyncAt) && nextSyncAt > now.getTime();

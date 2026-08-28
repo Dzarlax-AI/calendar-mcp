@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
+import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -131,6 +131,8 @@ describe("calendar mapping", () => {
     expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS - 1)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
     expect(eventStatusPollInterval(pendingAndStale, EVENT_STATUS_POLL_MAX_ATTEMPTS)).toBe(false);
     const retrying = [{ ...syncing[0], status: "failed" as const, error_code: "transient", next_sync_at: "2026-09-15T12:01:00Z" }];
+    expect(hasActiveEventSync(retrying, new Date("2026-09-15T12:00:00Z"))).toBe(true);
+    expect(hasActiveEventSync(retrying, new Date("2026-09-15T12:02:00Z"))).toBe(false);
     expect(eventStatusPollInterval(retrying, 0, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:00:00Z"))).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
     expect(eventStatusPollInterval(retrying, EVENT_STATUS_POLL_MAX_ATTEMPTS, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:00:00Z"))).toBe(false);
     expect(eventStatusPollInterval(retrying, 0, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:02:00Z"))).toBe(false);

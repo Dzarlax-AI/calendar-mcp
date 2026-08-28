@@ -41,10 +41,10 @@ describe("browser API client", () => {
   });
 
   it("normalizes cached source freshness without exposing raw errors", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "google", calendar_id: "c1", complete: false, status: "failed", stale: true, last_success_at: null, error_code: "provider_unavailable", error: { message: "secret provider payload" } }] }), { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ provider: "google", calendar_id: "c1", complete: false, status: "failed", stale: true, last_success_at: null, next_sync_at: "2026-09-15T12:01:00Z", error_code: "provider_unavailable", error: { message: "secret provider payload" } }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
-    expect(result.sources?.[0]).toMatchObject({ calendar_id: "c1", status: "failed", stale: true, error_code: "provider_unavailable", error: "Calendar provider is temporarily unavailable" });
+    expect(result.sources?.[0]).toMatchObject({ calendar_id: "c1", status: "failed", stale: true, next_sync_at: "2026-09-15T12:01:00Z", error_code: "provider_unavailable", error: "Calendar provider is temporarily unavailable" });
     expect(result.sources?.[0]?.error).not.toContain("secret");
     vi.unstubAllGlobals();
   });

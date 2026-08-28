@@ -176,7 +176,7 @@ type RawRule = { id: string; source_calendar_id?: string; target_calendar_id?: s
 type RawRun = { id: string; rule_id?: string; trigger?: string; outcome?: string; started_at?: string; finished_at?: string; error_summary?: string; created_count?: number; updated_count?: number; deleted_count?: number };
 type RawEvent = Omit<EventRecord, "start" | "end" | "recurrence" | "calendarId" | "timezone" | "source" | "descriptionFormat" | "htmlLink"> & { calendar_id: string; provider?: string; description_format?: string; html_link?: string; start: EventTime; end: EventTime; original_start?: EventTime; recurring_event_id?: string; instance_kind?: string; recurrence?: string[]; read_only?: boolean; warnings?: unknown };
 type RawEventListResponse = { items: RawEvent[]; sources?: RawEventSourceStatus[]; complete: boolean };
-type RawEventSourceStatus = { provider?: string; calendar_id?: string; complete: boolean; error?: unknown; status?: string; last_success_at?: string | null; stale?: boolean; error_code?: unknown };
+type RawEventSourceStatus = { provider?: string; calendar_id?: string; complete: boolean; error?: unknown; status?: string; last_success_at?: string | null; next_sync_at?: unknown; stale?: boolean; error_code?: unknown };
 type RawOperationResult = RawEvent & { event?: RawEvent; related_events?: RawEvent[]; warnings?: unknown };
 
 const colors = ["#4762ee", "#2d9b5c", "#f39a2f", "#8959d9", "#d64367", "#2b9bb1"];
@@ -231,6 +231,12 @@ function safeErrorCode(value: unknown): string | null {
   return /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
 }
 
+function safeTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : value;
+}
+
 function sourceErrorMessage(code: string | null): string | undefined {
   if (!code) return undefined;
   switch (code) {
@@ -256,6 +262,7 @@ function normalizeSourceStatus(source: RawEventSourceStatus): EventSourceStatus 
     complete: source.complete,
     status,
     last_success_at: source.last_success_at ?? null,
+    next_sync_at: safeTimestamp(source.next_sync_at),
     stale: source.stale === true,
     error_code: errorCode,
     ...(source.error || errorCode ? { error: sourceErrorMessage(errorCode) ?? "Calendar provider is temporarily unavailable" } : {}),

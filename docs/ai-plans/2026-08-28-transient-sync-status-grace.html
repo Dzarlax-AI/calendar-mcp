@@ -19,7 +19,7 @@
 <body>
 <main>
   <h1>Transient calendar sync status grace</h1>
-  <span class="badge">Implemented locally; not committed or deployed</span>
+  <span class="badge">Implemented; no production deployment</span>
 
   <section>
     <h2>Task summary</h2>
@@ -119,6 +119,7 @@
       <li>Expired, missing, malformed, parked, auth, permission, unsupported, and degraded states retain their previous alert/repair behavior.</li>
       <li>Regression tests cover future transient/rate-limit retries, expired and malformed timestamps, parked auth, bounded polling, storage propagation, and UI serialization.</li>
       <li>Checks passed: <code>GOCACHE=/private/tmp/calendar-mcp-go-build go test ./internal/storage ./internal/web -count=1</code>; <code>npm --prefix frontend test -- --run src/lib/calendar.test.ts</code> (15 tests); <code>npm --prefix frontend run typecheck</code>; <code>npm --prefix frontend run build</code>; <code>git diff --check</code>.</li>
+      <li>PR review follow-up: the browser normalizer now retains only valid <code>next_sync_at</code> values, and the page's attempt counter uses the same active-retry predicate as the polling interval. Focused API and calendar tests passed (27 tests), as did typecheck and production build.</li>
     </ul>
     <p>Limit: no production deployment, no browser check against a live retry, and no database migration were performed. The local production build output remains untracked and was not edited.</p>
   </section>

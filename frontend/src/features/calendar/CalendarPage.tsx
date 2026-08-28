@@ -12,7 +12,7 @@ import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, ListFilter,
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
 import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
-import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatEventTime, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
+import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 import { HtmlDescription } from "../../components/HtmlDescription";
@@ -159,7 +159,7 @@ export default function CalendarPage() {
   const baseEventStatus = eventsQuery.data ? summarizeEventSources(eventsQuery.data) : null;
   const eventStatus = baseEventStatus?.kind === "syncing" && pollingCapped ? { ...baseEventStatus, kind: "stale" as const, label: "Sync paused; refresh to try again" } : baseEventStatus;
   const visibleEventStatus = eventStatus?.kind === "updated" && !showUpdatedStatus ? null : eventStatus;
-  const hasPendingSources = eventsQuery.data?.sources?.some((source) => source.status === "pending" || source.status === "syncing") ?? false;
+  const hasPendingSources = hasActiveEventSync(eventsQuery.data?.sources);
   const eventsById = useMemo(() => new Map(events.map((event) => [calendarEventKey(event), event])), [events]);
   const calendarById = useMemo(() => new Map(calendars.map((calendar) => [calendar.id, calendar])), [calendars]);
   const calendarEvents = useMemo(() => events.map((event) => toCalendarEvent(event, calendarById.get(event.calendarId))), [events, calendarById]);
