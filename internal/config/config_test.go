@@ -104,6 +104,47 @@ func TestValidateAllowsAPIKey(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsDedicatedNativeAppToken(t *testing.T) {
+	cfg := &Config{
+		NativeAppToken: "native-token",
+		DatabaseURL:    "sqlite:///tmp/calendar.db",
+		PublicURL:      "http://localhost:8080",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsUnsafeNativeAppTransport(t *testing.T) {
+	cfg := &Config{
+		NativeAppToken: "native-token",
+		DatabaseURL:    "sqlite:///tmp/calendar.db",
+		PublicURL:      "https://calendar.example.com",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted an external native API without an explicit trusted proxy")
+	}
+	cfg.NativeAppTrustedProxy = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected HTTPS native API behind a trusted proxy: %v", err)
+	}
+	cfg.PublicURL = "http://calendar.example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted an external HTTP native API URL")
+	}
+	cfg.PublicURL = "ftp://localhost"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted a non-HTTP loopback native API URL")
+	}
+}
+
+func TestValidateRejectsNativeAppTokenWithoutPlatformStorage(t *testing.T) {
+	cfg := &Config{NativeAppToken: "native-token"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted NATIVE_APP_TOKEN without DATABASE_URL")
+	}
+}
+
 func TestValidateAllowsPartialProviderConfigurationToBeSkipped(t *testing.T) {
 	cfg := &Config{APIKey: "secret", GoogleClientID: "client"}
 	if err := cfg.Validate(); err != nil {
@@ -119,5 +160,9 @@ func TestValidateRequiresExplicitUIAuthenticationMode(t *testing.T) {
 	cfg.UIAllowUnauthenticated = true
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected explicit unauthenticated UI mode: %v", err)
+	}
+	cfg = &Config{NativeAppToken: "native-token", DatabaseURL: "sqlite:///tmp/calendar.db", PublicURL: "http://localhost:8080"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected dedicated native-token mode: %v", err)
 	}
 }

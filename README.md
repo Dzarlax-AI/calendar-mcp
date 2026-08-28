@@ -137,7 +137,7 @@ npm --prefix frontend run dev:mocks
 
 Open `http://localhost:5173/app`. This serves the frontend workbench with in-memory synthetic `/api/ui` responses only; create, edit, delete, and refresh stay local and reset when Vite restarts. The regular `npm --prefix frontend run dev` command is unchanged and does not install mock routes.
 
-The Settings page shows the MCP endpoint and can reveal the primary `API_KEY` only after an explicit authenticated, same-origin, CSRF-protected action. The key is absent from the initial HTML and is removed from the page after 30 seconds, when hidden, or when the page exits. Copying uses the browser Clipboard API; the application does not automatically clear the OS clipboard because doing so could overwrite newer clipboard contents. `API_KEY_LEGACY` is never revealed and appears only as a configured/not-configured status.
+The Settings page shows the MCP endpoint and can reveal the primary `API_KEY` only after an explicit authenticated, same-origin, CSRF-protected action. The key is absent from the initial HTML and is removed from the page after 30 seconds, when hidden, or when the page exits. Copying uses the browser Clipboard API; the application does not automatically clear the OS clipboard because doing so could overwrite newer clipboard contents. `API_KEY_LEGACY` is never revealed and appears only as a configured/not-configured status. `NATIVE_APP_TOKEN` is never shown in the web UI.
 
 This convenience assumes a single-user Authentik boundary. Every identity accepted by that boundary can retrieve the primary master key, and a compromised browser session can do the same. Before enabling multi-user UI access, replace master-key reveal with independently revocable per-client credentials.
 
@@ -196,11 +196,13 @@ Health endpoints:
 | `REST_LISTEN_ADDR` | empty | Optional separate internal REST listener |
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
 | `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
+| `NATIVE_APP_TOKEN` | empty | Dedicated Bearer token for the read-only native app API; requires `DATABASE_URL` and is never revealed in web Settings |
+| `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
 | `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
-The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
+The API fails closed when both `API_KEY` and `NATIVE_APP_TOKEN` are empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
 
 ### Platform mode
 
@@ -211,6 +213,21 @@ The API fails closed when `API_KEY` is empty unless `ALLOW_UNAUTHENTICATED=true`
 | `CALENDAR_PUBLIC_URL` | empty | Absolute external UI/OAuth origin, without a trailing slash |
 | `UI_TRUST_FORWARD_AUTH` | `false` | Explicitly trusts the Authentik identity header on protected UI routes; enable only behind the documented trusted proxy boundary |
 | `UI_ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only UI bypass; rejected unless set when ForwardAuth is disabled |
+
+### Native app API
+
+Set a separate `NATIVE_APP_TOKEN` to enable the read-only native API in platform mode. It is intended for the Swift client, is distinct from the MCP key, and does not require Authentik or `UI_ALLOW_UNAUTHENTICATED`. A public native endpoint requires both an HTTPS `CALENDAR_PUBLIC_URL` and `NATIVE_APP_TRUSTED_PROXY=true`; the proxy must be the only client-facing route to the service. Localhost-only development may use HTTP without the proxy setting.
+
+```bash
+NATIVE_APP_TOKEN="$(openssl rand -base64 32)" \
+CALENDAR_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+DATABASE_URL="sqlite:///app/data/calendar.db" \
+CALENDAR_PUBLIC_URL="https://calendar.example.com" \
+NATIVE_APP_TRUSTED_PROXY=true \
+./calendar serve
+```
+
+Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`; no provider-setup or event-mutation routes are exposed. The token is never returned by the Settings page or any API response.
 
 Examples:
 

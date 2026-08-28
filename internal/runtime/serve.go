@@ -24,6 +24,7 @@ import (
 	"calendar-mcp/internal/google"
 	"calendar-mcp/internal/mcpserver"
 	"calendar-mcp/internal/microsoft"
+	"calendar-mcp/internal/nativeapi"
 	"calendar-mcp/internal/oauthflow"
 	providerfactory "calendar-mcp/internal/providers"
 	"calendar-mcp/internal/restapi"
@@ -116,6 +117,9 @@ func Serve(_ context.Context) error {
 		AllowUnauthenticated: cfg.AllowUnauthenticated,
 	}
 	mcpserver.Register(mux, reg, appService, apiAuth, cfg.EnableV2)
+	if cfg.NativeAppToken != "" && platformStore != nil {
+		mux.Handle("/api/native/v1/", http.StripPrefix("/api/native/v1", nativeapi.New(nativeapi.Config{App: appService, Store: platformStore, Token: cfg.NativeAppToken}).Handler()))
+	}
 	if platformStore != nil {
 		publicURL := strings.TrimSuffix(cfg.PublicURL, "/")
 		oauthProviders := map[string]oauthflow.Provider{}

@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +31,10 @@ type Config struct {
 	TrustForwardAuth       bool
 	UIAllowUnauthenticated bool
 	UIRawArtifactUsers     []string
+	// NativeAppToken is a dedicated bearer token for the read-only native app
+	// API. It is deliberately distinct from MCP and internal REST API keys.
+	NativeAppToken        string
+	NativeAppTrustedProxy bool
 
 	// Event read model is deliberately opt-in. It only reads provider event
 	// data; event mutations continue to use the existing notification-safe
@@ -77,6 +83,8 @@ func Load() *Config {
 		TrustForwardAuth:       envBool("UI_TRUST_FORWARD_AUTH", false),
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 		UIRawArtifactUsers:     envList("UI_RAW_ARTIFACT_USERS"),
+		NativeAppToken:         envStr("NATIVE_APP_TOKEN", ""),
+		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
 
 		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
 		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),
@@ -108,13 +116,21 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.APIKey == "" && !c.AllowUnauthenticated {
-		return fmt.Errorf("API_KEY is required unless ALLOW_UNAUTHENTICATED=true")
+	if c.APIKey == "" && c.NativeAppToken == "" && !c.AllowUnauthenticated {
+		return fmt.Errorf("API_KEY or NATIVE_APP_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
+	}
+	if c.NativeAppToken != "" && c.DatabaseURL == "" {
+		return fmt.Errorf("NATIVE_APP_TOKEN requires DATABASE_URL")
+	}
+	if c.NativeAppToken != "" {
+		if err := validateNativeAppTransport(c.PublicURL, c.NativeAppTrustedProxy); err != nil {
+			return err
+		}
 	}
 	if c.DatabaseURL != "" && c.PublicURL == "" {
 		return fmt.Errorf("CALENDAR_PUBLIC_URL is required when DATABASE_URL is configured")
 	}
-	if c.DatabaseURL != "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
+	if c.DatabaseURL != "" && c.NativeAppToken == "" && !c.TrustForwardAuth && !c.UIAllowUnauthenticated {
 		return fmt.Errorf("platform UI requires UI_TRUST_FORWARD_AUTH=true unless UI_ALLOW_UNAUTHENTICATED=true is explicitly set")
 	}
 	// A Config assembled directly by a caller predates the optional read-model
@@ -124,6 +140,29 @@ func (c *Config) Validate() error {
 		return c.ValidateEventReadModel()
 	}
 	return nil
+}
+
+func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
+	parsed, err := url.Parse(publicURL)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("NATIVE_APP_TOKEN requires a valid CALENDAR_PUBLIC_URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("NATIVE_APP_TOKEN requires CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
+	}
+	isLoopback := parsed.Hostname() == "localhost"
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsLoopback() {
+		isLoopback = true
+	}
+	if isLoopback {
+		return nil
+	}
+	if parsed.Scheme == "https" {
+		if trustedProxy {
+			return nil
+		}
+	}
+	return fmt.Errorf("NATIVE_APP_TOKEN requires an HTTPS CALENDAR_PUBLIC_URL and NATIVE_APP_TRUSTED_PROXY=true unless it is loopback-only")
 }
 
 // ValidateEventReadModel checks bounds before the serve or worker process can
