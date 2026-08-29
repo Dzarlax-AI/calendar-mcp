@@ -54,13 +54,16 @@ func (p *testProvider) UpdateEventV2(_ context.Context, request calendar.UpdateE
 	if request.ExpectedETag == "conflict" {
 		return nil, calendar.NewAPIError(calendar.ErrorConflict, "event ETag does not match expected_etag")
 	}
+	if request.ExpectedETag == "rate-limited" {
+		return nil, calendar.NewAPIError(calendar.ErrorRateLimited, "provider rate limit reached")
+	}
 	return &calendar.OperationResult{Status: "updated", Event: &calendar.EventV2{ID: request.Ref.EventID, CalendarID: request.Ref.CalendarID, Provider: "google", ETag: "updated-etag"}}, nil
 }
 func (*testProvider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
 	return nil, nil
 }
 
-func testHandler(t *testing.T) (http.Handler, *testProvider) {
+func testHandler(t *testing.T, writesEnabled bool) (http.Handler, *testProvider) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -80,7 +83,7 @@ func testHandler(t *testing.T) (http.Handler, *testProvider) {
 	}
 	provider := &testProvider{}
 	app := application.New(calendar.NewRegistry([]calendar.Provider{provider}))
-	return New(Config{App: app, Store: store, Token: "native-token"}).Handler(), provider
+	return New(Config{App: app, Store: store, Token: "native-token", WritesEnabled: writesEnabled}).Handler(), provider
 }
 
 func request(handler http.Handler, method, path, token string, body ...string) *httptest.ResponseRecorder {
@@ -100,7 +103,7 @@ func request(handler http.Handler, method, path, token string, body ...string) *
 }
 
 func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
-	handler, _ := testHandler(t)
+	handler, _ := testHandler(t, false)
 	if got := request(handler, http.MethodGet, "/bootstrap", "").Code; got != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
 	}
@@ -113,7 +116,7 @@ func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
 }
 
 func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t *testing.T) {
-	handler, provider := testHandler(t)
+	handler, provider := testHandler(t, true)
 	w := request(handler, http.MethodGet, "/events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "native-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -145,6 +148,54 @@ func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t
 	conflict := `{"calendar_id":"google:primary","title":"Updated focus time","description":"","location":"Desk","start":{"date_time":"2026-08-29T10:00:00Z","time_zone":"UTC"},"end":{"date_time":"2026-08-29T11:00:00Z","time_zone":"UTC"},"all_day":false,"expected_etag":"conflict"}`
 	if got := request(handler, http.MethodPatch, "/events/google:primary/created", "native-token", conflict).Code; got != http.StatusConflict {
 		t.Fatalf("conflict status = %d, want %d", got, http.StatusConflict)
+	}
+	rateLimited := `{"title":"Updated focus time","expected_etag":"rate-limited"}`
+	if got := request(handler, http.MethodPatch, "/events/google:primary/created", "native-token", rateLimited).Code; got != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestNativeAPIWritesRequireExplicitOptIn(t *testing.T) {
+	handler, _ := testHandler(t, false)
+	if got := request(handler, http.MethodPost, "/events", "native-token", `{}`).Code; got != http.StatusMethodNotAllowed {
+		t.Fatalf("create status = %d, want %d", got, http.StatusMethodNotAllowed)
+	}
+	if got := request(handler, http.MethodPatch, "/events/google:primary/event-1", "native-token", `{}`).Code; got != http.StatusNotFound {
+		t.Fatalf("update status = %d, want %d", got, http.StatusNotFound)
+	}
+	w := request(handler, http.MethodGet, "/bootstrap", "native-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Calendars []calendarResponse `json:"calendars"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Calendars) != 1 || response.Calendars[0].CanWrite || !response.Calendars[0].ReadOnly {
+		t.Fatalf("calendars = %#v", response.Calendars)
+	}
+}
+
+func TestNativeAPIPatchPreservesOmittedFields(t *testing.T) {
+	handler, provider := testHandler(t, true)
+	if got := request(handler, http.MethodPatch, "/events/google:primary/event-1", "native-token", `{"title":"Retitled"}`).Code; got != http.StatusOK {
+		t.Fatalf("update status = %d", got)
+	}
+	patch := provider.updateRequest.Patch
+	if !patch.Title.Present || patch.Title.Value != "Retitled" {
+		t.Fatalf("title patch = %#v", patch.Title)
+	}
+	if patch.Description.Present || patch.Location.Present || patch.Start.Present || patch.End.Present {
+		t.Fatalf("omitted fields must not be patched: %#v", patch)
+	}
+}
+
+func TestAppleOrdinaryUpdatesUseSeriesScopeWithoutETag(t *testing.T) {
+	scope, expectedETag := ordinaryUpdateScope("apple", "existing-etag")
+	if scope != calendar.ScopeSeries || expectedETag != "" {
+		t.Fatalf("scope = %q, expected_etag = %q", scope, expectedETag)
 	}
 }
 

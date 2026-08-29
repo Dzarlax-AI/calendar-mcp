@@ -115,6 +115,13 @@ func TestValidateAllowsDedicatedNativeAppToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNativeWritesWithoutNativeToken(t *testing.T) {
+	cfg := &Config{NativeAppWritesEnabled: true, DatabaseURL: "sqlite:///tmp/calendar.db"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted native writes without NATIVE_APP_TOKEN")
+	}
+}
+
 func TestValidateRejectsUnsafeNativeAppTransport(t *testing.T) {
 	cfg := &Config{
 		NativeAppToken: "native-token",
