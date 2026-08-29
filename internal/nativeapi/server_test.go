@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,40 +15,52 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-type testProvider struct{}
+type testProvider struct {
+	createRequest calendar.CreateEventRequestV2
+	updateRequest calendar.UpdateEventRequestV2
+}
 
-func (testProvider) Name() string                                               { return "google" }
-func (testProvider) ListCalendars(context.Context) ([]calendar.Calendar, error) { return nil, nil }
-func (testProvider) GetEvents(context.Context, string, time.Time, time.Time) ([]calendar.Event, error) {
+func (*testProvider) Name() string                                               { return "google" }
+func (*testProvider) ListCalendars(context.Context) ([]calendar.Calendar, error) { return nil, nil }
+func (*testProvider) GetEvents(context.Context, string, time.Time, time.Time) ([]calendar.Event, error) {
 	return nil, nil
 }
-func (testProvider) CreateEvent(context.Context, string, calendar.EventCreate) (*calendar.Event, error) {
+func (*testProvider) CreateEvent(context.Context, string, calendar.EventCreate) (*calendar.Event, error) {
 	return nil, nil
 }
-func (testProvider) UpdateEvent(context.Context, string, string, calendar.EventUpdate) (*calendar.Event, error) {
+func (*testProvider) UpdateEvent(context.Context, string, string, calendar.EventUpdate) (*calendar.Event, error) {
 	return nil, nil
 }
-func (testProvider) DeleteEvent(context.Context, string, string) error { return nil }
-func (testProvider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
-	return calendar.CalendarCapabilities{Operations: calendar.OperationCapabilities{List: true}}, nil
+func (*testProvider) DeleteEvent(context.Context, string, string) error { return nil }
+func (*testProvider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
+	return calendar.CalendarCapabilities{
+		Operations:           calendar.OperationCapabilities{List: true, Create: true, Update: true},
+		MutationScopes:       []calendar.MutationScope{calendar.ScopeSingle},
+		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
+	}, nil
 }
-func (testProvider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+func (*testProvider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
 	return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "event-1", CalendarID: "google:primary", Provider: "google", Title: "Planning", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}}}, Complete: true}, nil
 }
-func (testProvider) GetEventV2(context.Context, calendar.EventRef) (*calendar.EventV2, error) {
-	return nil, nil
+func (*testProvider) GetEventV2(_ context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
+	return &calendar.EventV2{ID: ref.EventID, CalendarID: ref.CalendarID, Provider: "google", ETag: "created-etag", Start: calendar.EventTime{DateTime: "2026-08-29T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-29T10:00:00Z", TimeZone: "UTC"}}, nil
 }
-func (testProvider) CreateEventV2(context.Context, calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
-	return nil, nil
+func (p *testProvider) CreateEventV2(_ context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	p.createRequest = request
+	return &calendar.EventV2{ID: "created", CalendarID: request.CalendarID, Provider: "google", ETag: "created-etag", Title: request.Event.Title, Description: request.Event.Description, Location: request.Event.Location, Start: request.Event.Start, End: request.Event.End}, nil
 }
-func (testProvider) UpdateEventV2(context.Context, calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
-	return nil, nil
+func (p *testProvider) UpdateEventV2(_ context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	p.updateRequest = request
+	if request.ExpectedETag == "conflict" {
+		return nil, calendar.NewAPIError(calendar.ErrorConflict, "event ETag does not match expected_etag")
+	}
+	return &calendar.OperationResult{Status: "updated", Event: &calendar.EventV2{ID: request.Ref.EventID, CalendarID: request.Ref.CalendarID, Provider: "google", ETag: "updated-etag"}}, nil
 }
-func (testProvider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+func (*testProvider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
 	return nil, nil
 }
 
-func testHandler(t *testing.T) http.Handler {
+func testHandler(t *testing.T) (http.Handler, *testProvider) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -65,12 +78,19 @@ func testHandler(t *testing.T) http.Handler {
 	if err := store.UpsertCalendar(ctx, storage.Calendar{ID: "google:primary", ConnectionID: "account", ProviderCalendarID: "primary", Name: "Primary", Timezone: "UTC", CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	app := application.New(calendar.NewRegistry([]calendar.Provider{testProvider{}}))
-	return New(Config{App: app, Store: store, Token: "native-token"}).Handler()
+	provider := &testProvider{}
+	app := application.New(calendar.NewRegistry([]calendar.Provider{provider}))
+	return New(Config{App: app, Store: store, Token: "native-token"}).Handler(), provider
 }
 
-func request(handler http.Handler, method, path, token string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, path, nil)
+func request(handler http.Handler, method, path, token string, body ...string) *httptest.ResponseRecorder {
+	var reader *strings.Reader
+	if len(body) > 0 {
+		reader = strings.NewReader(body[0])
+	} else {
+		reader = strings.NewReader("")
+	}
+	r := httptest.NewRequest(method, path, reader)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -80,7 +100,7 @@ func request(handler http.Handler, method, path, token string) *httptest.Respons
 }
 
 func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
-	handler := testHandler(t)
+	handler, _ := testHandler(t)
 	if got := request(handler, http.MethodGet, "/bootstrap", "").Code; got != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
 	}
@@ -92,8 +112,8 @@ func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
 	}
 }
 
-func TestNativeAPIListsReadOnlyDataAndHasNoMutationRoutes(t *testing.T) {
-	handler := testHandler(t)
+func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t *testing.T) {
+	handler, provider := testHandler(t)
 	w := request(handler, http.MethodGet, "/events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "native-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -108,8 +128,23 @@ func TestNativeAPIListsReadOnlyDataAndHasNoMutationRoutes(t *testing.T) {
 	if !response.Complete || len(response.Items) != 1 || response.Items[0].Title != "Planning" {
 		t.Fatalf("response = %#v, body = %s", response, w.Body.String())
 	}
-	if got := request(handler, http.MethodPost, "/events", "native-token").Code; got != http.StatusMethodNotAllowed {
-		t.Fatalf("mutation status = %d, want %d", got, http.StatusMethodNotAllowed)
+	body := `{"calendar_id":"google:primary","title":"Focus time","description":"Private note","location":"Home","start":{"date_time":"2026-08-29T09:00:00Z","time_zone":"UTC"},"end":{"date_time":"2026-08-29T10:00:00Z","time_zone":"UTC"},"all_day":false}`
+	if got := request(handler, http.MethodPost, "/events", "native-token", body).Code; got != http.StatusCreated {
+		t.Fatalf("create status = %d", got)
+	}
+	if provider.createRequest.Notifications != calendar.NotificationsNone || provider.createRequest.Event.Title != "Focus time" {
+		t.Fatalf("create request = %#v", provider.createRequest)
+	}
+	update := `{"calendar_id":"google:primary","title":"Updated focus time","description":"","location":"Desk","start":{"date_time":"2026-08-29T10:00:00Z","time_zone":"UTC"},"end":{"date_time":"2026-08-29T11:00:00Z","time_zone":"UTC"},"all_day":false,"expected_etag":"created-etag"}`
+	if got := request(handler, http.MethodPatch, "/events/google:primary/created", "native-token", update).Code; got != http.StatusOK {
+		t.Fatalf("update status = %d", got)
+	}
+	if provider.updateRequest.Notifications != calendar.NotificationsNone || provider.updateRequest.Scope != calendar.ScopeSingle || provider.updateRequest.ExpectedETag != "created-etag" {
+		t.Fatalf("update request = %#v", provider.updateRequest)
+	}
+	conflict := `{"calendar_id":"google:primary","title":"Updated focus time","description":"","location":"Desk","start":{"date_time":"2026-08-29T10:00:00Z","time_zone":"UTC"},"end":{"date_time":"2026-08-29T11:00:00Z","time_zone":"UTC"},"all_day":false,"expected_etag":"conflict"}`
+	if got := request(handler, http.MethodPatch, "/events/google:primary/created", "native-token", conflict).Code; got != http.StatusConflict {
+		t.Fatalf("conflict status = %d, want %d", got, http.StatusConflict)
 	}
 }
 

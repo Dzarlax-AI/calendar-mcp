@@ -1,10 +1,13 @@
-// Package nativeapi exposes the narrow, token-authenticated read API used by
-// calendar-app. It intentionally has no provider setup or event mutation routes.
+// Package nativeapi exposes the narrow, token-authenticated API used by
+// calendar-app. It has no provider setup and only supports deliberate ordinary
+// event creates and edits with provider notifications forced off.
 package nativeapi
 
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -33,6 +36,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /bootstrap", s.authorized(http.HandlerFunc(s.bootstrap)))
 	mux.Handle("GET /events", s.authorized(http.HandlerFunc(s.events)))
+	mux.Handle("POST /events", s.authorized(http.HandlerFunc(s.createEvent)))
+	mux.Handle("PATCH /events/{calendar_id}/{event_id}", s.authorized(http.HandlerFunc(s.updateEvent)))
 	return mux
 }
 
@@ -53,6 +58,7 @@ type calendarResponse struct {
 	TimeZone string `json:"time_zone,omitempty"`
 	Color    string `json:"color,omitempty"`
 	CanRead  bool   `json:"can_read"`
+	CanWrite bool   `json:"can_write"`
 	ReadOnly bool   `json:"read_only"`
 }
 
@@ -66,10 +72,144 @@ func (s *Server) calendars(r *http.Request) ([]calendarResponse, error) {
 		if !item.CanRead {
 			continue
 		}
-		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, ReadOnly: !item.CanWrite})
+		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: item.CanWrite, ReadOnly: !item.CanWrite})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
+}
+
+type eventPayload struct {
+	CalendarID   string             `json:"calendar_id"`
+	Title        string             `json:"title"`
+	Description  string             `json:"description"`
+	Location     string             `json:"location"`
+	Start        calendar.EventTime `json:"start"`
+	End          calendar.EventTime `json:"end"`
+	AllDay       bool               `json:"all_day"`
+	ExpectedETag string             `json:"expected_etag"`
+}
+
+func (payload eventPayload) validate() error {
+	if strings.TrimSpace(payload.Title) == "" {
+		return errors.New("title is required")
+	}
+	if err := calendar.ValidateEventTimeRangeV2(payload.Start, payload.End); err != nil {
+		return err
+	}
+	if payload.AllDay != payload.Start.IsAllDay() {
+		return errors.New("all_day must match start and end")
+	}
+	return nil
+}
+
+func decodeEventPayload(w http.ResponseWriter, r *http.Request, payload *eventPayload) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(payload); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("request body must contain one JSON object")
+	}
+	return payload.validate()
+}
+
+func (s *Server) requireWritableCalendar(w http.ResponseWriter, r *http.Request, calendarID string) bool {
+	items, err := s.store.ListAllCalendars(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
+		return false
+	}
+	for _, item := range items {
+		if item.ID == calendarID && item.CanRead && item.CanWrite {
+			return true
+		}
+	}
+	writeError(w, http.StatusForbidden, "calendar is not writable")
+	return false
+}
+
+func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
+	if s.app == nil || s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "native API is unavailable")
+		return
+	}
+	var payload eventPayload
+	if err := decodeEventPayload(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.requireWritableCalendar(w, r, payload.CalendarID) {
+		return
+	}
+	event, err := s.app.CreateEvent(r.Context(), calendar.CreateEventRequestV2{
+		CalendarID: payload.CalendarID,
+		Event: calendar.EventCreateV2{
+			Title: payload.Title, Description: payload.Description, Location: payload.Location,
+			Start: payload.Start, End: payload.End,
+		},
+		Notifications: calendar.NotificationsNone,
+	})
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, event)
+}
+
+func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
+	if s.app == nil || s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "native API is unavailable")
+		return
+	}
+	calendarID, eventID := r.PathValue("calendar_id"), r.PathValue("event_id")
+	if calendarID == "" || eventID == "" {
+		writeError(w, http.StatusBadRequest, "calendar_id and event_id are required")
+		return
+	}
+	var payload eventPayload
+	if err := decodeEventPayload(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if payload.CalendarID != "" && payload.CalendarID != calendarID {
+		writeError(w, http.StatusBadRequest, "calendar_id cannot be changed")
+		return
+	}
+	if !s.requireWritableCalendar(w, r, calendarID) {
+		return
+	}
+	existing, err := s.app.GetEvent(r.Context(), calendar.EventRef{CalendarID: calendarID, EventID: eventID})
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	if existing.RecurringEventID != "" || len(existing.Recurrence) > 0 {
+		writeError(w, http.StatusUnprocessableEntity, "recurring events cannot be edited")
+		return
+	}
+	result, err := s.app.UpdateEvent(r.Context(), calendar.UpdateEventRequestV2{
+		Ref: calendar.EventRef{CalendarID: calendarID, EventID: eventID},
+		Patch: calendar.EventPatchV2{
+			Title: stringPatch(payload.Title), Description: stringPatch(payload.Description), Location: stringPatch(payload.Location),
+			Start: timePatch(payload.Start), End: timePatch(payload.End),
+		},
+		Scope: calendar.ScopeSingle, ExpectedETag: payload.ExpectedETag, Notifications: calendar.NotificationsNone,
+	})
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func stringPatch(value string) calendar.PatchField[string] {
+	return calendar.PatchField[string]{Present: true, Value: value}
+}
+
+func timePatch(value calendar.EventTime) calendar.PatchField[calendar.EventTime] {
+	return calendar.PatchField[calendar.EventTime]{Present: true, Value: value}
 }
 
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
@@ -185,4 +325,26 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func writeApplicationError(w http.ResponseWriter, err error) {
+	var apiError *calendar.APIError
+	if !errors.As(err, &apiError) {
+		writeError(w, http.StatusInternalServerError, "calendar operation failed")
+		return
+	}
+	status := http.StatusBadRequest
+	switch apiError.Code {
+	case calendar.ErrorConflict:
+		status = http.StatusConflict
+	case calendar.ErrorPermissionDenied:
+		status = http.StatusForbidden
+	case calendar.ErrorNotFound:
+		status = http.StatusNotFound
+	case calendar.ErrorUnsupportedCapability:
+		status = http.StatusUnprocessableEntity
+	case calendar.ErrorProviderUnavailable, calendar.ErrorRateLimited, calendar.ErrorPartialFailure:
+		status = http.StatusBadGateway
+	}
+	writeJSON(w, status, map[string]any{"error": apiError.Message, "code": apiError.Code})
 }
