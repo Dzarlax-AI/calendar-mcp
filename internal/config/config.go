@@ -31,10 +31,12 @@ type Config struct {
 	TrustForwardAuth       bool
 	UIAllowUnauthenticated bool
 	UIRawArtifactUsers     []string
-	// NativeAppToken is a dedicated bearer token for the read-only native app
-	// API. It is deliberately distinct from MCP and internal REST API keys.
-	NativeAppToken        string
-	NativeAppTrustedProxy bool
+	// NativeAppToken is a dedicated bearer token for the native app API. It is
+	// deliberately distinct from MCP and internal REST API keys; writes require
+	// the separate NativeAppWritesEnabled opt-in.
+	NativeAppToken         string
+	NativeAppTrustedProxy  bool
+	NativeAppWritesEnabled bool
 
 	// Event read model is deliberately opt-in. It only reads provider event
 	// data; event mutations continue to use the existing notification-safe
@@ -85,6 +87,7 @@ func Load() *Config {
 		UIRawArtifactUsers:     envList("UI_RAW_ARTIFACT_USERS"),
 		NativeAppToken:         envStr("NATIVE_APP_TOKEN", ""),
 		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
+		NativeAppWritesEnabled: envBool("NATIVE_APP_WRITES_ENABLED", false),
 
 		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
 		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),
@@ -126,6 +129,9 @@ func (c *Config) Validate() error {
 		if err := validateNativeAppTransport(c.PublicURL, c.NativeAppTrustedProxy); err != nil {
 			return err
 		}
+	}
+	if c.NativeAppWritesEnabled && c.NativeAppToken == "" {
+		return fmt.Errorf("NATIVE_APP_WRITES_ENABLED requires NATIVE_APP_TOKEN")
 	}
 	if c.DatabaseURL != "" && c.PublicURL == "" {
 		return fmt.Errorf("CALENDAR_PUBLIC_URL is required when DATABASE_URL is configured")

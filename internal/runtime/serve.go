@@ -118,7 +118,7 @@ func Serve(_ context.Context) error {
 	}
 	mcpserver.Register(mux, reg, appService, apiAuth, cfg.EnableV2)
 	if cfg.NativeAppToken != "" && platformStore != nil {
-		mux.Handle("/api/native/v1/", http.StripPrefix("/api/native/v1", nativeapi.New(nativeapi.Config{App: appService, Store: platformStore, Token: cfg.NativeAppToken}).Handler()))
+		mux.Handle("/api/native/v1/", http.StripPrefix("/api/native/v1", nativeapi.New(nativeapi.Config{App: appService, Store: platformStore, Token: cfg.NativeAppToken, WritesEnabled: cfg.NativeAppWritesEnabled}).Handler()))
 	}
 	if platformStore != nil {
 		publicURL := strings.TrimSuffix(cfg.PublicURL, "/")

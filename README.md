@@ -197,6 +197,7 @@ Health endpoints:
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
 | `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
 | `NATIVE_APP_TOKEN` | empty | Dedicated Bearer token for the read-only native app API; requires `DATABASE_URL` and is never revealed in web Settings |
+| `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
 | `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
@@ -216,7 +217,7 @@ The API fails closed when both `API_KEY` and `NATIVE_APP_TOKEN` are empty unless
 
 ### Native app API
 
-Set a separate `NATIVE_APP_TOKEN` to enable the read-only native API in platform mode. It is intended for the Swift client, is distinct from the MCP key, and does not require Authentik or `UI_ALLOW_UNAUTHENTICATED`. A public native endpoint requires both an HTTPS `CALENDAR_PUBLIC_URL` and `NATIVE_APP_TRUSTED_PROXY=true`; the proxy must be the only client-facing route to the service. Localhost-only development may use HTTP without the proxy setting.
+Set a separate `NATIVE_APP_TOKEN` to enable the read-only native API in platform mode. It is intended for the Swift client, is distinct from the MCP key, and does not require Authentik or `UI_ALLOW_UNAUTHENTICATED`. A public native endpoint requires both an HTTPS `CALENDAR_PUBLIC_URL` and `NATIVE_APP_TRUSTED_PROXY=true`; the proxy must be the only client-facing route to the service. Localhost-only development may use HTTP without the proxy setting. Event writes are disabled by default; set `NATIVE_APP_WRITES_ENABLED=true` only after deliberately granting this token write authority.
 
 ```bash
 NATIVE_APP_TOKEN="$(openssl rand -base64 32)" \
@@ -227,7 +228,7 @@ NATIVE_APP_TRUSTED_PROXY=true \
 ./calendar serve
 ```
 
-Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`; no provider-setup or event-mutation routes are exposed. The token is never returned by the Settings page or any API response.
+Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`. With the default `NATIVE_APP_WRITES_ENABLED=false`, no event-mutation routes are exposed. When the explicit opt-in is enabled, `POST /api/native/v1/events` and `PATCH /api/native/v1/events/{calendar_id}/{event_id}` are available for ordinary events; provider notifications remain forced off. The token is never returned by the Settings page or any API response.
 
 Examples:
 
