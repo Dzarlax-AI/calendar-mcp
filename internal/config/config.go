@@ -34,7 +34,10 @@ type Config struct {
 	// NativeAppToken is a dedicated bearer token for the native app API. It is
 	// deliberately distinct from MCP and internal REST API keys; writes require
 	// the separate NativeAppWritesEnabled opt-in.
-	NativeAppToken         string
+	NativeAppToken string
+	// ReadOnlyToken is a separate bearer token for projection-backed clients.
+	// It only authorizes GET /api/native/v1/cached-events.
+	ReadOnlyToken          string
 	NativeAppTrustedProxy  bool
 	NativeAppWritesEnabled bool
 
@@ -86,6 +89,7 @@ func Load() *Config {
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 		UIRawArtifactUsers:     envList("UI_RAW_ARTIFACT_USERS"),
 		NativeAppToken:         envStr("NATIVE_APP_TOKEN", ""),
+		ReadOnlyToken:          envStr("READ_ONLY_TOKEN", ""),
 		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
 		NativeAppWritesEnabled: envBool("NATIVE_APP_WRITES_ENABLED", false),
 
@@ -119,13 +123,13 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.APIKey == "" && c.NativeAppToken == "" && !c.AllowUnauthenticated {
-		return fmt.Errorf("API_KEY or NATIVE_APP_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
+	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
+		return fmt.Errorf("API_KEY, NATIVE_APP_TOKEN, or READ_ONLY_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
 	}
-	if c.NativeAppToken != "" && c.DatabaseURL == "" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires DATABASE_URL")
+	if (c.NativeAppToken != "" || c.ReadOnlyToken != "") && c.DatabaseURL == "" {
+		return fmt.Errorf("native API tokens require DATABASE_URL")
 	}
-	if c.NativeAppToken != "" {
+	if c.NativeAppToken != "" || c.ReadOnlyToken != "" {
 		if err := validateNativeAppTransport(c.PublicURL, c.NativeAppTrustedProxy); err != nil {
 			return err
 		}

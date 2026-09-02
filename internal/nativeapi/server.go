@@ -19,38 +19,75 @@ import (
 )
 
 type Config struct {
-	App           *application.Service
-	Store         *storage.Store
-	Token         string
-	WritesEnabled bool
+	App             *application.Service
+	CachedEventsApp *application.Service
+	Store           *storage.Store
+	Token           string // NATIVE_APP_TOKEN
+	ReadOnlyToken   string // READ_ONLY_TOKEN
+	WritesEnabled   bool
 }
 
 type Server struct {
-	app           *application.Service
-	store         *storage.Store
-	token         string
-	writesEnabled bool
+	app             *application.Service
+	cachedEventsApp *application.Service
+	store           *storage.Store
+	token           string
+	readOnlyToken   string
+	writesEnabled   bool
 }
 
 func New(cfg Config) *Server {
-	return &Server{app: cfg.App, store: cfg.Store, token: cfg.Token, writesEnabled: cfg.WritesEnabled}
+	return &Server{app: cfg.App, cachedEventsApp: cfg.CachedEventsApp, store: cfg.Store, token: cfg.Token, readOnlyToken: cfg.ReadOnlyToken, writesEnabled: cfg.WritesEnabled}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /bootstrap", s.authorized(http.HandlerFunc(s.bootstrap)))
-	mux.Handle("GET /events", s.authorized(http.HandlerFunc(s.events)))
-	if s.writesEnabled {
-		mux.Handle("POST /events", s.authorized(http.HandlerFunc(s.createEvent)))
-		mux.Handle("PATCH /events/{calendar_id}/{event_id}", s.authorized(http.HandlerFunc(s.updateEvent)))
+	if s.token != "" {
+		mux.Handle("GET /bootstrap", s.authorized(s.token, http.HandlerFunc(s.bootstrap)))
+		mux.Handle("GET /events", s.authorized(s.token, http.HandlerFunc(s.events)))
+		if s.writesEnabled {
+			mux.Handle("POST /events", s.authorized(s.token, http.HandlerFunc(s.createEvent)))
+			mux.Handle("PATCH /events/{calendar_id}/{event_id}", s.authorized(s.token, http.HandlerFunc(s.updateEvent)))
+		}
+	}
+	if s.readOnlyToken != "" {
+		mux.Handle("GET /cached-events", s.authorized(s.readOnlyToken, http.HandlerFunc(s.cachedEvents)))
 	}
 	return mux
 }
 
-func (s *Server) authorized(next http.Handler) http.Handler {
+// nativeEventTime is intentionally narrower than calendar.EventTime. The
+// dashboard only needs a provider-normalized all-day date or RFC3339 instant;
+// exposing a timezone or other provider metadata would not change rendering.
+type nativeEventTime struct {
+	Date     string `json:"date,omitempty"`
+	DateTime string `json:"date_time,omitempty"`
+}
+
+type nativeEvent struct {
+	CalendarID string          `json:"calendar_id"`
+	Title      string          `json:"title,omitempty"`
+	Status     string          `json:"status,omitempty"`
+	Start      nativeEventTime `json:"start"`
+	End        nativeEventTime `json:"end"`
+}
+
+type cachedSource struct {
+	CalendarID string `json:"calendar_id"`
+	Status     string `json:"status"`
+	Stale      bool   `json:"stale"`
+}
+
+type cachedEventsResponse struct {
+	Items    []nativeEvent  `json:"items"`
+	Sources  []cachedSource `json:"sources"`
+	Complete bool           `json:"complete"`
+}
+
+func (s *Server) authorized(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if s.token == "" || provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) != 1 {
+		if token == "" || provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -341,6 +378,109 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	sortEventsByStart(items)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "sources": sources, "complete": complete})
+}
+
+// cachedEvents reads only the locally synchronized event projection. It must
+// not fall back to app.ListEvents: a display request cannot trigger provider
+// network I/O or wait on a slow CalDAV read.
+func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
+	if s.cachedEventsApp == nil || s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "cached events are unavailable")
+		return
+	}
+	start, end, ok := parseNativeEventRange(w, r)
+	if !ok {
+		return
+	}
+	allowed, err := s.calendars(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
+		return
+	}
+	allowedIDs := make(map[string]struct{}, len(allowed))
+	for _, item := range allowed {
+		allowedIDs[item.ID] = struct{}{}
+	}
+	ids := unique(r.URL.Query()["calendar_id"])
+	if len(ids) == 0 {
+		for _, item := range allowed {
+			ids = append(ids, item.ID)
+		}
+	}
+	for _, id := range ids {
+		if _, ok := allowedIDs[id]; !ok {
+			writeError(w, http.StatusForbidden, "calendar is unavailable")
+			return
+		}
+	}
+
+	events, statuses, err := s.cachedEventsApp.ListCachedEvents(r.Context(), ids, start, end)
+	if err != nil {
+		writeApplicationError(w, err)
+		return
+	}
+	items := make([]nativeEvent, 0, len(events))
+	for _, event := range events {
+		items = append(items, nativeEvent{
+			CalendarID: event.CalendarID,
+			Title:      event.Title,
+			Status:     event.Status,
+			Start:      nativeEventTime{Date: event.Start.Date, DateTime: event.Start.DateTime},
+			End:        nativeEventTime{Date: event.End.Date, DateTime: event.End.DateTime},
+		})
+	}
+	sortNativeEventsByStart(items)
+
+	response := cachedEventsResponse{
+		Items:    items,
+		Sources:  make([]cachedSource, 0, len(ids)),
+		Complete: true,
+	}
+	statusByCalendar := make(map[string]storage.CachedSourceStatus, len(statuses))
+	for _, status := range statuses {
+		statusByCalendar[status.CalendarID] = status
+	}
+	for _, id := range ids {
+		status, found := statusByCalendar[id]
+		if !found {
+			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "pending", Stale: true})
+			response.Complete = false
+			continue
+		}
+		response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: status.Status, Stale: status.Stale})
+		if status.Status != "ready" || status.Stale || status.WindowStart.After(start) || status.WindowEnd.Before(end) {
+			response.Complete = false
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func parseNativeEventRange(w http.ResponseWriter, r *http.Request) (time.Time, time.Time, bool) {
+	start, err := time.Parse(time.RFC3339, r.URL.Query().Get("start"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "start must be RFC3339")
+		return time.Time{}, time.Time{}, false
+	}
+	end, err := time.Parse(time.RFC3339, r.URL.Query().Get("end"))
+	if err != nil || !end.After(start) {
+		writeError(w, http.StatusBadRequest, "end must be RFC3339 and after start")
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
+}
+
+func sortNativeEventsByStart(items []nativeEvent) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		leftValue, rightValue := left.Start.Date+left.Start.DateTime, right.Start.Date+right.Start.DateTime
+		if leftValue != rightValue {
+			return leftValue < rightValue
+		}
+		if left.CalendarID != right.CalendarID {
+			return left.CalendarID < right.CalendarID
+		}
+		return left.Title < right.Title
+	})
 }
 
 func sortEventsByStart(items []calendar.EventV2) {

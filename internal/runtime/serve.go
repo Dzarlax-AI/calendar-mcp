@@ -117,8 +117,15 @@ func Serve(_ context.Context) error {
 		AllowUnauthenticated: cfg.AllowUnauthenticated,
 	}
 	mcpserver.Register(mux, reg, appService, apiAuth, cfg.EnableV2)
-	if cfg.NativeAppToken != "" && platformStore != nil {
-		mux.Handle("/api/native/v1/", http.StripPrefix("/api/native/v1", nativeapi.New(nativeapi.Config{App: appService, Store: platformStore, Token: cfg.NativeAppToken, WritesEnabled: cfg.NativeAppWritesEnabled}).Handler()))
+	if (cfg.NativeAppToken != "" || cfg.ReadOnlyToken != "") && platformStore != nil {
+		// Keep existing native reads and writes on appService. Only the dedicated
+		// cached-events route receives a projection-aware clone, so it cannot
+		// trigger provider reads even when cache synchronization is partial.
+		var cachedEventsApp *application.Service
+		if cfg.EventReadModelEnabled {
+			cachedEventsApp = appService.CloneWithEventReadModel(platformStore, eventReadModelWindow(cfg, time.Now().UTC()))
+		}
+		mux.Handle("/api/native/v1/", http.StripPrefix("/api/native/v1", nativeapi.New(nativeapi.Config{App: appService, CachedEventsApp: cachedEventsApp, Store: platformStore, Token: cfg.NativeAppToken, ReadOnlyToken: cfg.ReadOnlyToken, WritesEnabled: cfg.NativeAppWritesEnabled}).Handler()))
 	}
 	if platformStore != nil {
 		publicURL := strings.TrimSuffix(cfg.PublicURL, "/")

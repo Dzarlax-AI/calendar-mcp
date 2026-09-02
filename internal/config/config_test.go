@@ -115,6 +115,18 @@ func TestValidateAllowsDedicatedNativeAppToken(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsReadOnlyToken(t *testing.T) {
+	cfg := &Config{
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://localhost:8080",
+		UIAllowUnauthenticated: true,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateRejectsNativeWritesWithoutNativeToken(t *testing.T) {
 	cfg := &Config{NativeAppWritesEnabled: true, DatabaseURL: "sqlite:///tmp/calendar.db"}
 	if err := cfg.Validate(); err == nil {

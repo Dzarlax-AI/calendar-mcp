@@ -197,13 +197,14 @@ Health endpoints:
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
 | `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
 | `NATIVE_APP_TOKEN` | empty | Dedicated Bearer token for the read-only native app API; requires `DATABASE_URL` and is never revealed in web Settings |
+| `READ_ONLY_TOKEN` | empty | Dedicated Bearer token for `GET /api/native/v1/cached-events`; it has no native write access |
 | `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
 | `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
-The API fails closed when both `API_KEY` and `NATIVE_APP_TOKEN` are empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
+The API fails closed when `API_KEY`, `NATIVE_APP_TOKEN`, and `READ_ONLY_TOKEN` are all empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
 
 ### Platform mode
 
@@ -229,6 +230,8 @@ NATIVE_APP_TRUSTED_PROXY=true \
 ```
 
 Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`. With the default `NATIVE_APP_WRITES_ENABLED=false`, no event-mutation routes are exposed. When the explicit opt-in is enabled, `POST /api/native/v1/events` and `PATCH /api/native/v1/events/{calendar_id}/{event_id}` are available for ordinary events; provider notifications remain forced off. The token is never returned by the Settings page or any API response.
+
+`READ_ONLY_TOKEN` is independent from `NATIVE_APP_TOKEN` and enables only `GET /api/native/v1/cached-events`. The route reads the local projection exclusively and returns `503` when the event read model is unavailable. It never authorizes `/bootstrap`, `/events`, or any write route.
 
 Examples:
 

@@ -888,7 +888,7 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	statusRows, err := s.db.QueryContext(ctx, s.query(fmt.Sprintf(`SELECT c.id, conn.provider, ss.status, ss.last_success_at, ss.last_error_code, ss.next_sync_at
+	statusRows, err := s.db.QueryContext(ctx, s.query(fmt.Sprintf(`SELECT c.id, conn.provider, ss.status, ss.last_success_at, ss.last_error_code, ss.next_sync_at, ss.window_start, ss.window_end
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id JOIN calendar_sync_state ss ON ss.calendar_id=c.id
 		WHERE c.id IN (%s) AND c.can_read=? AND conn.status=? ORDER BY c.id`, placeholders)), append(args, true, "connected")...)
 	if err != nil {
@@ -901,7 +901,7 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 		var lastSuccess sql.NullTime
 		var errorCode sql.NullString
 		var nextSync time.Time
-		if err := statusRows.Scan(&status.CalendarID, &status.Provider, &status.Status, &lastSuccess, &errorCode, &nextSync); err != nil {
+		if err := statusRows.Scan(&status.CalendarID, &status.Provider, &status.Status, &lastSuccess, &errorCode, &nextSync, &status.WindowStart, &status.WindowEnd); err != nil {
 			return nil, nil, fmt.Errorf("scan cached source status: %w", err)
 		}
 		if lastSuccess.Valid {
