@@ -419,6 +419,7 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 		writeApplicationError(w, err)
 		return
 	}
+	sortEventsByStart(events)
 	items := make([]nativeEvent, 0, len(events))
 	for _, event := range events {
 		items = append(items, nativeEvent{
@@ -429,8 +430,6 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 			End:        nativeEventTime{Date: event.End.Date, DateTime: event.End.DateTime},
 		})
 	}
-	sortNativeEventsByStart(items)
-
 	response := cachedEventsResponse{
 		Items:    items,
 		Sources:  make([]cachedSource, 0, len(ids)),
@@ -467,20 +466,6 @@ func parseNativeEventRange(w http.ResponseWriter, r *http.Request) (time.Time, t
 		return time.Time{}, time.Time{}, false
 	}
 	return start, end, true
-}
-
-func sortNativeEventsByStart(items []nativeEvent) {
-	sort.SliceStable(items, func(i, j int) bool {
-		left, right := items[i], items[j]
-		leftValue, rightValue := left.Start.Date+left.Start.DateTime, right.Start.Date+right.Start.DateTime
-		if leftValue != rightValue {
-			return leftValue < rightValue
-		}
-		if left.CalendarID != right.CalendarID {
-			return left.CalendarID < right.CalendarID
-		}
-		return left.Title < right.Title
-	})
 }
 
 func sortEventsByStart(items []calendar.EventV2) {

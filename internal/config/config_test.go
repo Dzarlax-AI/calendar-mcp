@@ -127,6 +127,28 @@ func TestValidateAllowsReadOnlyToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsReadOnlyTokenCollisions(t *testing.T) {
+	base := Config{
+		APIKey:                 "api-token",
+		LegacyAPIKey:           "legacy-token",
+		NativeAppToken:         "native-token",
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://localhost:8080",
+		UIAllowUnauthenticated: true,
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("distinct credentials must validate: %v", err)
+	}
+	for _, token := range []string{base.APIKey, base.LegacyAPIKey, base.NativeAppToken} {
+		cfg := base
+		cfg.ReadOnlyToken = token
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate() accepted READ_ONLY_TOKEN collision with %q", token)
+		}
+	}
+}
+
 func TestValidateRejectsNativeWritesWithoutNativeToken(t *testing.T) {
 	cfg := &Config{NativeAppWritesEnabled: true, DatabaseURL: "sqlite:///tmp/calendar.db"}
 	if err := cfg.Validate(); err == nil {

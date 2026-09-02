@@ -126,6 +126,19 @@ func (c *Config) Validate() error {
 	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
 		return fmt.Errorf("API_KEY, NATIVE_APP_TOKEN, or READ_ONLY_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
 	}
+	if c.ReadOnlyToken != "" {
+		for _, credential := range []struct {
+			name, value string
+		}{
+			{"API_KEY", c.APIKey},
+			{"API_KEY_LEGACY", c.LegacyAPIKey},
+			{"NATIVE_APP_TOKEN", c.NativeAppToken},
+		} {
+			if c.ReadOnlyToken == credential.value && credential.value != "" {
+				return fmt.Errorf("READ_ONLY_TOKEN must differ from %s", credential.name)
+			}
+		}
+	}
 	if (c.NativeAppToken != "" || c.ReadOnlyToken != "") && c.DatabaseURL == "" {
 		return fmt.Errorf("native API tokens require DATABASE_URL")
 	}
