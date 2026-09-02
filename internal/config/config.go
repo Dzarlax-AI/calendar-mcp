@@ -168,10 +168,10 @@ func (c *Config) Validate() error {
 func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
 	parsed, err := url.Parse(publicURL)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires a valid CALENDAR_PUBLIC_URL")
+		return fmt.Errorf("native API tokens require a valid CALENDAR_PUBLIC_URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
+		return fmt.Errorf("native API tokens require CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
 	}
 	isLoopback := parsed.Hostname() == "localhost"
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsLoopback() {
@@ -185,7 +185,7 @@ func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("NATIVE_APP_TOKEN requires an HTTPS CALENDAR_PUBLIC_URL and NATIVE_APP_TRUSTED_PROXY=true unless it is loopback-only")
+	return fmt.Errorf("native API tokens require an HTTPS CALENDAR_PUBLIC_URL and NATIVE_APP_TRUSTED_PROXY=true unless it is loopback-only")
 }
 
 // ValidateEventReadModel checks bounds before the serve or worker process can

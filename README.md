@@ -197,7 +197,7 @@ Health endpoints:
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
 | `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
 | `NATIVE_APP_TOKEN` | empty | Dedicated Bearer token for the read-only native app API; requires `DATABASE_URL` and is never revealed in web Settings |
-| `READ_ONLY_TOKEN` | empty | Dedicated Bearer token for `GET /api/native/v1/cached-events`; it has no native write access |
+| `READ_ONLY_TOKEN` | empty | Dedicated Bearer token for `GET /api/native/v1/cached-events`; requires `DATABASE_URL` and has no native write access |
 | `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |

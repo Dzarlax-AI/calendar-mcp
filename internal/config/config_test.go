@@ -186,6 +186,23 @@ func TestValidateRejectsNativeAppTokenWithoutPlatformStorage(t *testing.T) {
 	}
 }
 
+func TestValidateReadOnlyTokenUsesTokenNeutralTransportErrors(t *testing.T) {
+	cfg := &Config{
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://calendar.example.com",
+		NativeAppTrustedProxy:  false,
+		UIAllowUnauthenticated: true,
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted an unsafe READ_ONLY_TOKEN transport")
+	}
+	if !strings.Contains(err.Error(), "native API tokens") {
+		t.Fatalf("Validate() error = %q, want token-neutral wording", err)
+	}
+}
+
 func TestValidateAllowsPartialProviderConfigurationToBeSkipped(t *testing.T) {
 	cfg := &Config{APIKey: "secret", GoogleClientID: "client"}
 	if err := cfg.Validate(); err != nil {
