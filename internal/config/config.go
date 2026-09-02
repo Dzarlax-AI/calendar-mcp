@@ -34,7 +34,10 @@ type Config struct {
 	// NativeAppToken is a dedicated bearer token for the native app API. It is
 	// deliberately distinct from MCP and internal REST API keys; writes require
 	// the separate NativeAppWritesEnabled opt-in.
-	NativeAppToken         string
+	NativeAppToken string
+	// ReadOnlyToken is a separate bearer token for projection-backed clients.
+	// It only authorizes GET /api/native/v1/cached-events.
+	ReadOnlyToken          string
 	NativeAppTrustedProxy  bool
 	NativeAppWritesEnabled bool
 
@@ -86,6 +89,7 @@ func Load() *Config {
 		UIAllowUnauthenticated: envBool("UI_ALLOW_UNAUTHENTICATED", false),
 		UIRawArtifactUsers:     envList("UI_RAW_ARTIFACT_USERS"),
 		NativeAppToken:         envStr("NATIVE_APP_TOKEN", ""),
+		ReadOnlyToken:          envStr("READ_ONLY_TOKEN", ""),
 		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
 		NativeAppWritesEnabled: envBool("NATIVE_APP_WRITES_ENABLED", false),
 
@@ -119,13 +123,26 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.APIKey == "" && c.NativeAppToken == "" && !c.AllowUnauthenticated {
-		return fmt.Errorf("API_KEY or NATIVE_APP_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
+	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
+		return fmt.Errorf("API_KEY, NATIVE_APP_TOKEN, or READ_ONLY_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
 	}
-	if c.NativeAppToken != "" && c.DatabaseURL == "" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires DATABASE_URL")
+	if c.ReadOnlyToken != "" {
+		for _, credential := range []struct {
+			name, value string
+		}{
+			{"API_KEY", c.APIKey},
+			{"API_KEY_LEGACY", c.LegacyAPIKey},
+			{"NATIVE_APP_TOKEN", c.NativeAppToken},
+		} {
+			if c.ReadOnlyToken == credential.value && credential.value != "" {
+				return fmt.Errorf("READ_ONLY_TOKEN must differ from %s", credential.name)
+			}
+		}
 	}
-	if c.NativeAppToken != "" {
+	if (c.NativeAppToken != "" || c.ReadOnlyToken != "") && c.DatabaseURL == "" {
+		return fmt.Errorf("native API tokens require DATABASE_URL")
+	}
+	if c.NativeAppToken != "" || c.ReadOnlyToken != "" {
 		if err := validateNativeAppTransport(c.PublicURL, c.NativeAppTrustedProxy); err != nil {
 			return err
 		}
@@ -151,10 +168,10 @@ func (c *Config) Validate() error {
 func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
 	parsed, err := url.Parse(publicURL)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires a valid CALENDAR_PUBLIC_URL")
+		return fmt.Errorf("native API tokens require a valid CALENDAR_PUBLIC_URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("NATIVE_APP_TOKEN requires CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
+		return fmt.Errorf("native API tokens require CALENDAR_PUBLIC_URL to use HTTP or HTTPS")
 	}
 	isLoopback := parsed.Hostname() == "localhost"
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsLoopback() {
@@ -168,7 +185,7 @@ func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("NATIVE_APP_TOKEN requires an HTTPS CALENDAR_PUBLIC_URL and NATIVE_APP_TRUSTED_PROXY=true unless it is loopback-only")
+	return fmt.Errorf("native API tokens require an HTTPS CALENDAR_PUBLIC_URL and NATIVE_APP_TRUSTED_PROXY=true unless it is loopback-only")
 }
 
 // ValidateEventReadModel checks bounds before the serve or worker process can

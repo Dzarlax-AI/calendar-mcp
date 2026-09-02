@@ -115,6 +115,40 @@ func TestValidateAllowsDedicatedNativeAppToken(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsReadOnlyToken(t *testing.T) {
+	cfg := &Config{
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://localhost:8080",
+		UIAllowUnauthenticated: true,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsReadOnlyTokenCollisions(t *testing.T) {
+	base := Config{
+		APIKey:                 "api-token",
+		LegacyAPIKey:           "legacy-token",
+		NativeAppToken:         "native-token",
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://localhost:8080",
+		UIAllowUnauthenticated: true,
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("distinct credentials must validate: %v", err)
+	}
+	for _, token := range []string{base.APIKey, base.LegacyAPIKey, base.NativeAppToken} {
+		cfg := base
+		cfg.ReadOnlyToken = token
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate() accepted READ_ONLY_TOKEN collision with %q", token)
+		}
+	}
+}
+
 func TestValidateRejectsNativeWritesWithoutNativeToken(t *testing.T) {
 	cfg := &Config{NativeAppWritesEnabled: true, DatabaseURL: "sqlite:///tmp/calendar.db"}
 	if err := cfg.Validate(); err == nil {
@@ -149,6 +183,23 @@ func TestValidateRejectsNativeAppTokenWithoutPlatformStorage(t *testing.T) {
 	cfg := &Config{NativeAppToken: "native-token"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() accepted NATIVE_APP_TOKEN without DATABASE_URL")
+	}
+}
+
+func TestValidateReadOnlyTokenUsesTokenNeutralTransportErrors(t *testing.T) {
+	cfg := &Config{
+		ReadOnlyToken:          "read-only-token",
+		DatabaseURL:            "sqlite:///tmp/calendar.db",
+		PublicURL:              "http://calendar.example.com",
+		NativeAppTrustedProxy:  false,
+		UIAllowUnauthenticated: true,
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted an unsafe READ_ONLY_TOKEN transport")
+	}
+	if !strings.Contains(err.Error(), "native API tokens") {
+		t.Fatalf("Validate() error = %q, want token-neutral wording", err)
 	}
 }
 

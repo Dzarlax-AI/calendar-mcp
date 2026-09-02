@@ -193,5 +193,6 @@ type CachedSourceStatus struct {
 	Provider, CalendarID, Status, ErrorCode string
 	LastSuccessAt                           *time.Time
 	NextSyncAt                              *time.Time
+	WindowStart, WindowEnd                  time.Time
 	Stale                                   bool
 }

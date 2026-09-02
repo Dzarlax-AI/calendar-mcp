@@ -18,6 +18,7 @@ import (
 type testProvider struct {
 	createRequest calendar.CreateEventRequestV2
 	updateRequest calendar.UpdateEventRequestV2
+	listCalls     int
 }
 
 func (*testProvider) Name() string                                               { return "google" }
@@ -39,7 +40,8 @@ func (*testProvider) Capabilities(context.Context, string) (calendar.CalendarCap
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
 	}, nil
 }
-func (*testProvider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+func (p *testProvider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	p.listCalls++
 	return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "event-1", CalendarID: "google:primary", Provider: "google", Title: "Planning", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}}}, Complete: true}, nil
 }
 func (*testProvider) GetEventV2(_ context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
@@ -63,7 +65,7 @@ func (*testProvider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV
 	return nil, nil
 }
 
-func testHandler(t *testing.T, writesEnabled bool) (http.Handler, *testProvider) {
+func testHandler(t *testing.T, writesEnabled bool) (http.Handler, *testProvider, *storage.Store) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
@@ -83,7 +85,8 @@ func testHandler(t *testing.T, writesEnabled bool) (http.Handler, *testProvider)
 	}
 	provider := &testProvider{}
 	app := application.New(calendar.NewRegistry([]calendar.Provider{provider}))
-	return New(Config{App: app, Store: store, Token: "native-token", WritesEnabled: writesEnabled}).Handler(), provider
+	cachedEventsApp := app.CloneWithEventReadModel(store, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)})
+	return New(Config{App: app, CachedEventsApp: cachedEventsApp, Store: store, Token: "native-token", ReadOnlyToken: "read-only-token", WritesEnabled: writesEnabled}).Handler(), provider, store
 }
 
 func request(handler http.Handler, method, path, token string, body ...string) *httptest.ResponseRecorder {
@@ -103,7 +106,7 @@ func request(handler http.Handler, method, path, token string, body ...string) *
 }
 
 func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
-	handler, _ := testHandler(t, false)
+	handler, _, _ := testHandler(t, false)
 	if got := request(handler, http.MethodGet, "/bootstrap", "").Code; got != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
 	}
@@ -113,10 +116,111 @@ func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
 	if got := request(handler, http.MethodGet, "/bootstrap", "native-token").Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want %d", got, http.StatusOK)
 	}
+	if got := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "").Code; got != http.StatusUnauthorized {
+		t.Fatalf("cached events status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "native-token").Code; got != http.StatusUnauthorized {
+		t.Fatalf("cached events with native token status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "read-only-token").Code; got != http.StatusOK {
+		t.Fatalf("cached events with read-only token status = %d, want %d", got, http.StatusOK)
+	}
+	if got := request(handler, http.MethodPost, "/events", "read-only-token", `{}`).Code; got != http.StatusMethodNotAllowed {
+		t.Fatalf("write with read-only token status = %d, want %d", got, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestNativeAPICachedEventsUsesProjectionAndReportsPartialFreshness(t *testing.T) {
+	handler, provider, store := testHandler(t, false)
+	prepareCachedCalendar(t, store, "google:primary")
+	now := time.Now().UTC()
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:unwarmed", ConnectionID: "account", ProviderCalendarID: "unwarmed", Name: "Unwarmed", Timezone: "UTC", CanRead: true, CanWrite: false, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []calendar.EventV2{
+		{ID: "timed", CalendarID: "google:primary", Provider: "google", Title: "Planning", Description: "must not leave the cache endpoint", Status: "confirmed", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}},
+		{ID: "all-day", CalendarID: "google:primary", Provider: "google", Title: "Holiday", Start: calendar.EventTime{Date: "2026-08-28"}, End: calendar.EventTime{Date: "2026-08-29"}},
+	} {
+		if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:primary&calendar_id=google:unwarmed", "read-only-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("cached endpoint called provider ListEventsV2 %d times", provider.listCalls)
+	}
+	if strings.Contains(w.Body.String(), "description") || strings.Contains(w.Body.String(), "time_zone") || strings.Contains(w.Body.String(), "provider") {
+		t.Fatalf("cached response exposes fields outside the narrow DTO: %s", w.Body.String())
+	}
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Complete || len(response.Items) != 2 || len(response.Sources) != 2 {
+		t.Fatalf("response = %#v, body = %s", response, w.Body.String())
+	}
+	if response.Items[0].Start.Date != "2026-08-28" || response.Items[0].End.Date != "2026-08-29" {
+		t.Fatalf("all-day event = %#v", response.Items[0])
+	}
+	if response.Items[1].Start.DateTime != "2026-08-28T09:00:00Z" || response.Items[1].End.DateTime != "2026-08-28T10:00:00Z" {
+		t.Fatalf("timed event = %#v", response.Items[1])
+	}
+	if response.Sources[0] != (cachedSource{CalendarID: "google:primary", Status: "ready", Stale: false}) {
+		t.Fatalf("ready source = %#v", response.Sources[0])
+	}
+	if response.Sources[1] != (cachedSource{CalendarID: "google:unwarmed", Status: "pending", Stale: true}) {
+		t.Fatalf("pending source = %#v", response.Sources[1])
+	}
+}
+
+func TestNativeAPICachedEventsIsIncompleteOutsideProjectionWindow(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	prepareCachedCalendar(t, store, "google:primary")
+	w := request(handler, http.MethodGet, "/cached-events?start=2030-08-28T00:00:00Z&end=2030-08-29T00:00:00Z&calendar_id=google:primary", "read-only-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Complete {
+		t.Fatalf("response outside projection window must be incomplete: %#v", response)
+	}
+}
+
+func TestNativeAPICachedEventsReturnsServiceUnavailableWithoutReadModel(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	provider := &testProvider{}
+	app := application.New(calendar.NewRegistry([]calendar.Provider{provider}))
+	handler = New(Config{App: app, Store: store, Token: "native-token", ReadOnlyToken: "read-only-token"}).Handler()
+	if got := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "read-only-token").Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func prepareCachedCalendar(t *testing.T, store *storage.Store, calendarID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.ClaimDueCalendarSync(t.Context(), "warm-worker", now, now.Add(time.Minute))
+	if err != nil || state == nil || state.CalendarID != calendarID {
+		t.Fatalf("claim cached calendar state=%#v err=%v", state, err)
+	}
+	next := now.Add(time.Hour)
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t *testing.T) {
-	handler, provider := testHandler(t, true)
+	handler, provider, _ := testHandler(t, true)
 	w := request(handler, http.MethodGet, "/events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "native-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -156,7 +260,7 @@ func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t
 }
 
 func TestNativeAPIWritesRequireExplicitOptIn(t *testing.T) {
-	handler, _ := testHandler(t, false)
+	handler, _, _ := testHandler(t, false)
 	if got := request(handler, http.MethodPost, "/events", "native-token", `{}`).Code; got != http.StatusMethodNotAllowed {
 		t.Fatalf("create status = %d, want %d", got, http.StatusMethodNotAllowed)
 	}
@@ -179,7 +283,7 @@ func TestNativeAPIWritesRequireExplicitOptIn(t *testing.T) {
 }
 
 func TestNativeAPIPatchPreservesOmittedFields(t *testing.T) {
-	handler, provider := testHandler(t, true)
+	handler, provider, _ := testHandler(t, true)
 	if got := request(handler, http.MethodPatch, "/events/google:primary/event-1", "native-token", `{"title":"Retitled"}`).Code; got != http.StatusOK {
 		t.Fatalf("update status = %d", got)
 	}

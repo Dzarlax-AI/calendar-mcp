@@ -49,6 +49,7 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>`
 | `REST_LISTEN_ADDR` | _(empty)_ | Internal REST API (optional) |
 | `API_KEY` | _(empty)_ | Auth key for MCP endpoints |
 | `NATIVE_APP_TOKEN` | _(empty)_ | Dedicated token for the read-only native app API; requires platform storage |
+| `READ_ONLY_TOKEN` | _(empty)_ | Token restricted to cached-event reads for HomeDash; requires platform storage |
 | `TOKEN_DIR` | `/app/data` | OAuth2 token file storage |
 | `GOOGLE_CLIENT_ID` | | Google OAuth2 client ID |
 | `GOOGLE_CLIENT_SECRET` | | Google OAuth2 client secret |
