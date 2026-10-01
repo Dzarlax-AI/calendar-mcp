@@ -3,12 +3,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RunRecord } from "../../lib/types";
 
 const bootstrap = {
   csrf_token: "test-csrf",
   calendars: [],
   rules: [],
-  runs: [],
+  runs: [] as RunRecord[],
   connections: [],
   settings: {},
 };
@@ -28,12 +29,20 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  bootstrap.runs = [];
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
 });
 
 describe("sync activity", () => {
+  it("shows the server explanation for a successful standalone fallback", () => {
+    bootstrap.runs = [{ id: "run", status: "succeeded", outcome: "succeeded", message: "Some recurring events are mirrored as individual events because their source series was unavailable." }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.textContent).toContain("mirrored as individual events");
+    expect(container.querySelector(".status-pill.success")?.textContent).toBe("succeeded");
+  });
+
   it("keeps rules and recent activity on one page", () => {
     act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
 

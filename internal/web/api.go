@@ -17,6 +17,7 @@ import (
 
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/storage"
+	"calendar-mcp/internal/syncengine"
 )
 
 // The browser API is deliberately a narrower contract than the external V2
@@ -539,6 +540,9 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 }
 
 func safeRunSummary(run storage.Run) string {
+	if run.Outcome == "succeeded" && run.WarningCount > 0 && run.ErrorSummary == syncengine.DetachedSeriesWarning {
+		return syncengine.DetachedSeriesWarning
+	}
 	if run.ErrorSummary == "" {
 		return ""
 	}

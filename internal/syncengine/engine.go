@@ -19,7 +19,9 @@ type MappingStore interface {
 	DeleteMapping(context.Context, string) error
 }
 
-type Result struct{ Created, Updated, Deleted, Skipped, Warnings int }
+const DetachedSeriesWarning = "Some recurring events are mirrored as individual events because their source series was unavailable."
+
+type Result struct{ Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int }
 
 type RecurrenceCompatibilityError struct{ Cause error }
 
@@ -73,6 +75,41 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 		byKey[mappingKey(mapping.SourceEventID, mapping.OriginalStart)] = mapping
 	}
 	events = deduplicateAndOrder(events)
+	// Once a rule mirrors a series as individual instances, keep that mode even
+	// if the source master reappears. Creating a target series would duplicate
+	// the existing standalone copies. SourceSeriesID persists the choice.
+	detached := map[string]bool{}
+	for _, mapping := range existing {
+		if mapping.ObjectKind == "detached_occurrence" && mapping.SourceSeriesID != "" {
+			detached[mapping.SourceSeriesID] = true
+		}
+	}
+	for _, event := range events {
+		if event.InstanceKind == calendar.OrphanOccurrence {
+			if _, mirrored := findSeriesMapping(byKey, event.RecurringEventID); !mirrored {
+				detached[event.RecurringEventID] = true
+			}
+		}
+	}
+	filtered := make([]calendar.EventV2, 0, len(events))
+	activeDetached := map[string]bool{}
+	for _, event := range events {
+		if objectKind(event) == "series" && detached[event.ID] {
+			activeDetached[event.ID] = true
+			continue
+		}
+		if detached[event.RecurringEventID] {
+			activeDetached[event.RecurringEventID] = true
+			event.InstanceKind = calendar.OrphanOccurrence
+			event.Recurrence = nil
+		} else if event.InstanceKind == calendar.OrphanOccurrence {
+			// A target series already exists: update its matching instance rather
+			// than creating a standalone duplicate.
+			event.InstanceKind = "exception"
+		}
+		filtered = append(filtered, event)
+	}
+	events = filtered
 	if validator, ok := targetProvider.(calendar.RecurrenceWriteValidator); ok {
 		for _, event := range events {
 			if objectKind(event) != "series" {
@@ -91,7 +128,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	}
 	occurrences := indexOccurrences(events)
 	seen := map[string]bool{}
-	result := Result{}
+	result := Result{Warnings: len(activeDetached), DetachedSeries: len(activeDetached)}
 	for _, event := range events {
 		if isPlainOccurrence(event) {
 			result.Skipped++
@@ -101,6 +138,37 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 		key := mappingKey(event.ID, originalStart)
 		seen[key] = true
 		mapping, mapped := byKey[key]
+		if mapped && mapping.ReconciliationState == "pending_create" {
+			if event.Status == "cancelled" {
+				lookup, ok := targetProvider.(calendar.SyncMarkerLookupProvider)
+				if !ok {
+					return result, errors.New("target provider cannot recover a pending standalone instance")
+				}
+				copy, err := lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
+				if err != nil {
+					return result, fmt.Errorf("recover cancelled standalone instance: %w", err)
+				}
+				if copy != nil {
+					result.Deleted++
+					if !dryRun {
+						if _, err := target.DeleteEventV2(ctx, calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: copy.ID}, Scope: scopeFor(event), Notifications: calendar.NotificationsNone}); err != nil {
+							return result, err
+						}
+					}
+				} else {
+					result.Skipped++
+				}
+				if !dryRun {
+					if err := e.mappings.DeleteMapping(ctx, mapping.ID); err != nil {
+						return result, err
+					}
+					delete(byKey, key)
+				}
+				continue
+			}
+			// The placeholder identifies local intent, never a provider object.
+			mapped = false
+		}
 		hash := hashEvent(event)
 		if isSeriesException(event) {
 			seriesMapping, seriesMapped := findSeriesMapping(byKey, event.RecurringEventID)
@@ -193,6 +261,15 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 			if !ok {
 				return result, fmt.Errorf("target provider %q does not support idempotent sync-marker recovery", targetProvider.Name())
 			}
+			if objectKind(event) == "detached_occurrence" {
+				// Persist the standalone choice before a provider write. A crash
+				// must not let a recovered source master create a duplicate series.
+				intentID := newMappingID(rule.ID, event.ID, originalStart)
+				intent := storage.Mapping{ID: intentID, RuleID: rule.ID, ObjectKind: "detached_occurrence", SourceEventID: event.ID, SourceSeriesID: event.RecurringEventID, OriginalStart: originalStart, TargetEventID: "pending:" + intentID, LastSeenAt: now, ReconciliationState: "pending_create"}
+				if err := e.mappings.UpsertMapping(ctx, intent); err != nil {
+					return result, fmt.Errorf("persist standalone instance intent: %w", err)
+				}
+			}
 			created, err := lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
 			if err != nil {
 				return result, fmt.Errorf("recover target event by sync marker: %w", err)
@@ -202,6 +279,13 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 				created, err = target.CreateEventV2(ctx, calendar.CreateEventRequestV2{CalendarID: targetCalendarID, Event: mirrorCreate(rule.ID, event, targetProvider.Name()), Notifications: calendar.NotificationsNone})
 				if err != nil {
 					return result, fmt.Errorf("create target event: %w", err)
+				}
+			} else if objectKind(event) == "detached_occurrence" && hashEvent(*created) != hash {
+				// A recovered marker may predate a source edit. Bring the copy up
+				// to date before committing a mapping with the new content hash.
+				result.Updated++
+				if _, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: created.ID}, Patch: mirrorPatch(event), Scope: scopeFor(event), Notifications: calendar.NotificationsNone}); err != nil {
+					return result, fmt.Errorf("update recovered standalone instance: %w", err)
 				}
 			}
 			mapping = storage.Mapping{ID: newMappingID(rule.ID, event.ID, originalStart), RuleID: rule.ID, ObjectKind: objectKind(event), SourceEventID: event.ID, SourceSeriesID: event.RecurringEventID, OriginalStart: originalStart, TargetEventID: created.ID, TargetSeriesID: created.RecurringEventID, ContentHash: hash, LastSeenAt: now, ReconciliationState: "current"}
@@ -372,11 +456,11 @@ func seriesOccurrenceKey(seriesID, originalStart string) string {
 }
 
 func isPlainOccurrence(event calendar.EventV2) bool {
-	return event.RecurringEventID != "" && event.Status != "cancelled" && event.InstanceKind != "exception"
+	return event.RecurringEventID != "" && event.Status != "cancelled" && event.InstanceKind != "exception" && event.InstanceKind != calendar.OrphanOccurrence
 }
 
 func isSeriesException(event calendar.EventV2) bool {
-	return event.RecurringEventID != "" && (event.InstanceKind == "exception" || event.InstanceKind == "cancelled" || event.Status == "cancelled")
+	return event.InstanceKind != calendar.OrphanOccurrence && event.RecurringEventID != "" && (event.InstanceKind == "exception" || event.InstanceKind == "cancelled" || event.Status == "cancelled")
 }
 
 func listAll(ctx context.Context, provider calendar.EventProviderV2, request calendar.ListEventsRequestV2) ([]calendar.EventV2, error) {
@@ -396,6 +480,12 @@ func listAll(ctx context.Context, provider calendar.EventProviderV2, request cal
 
 func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) calendar.EventCreateV2 {
 	created := calendar.EventCreateV2{ICalUID: event.ICalUID, Title: event.Title, Description: event.Description, Location: event.Location, Start: event.Start, End: event.End, Recurrence: append([]string(nil), event.Recurrence...), Transparency: event.Transparency, Visibility: event.Visibility, SyncMarker: &calendar.SyncMarker{RuleID: ruleID, SourceEventID: event.ID}}
+	if event.InstanceKind == calendar.OrphanOccurrence {
+		// A recurrence UID is shared by all source instances. Detached copies
+		// need distinct, stable UIDs, particularly for UID-addressed CalDAV.
+		created.ICalUID = newMappingID(ruleID, event.ID, eventOriginalStart(event)) + "@calendar-mcp"
+		created.Recurrence = nil
+	}
 	if targetProvider == "google" {
 		created.Google = &calendar.GoogleEventExtension{PrivateProperties: map[string]string{"calendar_sync_rule": ruleID, "calendar_source_event": event.ID}}
 	}
@@ -414,6 +504,9 @@ func present[T any](value T) calendar.PatchField[T] {
 	return calendar.PatchField[T]{Present: true, Value: value}
 }
 func scopeFor(event calendar.EventV2) calendar.MutationScope {
+	if event.InstanceKind == calendar.OrphanOccurrence {
+		return calendar.ScopeSeries
+	}
 	if event.RecurringEventID != "" || event.OriginalStart != nil {
 		return calendar.ScopeSingle
 	}
@@ -421,6 +514,8 @@ func scopeFor(event calendar.EventV2) calendar.MutationScope {
 }
 func objectKind(event calendar.EventV2) string {
 	switch event.InstanceKind {
+	case calendar.OrphanOccurrence:
+		return "detached_occurrence"
 	case "seriesMaster":
 		return "series"
 	case "exception":
