@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
+
+	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
 )
@@ -148,6 +152,7 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		state.ExpandedDone = page.NextPageToken == ""
 	}
 	masters := map[string]calendar.EventV2{}
+	unavailable := map[string]bool{}
 	for _, item := range items {
 		if item.InstanceKind == "seriesMaster" {
 			masters[item.ID] = item
@@ -160,8 +165,18 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		}
 		master, ok := masters[item.RecurringEventID]
 		if !ok {
+			if unavailable[item.RecurringEventID] {
+				item.InstanceKind = calendar.OrphanOccurrence
+				continue
+			}
 			loaded, loadErr := p.GetEventV2(ctx, calendar.EventRef{CalendarID: request.CalendarID, EventID: item.RecurringEventID})
 			if loadErr != nil {
+				var apiErr *googleapi.Error
+				if errors.As(loadErr, &apiErr) && apiErr.Code == http.StatusNotFound {
+					unavailable[item.RecurringEventID] = true
+					item.InstanceKind = calendar.OrphanOccurrence
+					continue
+				}
 				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("load Google series master %q: %w", item.RecurringEventID, loadErr)
 			}
 			master = *loaded

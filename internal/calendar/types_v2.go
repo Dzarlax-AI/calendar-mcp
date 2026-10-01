@@ -138,6 +138,10 @@ type GoogleEventExtension struct {
 	PrivateCopy       bool              `json:"private_copy,omitempty"`
 }
 
+// OrphanOccurrence identifies a readable instance whose Google series master
+// returned 404. Keep its source series and original start for stable mirroring.
+const OrphanOccurrence = "orphanOccurrence"
+
 type EventV2 struct {
 	ID                string                `json:"id"`
 	CalendarID        string                `json:"calendar_id"`

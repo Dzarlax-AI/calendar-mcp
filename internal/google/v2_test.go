@@ -4,15 +4,94 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	gcal "google.golang.org/api/calendar/v3"
 
 	"calendar-mcp/internal/calendar"
 )
+
+func TestListBothViewsMissingMaster(t *testing.T) {
+	for _, status := range []int{404, 403, 429, 500} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			loads := 0
+			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/events/missing") {
+					loads++
+					w.WriteHeader(status)
+					_, _ = io.WriteString(w, `{"error":{"code":`+fmt.Sprint(status)+`,"message":"Unavailable"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"items":[{"id":"instance","summary":"Meeting","recurringEventId":"missing","originalStartTime":{"dateTime":"2026-10-01T08:00:00Z"},"start":{"dateTime":"2026-10-01T08:00:00Z"},"end":{"dateTime":"2026-10-01T11:00:00Z"}}]}`)
+			})
+			defer closeServer()
+			page, err := provider.ListEventsV2(t.Context(), calendar.ListEventsRequestV2{CalendarID: "primary", Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth})
+			if status != 404 {
+				if err == nil {
+					t.Fatal("provider error was suppressed")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loads != 1 {
+				t.Fatalf("master loads = %d, want 1", loads)
+			}
+			for _, event := range page.Items {
+				if event.InstanceKind != "orphanOccurrence" || event.RecurringEventID != "missing" || event.OriginalStart == nil || event.Title != "Meeting" {
+					t.Fatalf("lost orphan data: %#v", event)
+				}
+			}
+			if len(page.Items) == 0 || !page.Complete {
+				t.Fatalf("page = %#v", page)
+			}
+		})
+	}
+}
+
+func TestListBothViewsMissingMasterAcrossPagesKeepsAllDayInstance(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/events/missing") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Not Found"}}`)
+			return
+		}
+		if r.URL.Query().Get("singleEvents") == "true" {
+			_, _ = io.WriteString(w, `{"items":[]}`)
+			return
+		}
+		if r.URL.Query().Get("pageToken") == "second" {
+			_, _ = io.WriteString(w, `{"items":[{"id":"day2","summary":"Day two","recurringEventId":"missing","originalStartTime":{"date":"2026-10-02"},"start":{"date":"2026-10-02"},"end":{"date":"2026-10-03"}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[{"id":"day1","summary":"Day one","recurringEventId":"missing","originalStartTime":{"date":"2026-10-01"},"start":{"date":"2026-10-01"},"end":{"date":"2026-10-02"}}],"nextPageToken":"second"}`)
+	})
+	defer closeServer()
+	request := calendar.ListEventsRequestV2{CalendarID: "primary", Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth}
+	first, err := provider.ListEventsV2(t.Context(), request)
+	if err != nil || first.NextPageToken == "" || len(first.Items) != 1 {
+		t.Fatalf("first page = %#v, %v", first, err)
+	}
+	request.PageToken = first.NextPageToken
+	second, err := provider.ListEventsV2(t.Context(), request)
+	if err != nil || second.NextPageToken != "" || len(second.Items) != 1 {
+		t.Fatalf("second page = %#v, %v", second, err)
+	}
+	for _, page := range []calendar.Page[calendar.EventV2]{first, second} {
+		event := page.Items[0]
+		if !page.Complete || event.InstanceKind != calendar.OrphanOccurrence || event.OriginalStart == nil || event.OriginalStart.Date != event.Start.Date || !event.Start.IsAllDay() {
+			t.Fatalf("all-day instance = %#v", event)
+		}
+	}
+}
 
 func TestCreateEventV2MapsRecurringEventAndSafetyOptions(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {

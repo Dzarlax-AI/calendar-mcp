@@ -18,7 +18,26 @@ import (
 	"calendar-mcp/internal/connections"
 	"calendar-mcp/internal/credentials"
 	"calendar-mcp/internal/storage"
+	"calendar-mcp/internal/syncengine"
 )
+
+func TestSafeRunSummaryShowsOnlyBoundedStandaloneWarning(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		run  storage.Run
+		want string
+	}{
+		{"standalone", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.DetachedSeriesWarning}, syncengine.DetachedSeriesWarning},
+		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run failed; inspect server logs for details."},
+		{"failed run", storage.Run{Outcome: "failed", ErrorSummary: syncengine.DetachedSeriesWarning}, "Run failed; inspect server logs for details."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeRunSummary(tt.run); got != tt.want {
+				t.Fatalf("summary = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 type uiAPIProvider struct {
 	name               string

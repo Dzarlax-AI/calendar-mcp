@@ -3,6 +3,7 @@ package syncengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ type fakeV2Provider struct {
 	instances                 []calendar.EventV2
 	lastRequest               calendar.ListEventsRequestV2
 	lastUpdate                calendar.UpdateEventRequestV2
+	lastCreate                calendar.CreateEventRequestV2
+	uniqueCreatedIDs          bool
 	lastDelete                calendar.DeleteEventRequestV2
 	created, updated, deleted int
 	recurrenceErr             error
@@ -98,7 +101,131 @@ func (p *fakeV2Provider) FindEventBySyncMarkerV2(_ context.Context, _ string, ru
 }
 func (p *fakeV2Provider) CreateEventV2(_ context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
 	p.created++
-	return &calendar.EventV2{ID: "target-event", CalendarID: request.CalendarID}, nil
+	p.lastCreate = request
+	id := "target-event"
+	if p.uniqueCreatedIDs {
+		id = fmt.Sprintf("target-%d", p.created)
+	}
+	return &calendar.EventV2{ID: id, CalendarID: request.CalendarID}, nil
+}
+
+func TestEngineCopiesOrphanAndKeepsExpandedModeAfterRecovery(t *testing.T) {
+	original := calendar.EventTime{DateTime: "2026-10-01T08:00:00Z", TimeZone: "UTC"}
+	orphan := calendar.EventV2{ID: "instance", InstanceKind: "orphanOccurrence", RecurringEventID: "master", OriginalStart: &original, Title: "Meeting", Start: original, End: calendar.EventTime{DateTime: "2026-10-01T09:00:00Z", TimeZone: "UTC"}}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{orphan}}
+	target := &fakeV2Provider{name: "microsoft", uniqueCreatedIDs: true}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "microsoft:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 1 || result.Warnings != 1 || target.created != 0 || len(mappings.values) != 0 {
+		t.Fatalf("dry-run = %#v, %v", result, err)
+	}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 1 || result.Warnings != 1 {
+		t.Fatalf("first run = %#v, %v", result, err)
+	}
+	if len(target.lastCreate.Event.Recurrence) != 0 || target.lastCreate.Notifications != calendar.NotificationsNone || target.lastCreate.Event.Title != "Meeting" || target.lastCreate.Event.SyncMarker.SourceEventID != "instance" {
+		t.Fatalf("create = %#v", target.lastCreate)
+	}
+	for _, m := range mappings.values {
+		if m.ObjectKind != "detached_occurrence" || m.SourceSeriesID != "master" {
+			t.Fatalf("mapping = %#v", m)
+		}
+	}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 0 || result.Skipped != 1 || target.created != 1 {
+		t.Fatalf("repeat = %#v, %v", result, err)
+	}
+	orphan.Title = "Changed"
+	source.events = []calendar.EventV2{orphan}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Updated != 1 || target.lastUpdate.Ref.EventID != "target-1" || target.lastUpdate.Scope != calendar.ScopeSingle {
+		t.Fatalf("update = %#v, %v", result, err)
+	}
+	orphan.InstanceKind = "occurrence"
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Title: "Changed", Start: original, End: orphan.End, Recurrence: []string{"RRULE:FREQ=DAILY"}}
+	next := orphan
+	next.ID = "next-instance"
+	next.Start = calendar.EventTime{DateTime: "2026-10-02T08:00:00Z", TimeZone: "UTC"}
+	next.OriginalStart = &next.Start
+	source.events = []calendar.EventV2{master, orphan, next}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 1 || result.Warnings != 1 || target.created != 2 || len(target.lastCreate.Event.Recurrence) != 0 {
+		t.Fatalf("recovery = %#v, %v", result, err)
+	}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 0 || target.created != 2 {
+		t.Fatalf("recovered repeat = %#v, %v", result, err)
+	}
+	orphan.Status = "cancelled"
+	orphan.InstanceKind = "cancelled"
+	source.events = []calendar.EventV2{master, orphan, next}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Deleted != 1 || target.lastDelete.Ref.EventID != "target-1" || target.lastDelete.Scope != calendar.ScopeSingle {
+		t.Fatalf("cancel = %#v, %v", result, err)
+	}
+}
+
+func TestEngineRecoveredStandalonePreventsSeriesDuplicate(t *testing.T) {
+	original := calendar.EventTime{DateTime: "2026-10-01T08:00:00Z", TimeZone: "UTC"}
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Title: "Meeting", Start: original, End: calendar.EventTime{DateTime: "2026-10-01T09:00:00Z", TimeZone: "UTC"}, Recurrence: []string{"RRULE:FREQ=DAILY"}}
+	instance := master
+	instance.ID = "instance"
+	instance.InstanceKind = "occurrence"
+	instance.RecurringEventID = "master"
+	instance.OriginalStart = &original
+	instance.Recurrence = nil
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{master, instance}}
+	target := &fakeV2Provider{name: "microsoft", recovered: &calendar.EventV2{ID: "existing-standalone"}}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "microsoft:target", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 0 || target.created != 0 || result.Warnings != 1 || len(mappings.values) != 1 {
+		t.Fatalf("recovery = %#v, %v", result, err)
+	}
+	for _, m := range mappings.values {
+		if m.ObjectKind != "detached_occurrence" || m.TargetEventID != "existing-standalone" {
+			t.Fatalf("mapping = %#v", m)
+		}
+	}
+}
+
+func TestEngineOrphanUsesAlreadyMirroredSeries(t *testing.T) {
+	original := calendar.EventTime{DateTime: "2026-10-01T08:00:00Z", TimeZone: "UTC"}
+	orphan := calendar.EventV2{ID: "instance", InstanceKind: "orphanOccurrence", RecurringEventID: "master", OriginalStart: &original, Title: "Changed", Start: original, End: calendar.EventTime{DateTime: "2026-10-01T09:00:00Z", TimeZone: "UTC"}}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{orphan}}
+	target := &fakeV2Provider{name: "microsoft", instances: []calendar.EventV2{{ID: "target-instance", Start: original, OriginalStart: &original}}}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{"series": {ID: "series", RuleID: "rule", ObjectKind: "series", SourceEventID: "master", TargetEventID: "target-master"}}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "microsoft:target", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 0 || result.Updated != 1 || target.created != 0 || target.lastUpdate.Ref.EventID != "target-instance" || target.lastUpdate.Scope != calendar.ScopeSingle {
+		t.Fatalf("existing series = %#v, %v", result, err)
+	}
+}
+
+func TestEngineAllDayOrphanDoesNotBlockOtherEvents(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-10-01"}
+	orphan := calendar.EventV2{ID: "day", InstanceKind: calendar.OrphanOccurrence, RecurringEventID: "missing", OriginalStart: &day, Title: "All day", Start: day, End: calendar.EventTime{Date: "2026-10-02"}}
+	ordinary := calendar.EventV2{ID: "ordinary", Title: "Other", Start: day, End: orphan.End}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{orphan, ordinary}}
+	target := &fakeV2Provider{name: "microsoft", uniqueCreatedIDs: true}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "microsoft:target", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 2 || result.Warnings != 1 || len(mappings.values) != 2 {
+		t.Fatalf("run = %#v, %v", result, err)
+	}
+	orphan.Status = "cancelled"
+	orphan.InstanceKind = "cancelled"
+	source.events = []calendar.EventV2{orphan, ordinary}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Deleted != 1 || result.Skipped != 1 || len(mappings.values) != 1 || target.lastDelete.Ref.EventID != "target-1" {
+		t.Fatalf("cancel = %#v, %v", result, err)
+	}
 }
 func (p *fakeV2Provider) UpdateEventV2(_ context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
 	p.updated++

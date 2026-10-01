@@ -285,9 +285,14 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		}
 		return err
 	}
+	summary := ""
+	if result.DetachedSeries > 0 {
+		summary = syncengine.DetachedSeriesWarning
+	}
 	return store.FinishRun(ctx, run.ID, job, "succeeded", finished, storage.Run{
 		CreatedCount: result.Created, UpdatedCount: result.Updated, DeletedCount: result.Deleted,
 		SkippedCount: result.Skipped, WarningCount: result.Warnings,
+		ErrorSummary: summary,
 	})
 }
 

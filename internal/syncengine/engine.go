@@ -19,7 +19,9 @@ type MappingStore interface {
 	DeleteMapping(context.Context, string) error
 }
 
-type Result struct{ Created, Updated, Deleted, Skipped, Warnings int }
+const DetachedSeriesWarning = "Some recurring events are mirrored as individual events because their source series was unavailable."
+
+type Result struct{ Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int }
 
 type RecurrenceCompatibilityError struct{ Cause error }
 
@@ -73,6 +75,66 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 		byKey[mappingKey(mapping.SourceEventID, mapping.OriginalStart)] = mapping
 	}
 	events = deduplicateAndOrder(events)
+	// Once a rule mirrors a series as individual instances, keep that mode even
+	// if the source master reappears. Creating a target series would duplicate
+	// the existing standalone copies. SourceSeriesID persists the choice.
+	detached := map[string]bool{}
+	for _, mapping := range existing {
+		if mapping.ObjectKind == "detached_occurrence" && mapping.SourceSeriesID != "" {
+			detached[mapping.SourceSeriesID] = true
+		}
+	}
+	for _, event := range events {
+		if event.InstanceKind == calendar.OrphanOccurrence {
+			if _, mirrored := findSeriesMapping(byKey, event.RecurringEventID); !mirrored {
+				detached[event.RecurringEventID] = true
+			}
+		}
+	}
+	// Recover the standalone choice if a prior create reached the provider but
+	// crashed before its mapping was committed and the source master recovered.
+	recoveredInstances := map[string]*calendar.EventV2{}
+	if lookup, ok := targetProvider.(calendar.SyncMarkerLookupProvider); ok {
+		for _, event := range events {
+			if event.RecurringEventID == "" || event.Status == "cancelled" || detached[event.RecurringEventID] {
+				continue
+			}
+			if _, mirrored := findSeriesMapping(byKey, event.RecurringEventID); mirrored {
+				continue
+			}
+			key := mappingKey(event.ID, eventOriginalStart(event))
+			if _, mapped := byKey[key]; mapped {
+				continue
+			}
+			recovered, err := lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
+			if err != nil {
+				return Result{}, fmt.Errorf("recover recurring instance by sync marker: %w", err)
+			}
+			recoveredInstances[key] = recovered
+			if recovered != nil && recovered.RecurringEventID == "" {
+				detached[event.RecurringEventID] = true
+			}
+		}
+	}
+	filtered := make([]calendar.EventV2, 0, len(events))
+	activeDetached := map[string]bool{}
+	for _, event := range events {
+		if objectKind(event) == "series" && detached[event.ID] {
+			activeDetached[event.ID] = true
+			continue
+		}
+		if detached[event.RecurringEventID] {
+			activeDetached[event.RecurringEventID] = true
+			event.InstanceKind = calendar.OrphanOccurrence
+			event.Recurrence = nil
+		} else if event.InstanceKind == calendar.OrphanOccurrence {
+			// A target series already exists: update its matching instance rather
+			// than creating a standalone duplicate.
+			event.InstanceKind = "exception"
+		}
+		filtered = append(filtered, event)
+	}
+	events = filtered
 	if validator, ok := targetProvider.(calendar.RecurrenceWriteValidator); ok {
 		for _, event := range events {
 			if objectKind(event) != "series" {
@@ -91,7 +153,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	}
 	occurrences := indexOccurrences(events)
 	seen := map[string]bool{}
-	result := Result{}
+	result := Result{Warnings: len(activeDetached), DetachedSeries: len(activeDetached)}
 	for _, event := range events {
 		if isPlainOccurrence(event) {
 			result.Skipped++
@@ -193,15 +255,25 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 			if !ok {
 				return result, fmt.Errorf("target provider %q does not support idempotent sync-marker recovery", targetProvider.Name())
 			}
-			created, err := lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
-			if err != nil {
-				return result, fmt.Errorf("recover target event by sync marker: %w", err)
+			created, checked := recoveredInstances[key]
+			if !checked {
+				created, err = lookup.FindEventBySyncMarkerV2(ctx, targetCalendarID, rule.ID, event.ID)
+				if err != nil {
+					return result, fmt.Errorf("recover target event by sync marker: %w", err)
+				}
 			}
 			if created == nil {
 				result.Created++
 				created, err = target.CreateEventV2(ctx, calendar.CreateEventRequestV2{CalendarID: targetCalendarID, Event: mirrorCreate(rule.ID, event, targetProvider.Name()), Notifications: calendar.NotificationsNone})
 				if err != nil {
 					return result, fmt.Errorf("create target event: %w", err)
+				}
+			} else if objectKind(event) == "detached_occurrence" && hashEvent(*created) != hash {
+				// A recovered marker may predate a source edit. Bring the copy up
+				// to date before committing a mapping with the new content hash.
+				result.Updated++
+				if _, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: created.ID}, Patch: mirrorPatch(event), Scope: calendar.ScopeSingle, Notifications: calendar.NotificationsNone}); err != nil {
+					return result, fmt.Errorf("update recovered standalone instance: %w", err)
 				}
 			}
 			mapping = storage.Mapping{ID: newMappingID(rule.ID, event.ID, originalStart), RuleID: rule.ID, ObjectKind: objectKind(event), SourceEventID: event.ID, SourceSeriesID: event.RecurringEventID, OriginalStart: originalStart, TargetEventID: created.ID, TargetSeriesID: created.RecurringEventID, ContentHash: hash, LastSeenAt: now, ReconciliationState: "current"}
@@ -372,11 +444,11 @@ func seriesOccurrenceKey(seriesID, originalStart string) string {
 }
 
 func isPlainOccurrence(event calendar.EventV2) bool {
-	return event.RecurringEventID != "" && event.Status != "cancelled" && event.InstanceKind != "exception"
+	return event.RecurringEventID != "" && event.Status != "cancelled" && event.InstanceKind != "exception" && event.InstanceKind != calendar.OrphanOccurrence
 }
 
 func isSeriesException(event calendar.EventV2) bool {
-	return event.RecurringEventID != "" && (event.InstanceKind == "exception" || event.InstanceKind == "cancelled" || event.Status == "cancelled")
+	return event.InstanceKind != calendar.OrphanOccurrence && event.RecurringEventID != "" && (event.InstanceKind == "exception" || event.InstanceKind == "cancelled" || event.Status == "cancelled")
 }
 
 func listAll(ctx context.Context, provider calendar.EventProviderV2, request calendar.ListEventsRequestV2) ([]calendar.EventV2, error) {
@@ -421,6 +493,8 @@ func scopeFor(event calendar.EventV2) calendar.MutationScope {
 }
 func objectKind(event calendar.EventV2) string {
 	switch event.InstanceKind {
+	case calendar.OrphanOccurrence:
+		return "detached_occurrence"
 	case "seriesMaster":
 		return "series"
 	case "exception":
