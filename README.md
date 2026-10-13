@@ -420,3 +420,33 @@ No deployment or provider grant change is performed by building this repository.
 ## License
 
 MIT
+
+## Calendar listing performance
+
+`list_calendars` reads connected accounts concurrently with at most four provider
+calls per aggregate request. This is a per-request limit, not a global service
+admission limit. Results retain provider/calendar order and canonical IDs; a
+provider error returns an error rather than an incomplete successful list.
+
+Apple providers cache successful principal/home-set discovery for ten minutes
+from refresh completion. Each listing still fetches the live calendar list, so
+new calendars and changed names do not wait for a list-cache TTL. Cache state is
+private to a provider instance and resets on provider replacement/reconnection.
+Concurrent discovery callers share one result, including errors; errors and
+canceled discovery are not cached. Canceling a waiting caller does not cancel
+the initiating caller. Canceling the initiating caller aborts its shared flight.
+Raw HTTP 401/403/404/410 invalidate discovery even if Apple's existing transport
+normalizes a multistatus response to 207. The failed invocation is not retried;
+a later invocation can rediscover. Other event transport behavior is unchanged.
+
+Synthetic local comparison (no real credentials or providers):
+
+```bash
+go run scripts/measure_calendar_listing.go
+go build -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go
+python3 scripts/verify_calendar_listing_gateway.py
+```
+
+The integration script additionally needs the local gateway test binary at
+`/tmp/mcp-gateway-read-batch`; it creates disposable synthetic configuration and
+terminates its fixture processes. Production deployment is a separate action.

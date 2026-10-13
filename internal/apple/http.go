@@ -21,6 +21,13 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if err != nil {
 		return nil, err
 	}
+	// Preserve the original status for listing only. Event fallback behavior is unchanged.
+	if status, ok := req.Context().Value(discoveryStatusKey{}).(*discoveryStatus); ok {
+		switch resp.StatusCode {
+		case 401, 403, 404, 410:
+			status.code.CompareAndSwap(0, int32(resp.StatusCode))
+		}
+	}
 	// Apple CalDAV sometimes returns <multistatus> with HTTP 4xx/5xx.
 	// go-webdav treats non-2xx as error and tries to parse <error> XML,
 	// which fails. Fix: if body contains <multistatus>, force 207.

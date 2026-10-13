@@ -28,6 +28,7 @@ type Provider struct {
 	caldavURL  string
 	routeName  string
 	calendars  map[string]struct{}
+	discovery  discoveryCache
 }
 
 func New(username, appPassword, caldavURL string) (*Provider, error) {
@@ -67,17 +68,25 @@ func (p *Provider) SetRoute(route string, calendarIDs []string) {
 }
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
-	principal, err := p.client.FindCurrentUserPrincipal(ctx)
+	homeSet, generation, err := p.calendarHomeSet(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("find principal: %w", err)
+		return nil, err
 	}
-	homeSet, err := p.client.FindCalendarHomeSet(ctx, principal)
-	if err != nil {
-		return nil, fmt.Errorf("find home set: %w", err)
+	status := &discoveryStatus{}
+	readCtx := context.WithValue(ctx, discoveryStatusKey{}, status)
+	davCals, err := p.client.FindCalendars(readCtx, homeSet)
+	code := status.code.Load()
+	if code == 404 || code == 410 || code == 401 || code == 403 {
+		p.invalidateDiscovery(generation)
+		if err == nil {
+			err = fmt.Errorf("CalDAV discovery HTTP %d", code)
+		}
 	}
-	davCals, err := p.client.FindCalendars(ctx, homeSet)
 	if err != nil {
 		return nil, fmt.Errorf("find calendars: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	var cals []calendar.Calendar
 	for _, c := range davCals {

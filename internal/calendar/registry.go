@@ -55,17 +55,48 @@ func (r *Registry) SkipInFanOut(prefixedID string) bool {
 }
 
 func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
+	providers := r.Providers()
+	type result struct {
+		calendars []Calendar
+		err       error
+	}
+	results := make([]result, len(providers))
+	workers := min(4, len(providers))
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := worker; i < len(providers); i += workers {
+				if err := ctx.Err(); err != nil {
+					results[i].err = err
+					continue
+				}
+				cals, err := providers[i].ListCalendars(ctx)
+				if err != nil {
+					results[i].err = err
+					continue
+				}
+				// Providers may retain their raw slice; canonicalize only our own copy.
+				copied := append([]Calendar(nil), cals...)
+				for j := range copied {
+					copied[j].ID = CanonicalCalendarID(providers[i], copied[j].ID)
+					copied[j].Provider = providers[i].Name()
+				}
+				results[i].calendars = copied
+			}
+		}(worker)
+	}
+	wg.Wait()
 	var all []Calendar
-	for _, p := range r.Providers() {
-		cals, err := p.ListCalendars(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", p.Name(), err)
+	for i, result := range results {
+		if result.err != nil {
+			return nil, fmt.Errorf("%s: %w", providers[i].Name(), result.err)
 		}
-		for i := range cals {
-			cals[i].ID = CanonicalCalendarID(p, cals[i].ID)
-			cals[i].Provider = p.Name()
-		}
-		all = append(all, cals...)
+		all = append(all, result.calendars...)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return all, nil
 }

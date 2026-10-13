@@ -79,3 +79,9 @@ Docker image built via GitHub Actions → `ghcr.io/dzarlax-ai/calendar-mcp:lates
 Deploy config: `personal_ai_stack/deploy/calendar-mcp/`
 Route: `mcp.dzarlax.dev/calendar` (Traefik path rewrite → /mcp)
 Health check: `GET /health`
+
+## Calendar listing and Apple discovery
+- ListCalendars takes one provider snapshot and uses at most four workers per request. Preserve input order/canonical IDs, copy provider data before prefixing, and return no partial list on provider errors. No global admission contract is added.
+- Apple discovery cache is provider-instance scoped with fixed ten-minute TTL measured from successful discovery completion; only principal/home-set is cached, never calendars/events. Waiting callers share discovery success/error and can cancel independently; an initiating caller cancellation aborts that flight.
+- Observe original 401/403/404/410 statuses in listing contexts before transport normalization; invalidate discovery, return error, and do not retry the invocation. New provider instances start empty. Event fallback normalization remains unchanged.
+- Local synthetic benchmark: go run scripts/measure_calendar_listing.go. Gateway integration: go build -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go then python3 scripts/verify_calendar_listing_gateway.py; requires a local /tmp/mcp-gateway-read-batch binary. No real credentials/data.
