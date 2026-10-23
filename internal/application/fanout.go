@@ -32,7 +32,7 @@ func (s *Service) listEventsFanOut(ctx context.Context, request calendar.ListEve
 			}
 			v2, ok := provider.(calendar.EventProviderV2)
 			if !ok {
-				results <- failedSource(provider.Name(), "", fmt.Errorf("V2 event reads are not supported"))
+				results <- failedSource(provider.Name(), "", unsupported(provider.Name(), "", "V2 event reads are not supported"))
 				return
 			}
 			for _, cal := range calendars {
@@ -116,10 +116,13 @@ func sortFanOutPage(page *calendar.Page[calendar.EventV2]) {
 }
 
 func failedSource(provider, calendarID string, err error) fanOutResult {
+	failure := *providerFailure(provider, calendarID, err)
+	failure.Provider = provider
+	failure.CalendarID = calendarID
 	return fanOutResult{status: calendar.SourceStatus{
 		Provider:   provider,
 		CalendarID: calendarID,
 		Complete:   false,
-		Error:      &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: err.Error(), Provider: provider, CalendarID: calendarID, Retryable: true, Cause: err},
+		Error:      &failure,
 	}}
 }

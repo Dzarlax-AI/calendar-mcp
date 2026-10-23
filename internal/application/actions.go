@@ -153,7 +153,7 @@ func (s *Service) searchEventsFanOut(ctx context.Context, request calendar.Searc
 			defer wg.Done()
 			search, ok := provider.(calendar.SearchProviderV2)
 			if !ok {
-				results <- failedSource(provider.Name(), "", fmt.Errorf("event search is not supported"))
+				results <- failedSource(provider.Name(), "", unsupported(provider.Name(), "", "event search is not supported"))
 				return
 			}
 			calendars, err := provider.ListCalendars(ctx)

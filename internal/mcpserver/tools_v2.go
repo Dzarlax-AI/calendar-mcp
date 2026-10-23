@@ -262,7 +262,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 	})
 
 	s.AddTool(mcp.NewTool("search_events_v2",
-		mcp.WithDescription("Search events in one calendar or across all configured providers, with optional time and event-type filters."),
+		mcp.WithDescription("Search events in one calendar or across all configured providers. Apple requires both start and end and matches a case-insensitive substring in title, description, or location; other providers support optional time and event-type filters."),
 		mcp.WithInputSchema[searchEventsV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args searchEventsV2Args

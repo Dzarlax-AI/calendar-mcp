@@ -295,12 +295,14 @@ With `ENABLE_V2=true`, the typed lifecycle catalog is also registered:
 | `get_calendar_capabilities` | Exact operations, fields, scopes, and notification policies |
 | `get_events_v2`, `get_event_v2` | Typed recurrence-aware event reads |
 | `get_event_instances_v2` | Bounded recurring instances |
-| `search_events_v2` | Calendar search or provider fan-out |
+| `search_events_v2` | Calendar search or provider fan-out; Apple requires both `start` and `end` |
 | `create_event_v2` | Typed event creation with notification policy |
 | `update_event_v2`, `delete_event_v2` | Series, single-instance, and supported following mutations |
 | `respond_to_event_v2` | RSVP through Google |
 | `move_event_v2` | Move supported Google events between calendars |
 | `import_event_v2` | Import an external event into Google using `ical_uid` |
+
+Apple search expands recurring events in the requested time window and matches a case-insensitive substring in the title, description, or location. It requires both `start` and `end`, supports `show_deleted`, and paginates with `max_results` and `page_token`. Only the `default` event type is available. Continuation tokens belong to the same calendar, query, bounds, deletion policy, and event-type filter; pagination does not provide a snapshot across external edits. Malformed calendar objects fail search rather than producing a misleading complete result. Searching without a time window leaves the Apple source incomplete with `unsupported_capability` and no retry recommendation. Provider-wide failures remain visible in `sources`; an empty partial result does not prove that there are no matching events.
 
 Google `following` is a recoverable composite workflow, not an atomic provider operation. It uses preview, ETag protection, operation markers, compensation, and explicit partial-failure metadata. `RDATE`-based series are rejected because they cannot currently be split unambiguously.
 

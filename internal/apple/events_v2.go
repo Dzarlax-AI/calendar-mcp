@@ -18,12 +18,13 @@ const appleSyncMarkerProperty = "X-CALENDAR-MCP-SYNC-MARKER"
 
 func (p *Provider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
 	return calendar.CalendarCapabilities{
-		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: true, Update: true, Delete: true},
+		Operations:           calendar.OperationCapabilities{List: true, Get: true, Search: true, Create: true, Update: true, Delete: true},
 		Fields:               calendar.FieldCapabilities{Recurrence: true},
 		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone},
 		EventTypes:           []string{"default"},
 		Reasons: map[string]string{
+			"search":             "case-insensitive substring search in title, description, and location; both start and end are required",
 			"instances":          "recurrence is expanded locally from the iCalendar object within the requested bounded window",
 			"attendees":          "CalDAV scheduling side effects cannot be suppressed reliably, so V2 attendee writes are rejected",
 			"optimistic_locking": "go-webdav PutCalendarObject does not expose an If-Match precondition",
@@ -62,6 +63,10 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 }
 
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	return p.listEventsV2(ctx, request, false)
+}
+
+func (p *Provider) listEventsV2(ctx context.Context, request calendar.ListEventsRequestV2, requireComplete bool) (calendar.Page[calendar.EventV2], error) {
 	if request.View != calendar.RecurrenceSeries && request.View != calendar.RecurrenceExpanded && request.View != calendar.RecurrenceBoth {
 		return calendar.Page[calendar.EventV2]{}, unsupportedApple("unsupported Apple recurrence view")
 	}
@@ -79,6 +84,9 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	}
 	items, skipped := appleEventsFromObjects(objects, request)
 	if skipped > 0 {
+		if requireComplete {
+			return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Apple search could not read %d malformed calendar object(s)", skipped)
+		}
 		log.Printf("apple: calendar %s skipped %d malformed object(s) while listing events", request.CalendarID, skipped)
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
