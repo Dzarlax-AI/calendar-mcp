@@ -212,3 +212,32 @@ func TestAppleSearchUsesHalfOpenWindowAndDefaultLimit(t *testing.T) {
 		t.Fatalf("%#v %v", page, err)
 	}
 }
+
+func TestAppleSearchAcceptsImplicitEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		want         int
+		end          string
+	}{
+		{"all day", "DTSTART;VALUE=DATE:20261001\r\n", 1, "2026-10-02"},
+		{"point at window start", "DTSTART:20261001T000000Z\r\n", 1, "2026-10-01T00:00:00Z"},
+		{"duration", "DTSTART:20261001T000000Z\r\nDURATION:PT90M\r\n", 1, "2026-10-01T01:30:00Z"},
+		{"point at window end", "DTSTART:20261101T000000Z\r\n", 0, ""},
+		{"recurring point", "DTSTART:20261001T000000Z\r\nRRULE:FREQ=DAILY;COUNT=2\r\n", 2, "2026-10-01T00:00:00Z"},
+		{"recurring all day", "DTSTART;VALUE=DATE:20261001\r\nRRULE:FREQ=DAILY;COUNT=2\r\n", 2, "2026-10-02"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ics := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:implicit\r\nSUMMARY:JetBrains\r\n" + tc.fields + "END:VEVENT\r\nEND:VCALENDAR\r\n"
+			p, _ := newSearchFixture(t, ics, 207)
+			req := searchRequest()
+			req.MaxResults = 50
+			page, err := searcher(t, p).SearchEventsV2(t.Context(), req)
+			if err != nil || !page.Complete || len(page.Items) != tc.want {
+				t.Fatalf("page %#v err=%v", page, err)
+			}
+			if tc.want > 0 && page.Items[0].End.Date+page.Items[0].End.DateTime != tc.end {
+				t.Fatalf("end %#v", page.Items[0].End)
+			}
+		})
+	}
+}

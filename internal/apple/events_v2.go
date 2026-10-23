@@ -476,6 +476,13 @@ func appleEventV2(event ical.Event, calendarID, path, etag string) calendar.Even
 	transparency, _ := event.Props.Text(ical.PropTransparency)
 	status, _ := event.Props.Text(ical.PropStatus)
 	result := calendar.EventV2{ID: path, CalendarID: calendarID, ICalUID: uid, ETag: etag, Title: title, Description: description, Location: location, Visibility: visibility, Transparency: transparency, Status: status, Start: appleEventTimeV2(event.Props.Get(ical.PropDateTimeStart)), End: appleEventTimeV2(event.Props.Get(ical.PropDateTimeEnd))}
+	// RFC 5545 permits DURATION or an implicit end when DTEND is absent.
+	// Preserve malformed explicit ends as errors rather than replacing them.
+	if event.Props.Get(ical.PropDateTimeEnd) == nil && result.Start.Validate() == nil {
+		if end, err := event.DateTimeEnd(nil); err == nil && !end.IsZero() {
+			result.End = appleTimeLikeMaster(end, result.Start)
+		}
+	}
 	for _, name := range []string{ical.PropRecurrenceRule, ical.PropRecurrenceDates, ical.PropExceptionDates} {
 		for _, prop := range event.Props.Values(name) {
 			result.Recurrence = append(result.Recurrence, recurrenceLine(&prop))

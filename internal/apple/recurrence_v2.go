@@ -64,7 +64,7 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		if err != nil {
 			return nil, fmt.Errorf("parse Apple event end %q: %w", object.Path, err)
 		}
-		if !end.After(request.Start) || !start.Before(request.End) {
+		if !appleIntervalOverlaps(start, end, request.Start, request.End) {
 			return nil, nil
 		}
 		return []calendar.EventV2{base}, nil
@@ -139,7 +139,7 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 	}
 	duration := end.Sub(start)
 	for _, occurrence := range set.Between(request.Start.Add(-duration), request.End, true) {
-		if !occurrence.Add(duration).After(request.Start) {
+		if !appleIntervalOverlaps(occurrence, occurrence.Add(duration), request.Start, request.End) {
 			continue
 		}
 		original := appleTimeLikeMaster(occurrence, base.Start)
@@ -208,7 +208,15 @@ func appleEventsFromObjects(objects []caldav.CalendarObject, request calendar.Li
 func appleEventOverlaps(event calendar.EventV2, start, end time.Time) bool {
 	eventStart, startErr := event.Start.Instant()
 	eventEnd, endErr := event.End.Instant()
-	return startErr == nil && endErr == nil && eventEnd.After(start) && eventStart.Before(end)
+	return startErr == nil && endErr == nil && appleIntervalOverlaps(eventStart, eventEnd, start, end)
+}
+
+// Zero-duration events belong to the half-open window containing their start.
+func appleIntervalOverlaps(start, end, windowStart, windowEnd time.Time) bool {
+	if end.Equal(start) {
+		return !start.Before(windowStart) && start.Before(windowEnd)
+	}
+	return end.After(windowStart) && start.Before(windowEnd)
 }
 
 func appleRecurrenceDates(prop ical.Prop, location *time.Location) ([]time.Time, error) {
