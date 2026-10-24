@@ -19,7 +19,7 @@ Go version: 1.25 (from go.mod)
 - `internal/google/` — Google Calendar API v3 via OAuth2
 - `internal/microsoft/` — Microsoft Graph REST API via OAuth2
 - `internal/apple/` — Apple CalDAV via go-webdav (basic auth)
-- `internal/mcpserver/` — MCP server (Streamable HTTP), 5 tools, API key middleware
+- `internal/mcpserver/` — MCP server (Streamable HTTP), modern/compat catalogs, API key middleware
 - `internal/token/` — File-based OAuth2 token persistence
 - `internal/config/` — Env-based config
 
@@ -33,13 +33,14 @@ Go version: 1.25 (from go.mod)
 
 ## MCP Tools
 
-- `list_calendars` — all calendars from all providers
-- `get_events` — events by calendar_id + date range (or all)
-- `create_event` — create event in specific calendar
-- `update_event` — partial update
-- `delete_event` — delete event
+- `/mcp/modern` exposes 12 tools with typed lifecycle contracts: `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, `search_events`, `create_event`, `update_event`, `delete_event`, `respond_to_event`, `move_event`, `import_event`. Requires `ENABLE_V2=true`; no `_v2` aliases.
+- `/mcp/compat` preserves the original five tools and adds the original eleven V2 tools when `ENABLE_V2=true`.
+- `/mcp` follows `MCP_CATALOG_MODE=compat|modern`, default `compat`. Empty mode keeps compatibility; invalid mode or modern with V2 disabled fails startup. Trailing-slash variants use the same catalog.
+- Identical names across catalogs can have different schemas/results: modern `get_events` returns the V2 page; compat `get_events` returns the legacy list. Never auto-detect a contract from arguments or silently retry another catalog.
+- Share lifecycle handlers and explicit registration names; preserve notification/preview/ETag/scope behavior. REST/native APIs are unchanged. Existing `Register` remains a compatibility wrapper for synthetic scripts.
+- Migrate one connection per client. Gateway modern identity, schema caches, ACL mapping, and proxy paths require explicit review; do not silently reuse legacy permissions or switch production defaults.
 
-Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>`
+Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>` (canonical multi-account IDs also remain supported).
 
 ## Environment Variables
 
@@ -47,6 +48,8 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>`
 |----------|---------|---------|
 | `LISTEN_ADDR` | `:8080` | MCP server listen address |
 | `REST_LISTEN_ADDR` | _(empty)_ | Internal REST API (optional) |
+| `ENABLE_V2` | `false` | Enable typed lifecycle tools and REST V2; required for the modern MCP catalog |
+| `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; explicit catalog paths remain stable |
 | `API_KEY` | _(empty)_ | Auth key for MCP endpoints |
 | `NATIVE_APP_TOKEN` | _(empty)_ | Dedicated token for the read-only native app API; requires platform storage |
 | `READ_ONLY_TOKEN` | _(empty)_ | Token restricted to cached-event reads for HomeDash; requires platform storage |

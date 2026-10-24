@@ -12,16 +12,7 @@ import (
 )
 
 func registerTools(s *server.MCPServer, reg *calendar.Registry) {
-	s.AddTool(mcp.NewTool("list_calendars",
-		mcp.WithDescription("List all calendars across Google, Microsoft 365, and Apple accounts. Returns calendar IDs needed for other operations."),
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		cals, err := reg.ListCalendars(ctx)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return jsonResult(cals)
-	})
-
+	registerListCalendars(s, reg, "list_calendars")
 	s.AddTool(mcp.NewTool("get_events",
 		mcp.WithDescription("Get events from a specific calendar or all calendars within a date range."),
 		mcp.WithString("calendar_id", mcp.Description("Calendar ID (e.g. google:primary). Omit to get events from all calendars.")),
@@ -185,5 +176,17 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return mcp.NewToolResultText("event deleted"), nil
+	})
+}
+
+func registerListCalendars(s *server.MCPServer, reg *calendar.Registry, name string) {
+	s.AddTool(mcp.NewTool(name,
+		mcp.WithDescription("List all calendars across Google, Microsoft 365, and Apple accounts. Returns calendar IDs needed for other operations."),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		cals, err := reg.ListCalendars(ctx)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return jsonResult(cals)
 	})
 }

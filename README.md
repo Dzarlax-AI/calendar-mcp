@@ -201,7 +201,8 @@ Health endpoints:
 | `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
-| `ENABLE_V2` | `false` | Exposes typed V2 MCP tools and REST routes |
+| `ENABLE_V2` | `false` | Enables typed lifecycle MCP tools and REST V2 routes; required for the modern MCP catalog |
+| `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; modern requires `ENABLE_V2=true` |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
 The API fails closed when `API_KEY`, `NATIVE_APP_TOKEN`, and `READ_ONLY_TOKEN` are all empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
@@ -276,31 +277,76 @@ These settings affect only `get_events` calls without an explicit `calendar_id`.
 
 ## MCP API
 
-MCP uses Streamable HTTP at `/mcp`.
+MCP uses Streamable HTTP. Each connection selects one catalog:
 
-The compatibility catalog is always registered:
+| Service path (with or without trailing slash) | Catalog |
+|---|---|
+| `/mcp` | Selected by `MCP_CATALOG_MODE`; defaults to `compat` |
+| `/mcp/modern` | One modern tool set, requires `ENABLE_V2=true` |
+| `/mcp/compat` | Original catalog, including the original V2 names when enabled |
+
+Set `MCP_CATALOG_MODE=modern` only when clients using `/mcp` have migrated to the modern schemas; it requires `ENABLE_V2=true`. An unset or empty mode preserves compatibility. Invalid modes fail startup. With V2 disabled, `/mcp/modern` returns 404 after authentication. Unknown MCP subpaths do not select a catalog. All paths use the existing API-key middleware and request body limit. These are service paths; check reverse-proxy rewrites before using them as external URLs. The UI connection link remains `/mcp` and follows its configured mode. REST and native API contracts are unchanged.
+
+### Modern catalog
+
+Use `/mcp/modern` for new connections during migration. It exposes exactly 12 tools and no `_v2` aliases:
 
 | Tool | Purpose |
 |---|---|
 | `list_calendars` | List calendars across connected accounts |
-| `get_events` | Read an explicit calendar or fan out across providers |
-| `create_event` | Create a calendar event |
-| `update_event` | Partially update an event |
-| `delete_event` | Delete an event |
-
-With `ENABLE_V2=true`, the typed lifecycle catalog is also registered:
-
-| Tool | Purpose |
-|---|---|
 | `get_calendar_capabilities` | Exact operations, fields, scopes, and notification policies |
-| `get_events_v2`, `get_event_v2` | Typed recurrence-aware event reads |
-| `get_event_instances_v2` | Bounded recurring instances |
-| `search_events_v2` | Calendar search or provider fan-out; Apple requires both `start` and `end` |
-| `create_event_v2` | Typed event creation with notification policy |
-| `update_event_v2`, `delete_event_v2` | Series, single-instance, and supported following mutations |
-| `respond_to_event_v2` | RSVP through Google |
-| `move_event_v2` | Move supported Google events between calendars |
-| `import_event_v2` | Import an external event into Google using `ical_uid` |
+| `get_events`, `get_event` | Typed recurrence-aware event reads |
+| `get_event_instances` | Bounded recurring instances |
+| `search_events` | Calendar search or provider fan-out; Apple requires both `start` and `end` |
+| `create_event` | Typed event creation with notification policy |
+| `update_event`, `delete_event` | Series, single-instance, and supported following mutations |
+| `respond_to_event` | RSVP through Google |
+| `move_event` | Move supported Google events between calendars |
+| `import_event` | Import an external event into Google using `ical_uid` |
+
+These are the existing typed V2 contracts under stable tool names. The application handlers, input schemas, structured/text outputs, typed errors, notification policies, and provider capabilities are unchanged. `list_calendars` uses the same handler in both catalogs.
+
+Example arguments for modern `get_events`:
+
+```json
+{
+  "calendar_id": "google:primary",
+  "start": "2026-10-24T00:00:00+02:00",
+  "end": "2026-10-25T00:00:00+02:00",
+  "view": "expanded",
+  "max_results": 50
+}
+```
+
+Read `items`, `complete`, `sources`, and `next_page_token` from the structured result. Follow continuation tokens with the same query parameters; a partial empty page does not establish that no events exist. The result is a page object, whereas compatibility `get_events` returns a legacy list.
+
+Example arguments for modern `create_event` on an isolated test calendar (a write operation):
+
+```json
+{
+  "calendar_id": "google:isolated-test-calendar",
+  "event": {
+    "title": "Catalog migration check",
+    "start": {"date": "2026-10-24"},
+    "end": {"date": "2026-10-25"}
+  },
+  "notification_policy": "none"
+}
+```
+
+Check capabilities before mutations. Preserve explicit scopes, ETags, operation IDs, and preview support when adapting update/delete clients. Test real writes only after verifying isolated data and disabled invitations/notifications.
+
+### Compatibility catalog and migration
+
+The compatibility catalog preserves the original five tools: `list_calendars`, `get_events`, `create_event`, `update_event`, and `delete_event`. With `ENABLE_V2=true` it also preserves `get_calendar_capabilities`, `get_events_v2`, `get_event_v2`, `get_event_instances_v2`, `search_events_v2`, `create_event_v2`, `update_event_v2`, `delete_event_v2`, `respond_to_event_v2`, `move_event_v2`, and `import_event_v2`. Existing names, schemas, outputs, and behavior remain available on `/mcp/compat` and on the default `/mcp` in compat mode.
+
+1. Update the service with `MCP_CATALOG_MODE=compat` (the default); current `/mcp` clients keep their contracts.
+2. Inventory direct and Gateway consumers, tool names, expected schemas, and permissions before migrating them. Keep one calendar connection per assistant to avoid exposing both catalogs again.
+3. Move a selected client to `/mcp/modern`, updating its argument and result schemas. Legacy `get_events` and modern `get_events` have different contracts: changing the URL alone is insufficient. Existing V2 clients remove suffixes and keep their typed schemas.
+4. For Gateway consumers, create a separate modern service identity and explicitly map authorized operations. Do not reuse legacy schema caches or infer permission grants from identical tool names. Reconnect and refresh discovery through the client's normal procedure; verify initialize, tools/list, pagination, and completeness with safe reads.
+5. Pin remaining compatibility clients to `/mcp/compat`. Only after the inventory and verification are complete, explicitly switch the main endpoint with `MCP_CATALOG_MODE=modern`. No automatic cutover or compatibility removal occurs.
+
+Deployment, proxy/Gateway/ACL changes, and client reconfiguration require their own authorization. To roll back a client, restore its previous compatibility connection and schemas. Before rolling back the binary, move modern clients to a supported compatibility contract: older binaries do not serve the explicit paths. Changing the default mode can affect clients already using `/mcp` as modern; explicit catalog paths remain stable across mode changes.
 
 Apple search expands recurring events in the requested time window and matches a case-insensitive substring in the title, description, or location. It requires both `start` and `end`, supports `show_deleted`, and paginates with `max_results` and `page_token`. Only the `default` event type is available. Continuation tokens belong to the same calendar, query, bounds, deletion policy, and event-type filter; pagination does not provide a snapshot across external edits. Malformed calendar objects fail search rather than producing a misleading complete result. Searching without a time window leaves the Apple source incomplete with `unsupported_capability` and no retry recommendation. Provider-wide failures remain visible in `sources`; an empty partial result does not prove that there are no matching events.
 

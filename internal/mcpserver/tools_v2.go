@@ -121,8 +121,50 @@ var updateEventV2Schema = json.RawMessage(`{
   }
 }`)
 
-func registerToolsV2(s *server.MCPServer, app *application.Service) {
-	s.AddTool(mcp.NewTool("get_calendar_capabilities",
+const (
+	toolCapabilities = "get_calendar_capabilities"
+	toolGetEvents    = "get_events"
+	toolGetEvent     = "get_event"
+	toolCreateEvent  = "create_event"
+	toolUpdateEvent  = "update_event"
+	toolDeleteEvent  = "delete_event"
+	toolInstances    = "get_event_instances"
+	toolSearch       = "search_events"
+	toolRespond      = "respond_to_event"
+	toolMove         = "move_event"
+	toolImport       = "import_event"
+)
+
+var modernToolNames = map[string]string{
+	toolCapabilities: "get_calendar_capabilities",
+	toolGetEvents:    "get_events",
+	toolGetEvent:     "get_event",
+	toolCreateEvent:  "create_event",
+	toolUpdateEvent:  "update_event",
+	toolDeleteEvent:  "delete_event",
+	toolInstances:    "get_event_instances",
+	toolSearch:       "search_events",
+	toolRespond:      "respond_to_event",
+	toolMove:         "move_event",
+	toolImport:       "import_event",
+}
+
+var compatV2ToolNames = map[string]string{
+	toolCapabilities: "get_calendar_capabilities",
+	toolGetEvents:    "get_events_v2",
+	toolGetEvent:     "get_event_v2",
+	toolCreateEvent:  "create_event_v2",
+	toolUpdateEvent:  "update_event_v2",
+	toolDeleteEvent:  "delete_event_v2",
+	toolInstances:    "get_event_instances_v2",
+	toolSearch:       "search_events_v2",
+	toolRespond:      "respond_to_event_v2",
+	toolMove:         "move_event_v2",
+	toolImport:       "import_event_v2",
+}
+
+func registerToolsV2(s *server.MCPServer, app *application.Service, names map[string]string) {
+	s.AddTool(mcp.NewTool(names[toolCapabilities],
 		mcp.WithDescription("Return the operations, fields, mutation scopes, and notification policies supported by a calendar."),
 		mcp.WithInputSchema[capabilitiesArgs](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -137,7 +179,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(capabilities), nil
 	})
 
-	s.AddTool(mcp.NewTool("get_events_v2",
+	s.AddTool(mcp.NewTool(names[toolGetEvents],
 		mcp.WithDescription("List events with explicit recurrence view, pagination metadata, and per-source completeness."),
 		mcp.WithInputSchema[listEventsV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -163,7 +205,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(page), nil
 	})
 
-	s.AddTool(mcp.NewTool("get_event_v2",
+	s.AddTool(mcp.NewTool(names[toolGetEvent],
 		mcp.WithDescription("Get one event by its provider-prefixed calendar and event IDs."),
 		mcp.WithInputSchema[getEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -178,7 +220,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(event), nil
 	})
 
-	s.AddTool(mcp.NewTool("create_event_v2",
+	s.AddTool(mcp.NewTool(names[toolCreateEvent],
 		mcp.WithDescription("Create an event using typed time, recurrence, attendee, reminder, attachment, conference, and provider-extension fields."),
 		mcp.WithInputSchema[createEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -195,7 +237,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(event), nil
 	})
 
-	updateTool := mcp.NewToolWithRawSchema("update_event_v2", "Update a series, one occurrence, or this-and-following using a presence-aware patch.", updateEventV2Schema)
+	updateTool := mcp.NewToolWithRawSchema(names[toolUpdateEvent], "Update a series, one occurrence, or this-and-following using a presence-aware patch.", updateEventV2Schema)
 	s.AddTool(updateTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args updateEventV2Args
 		if err := req.BindArguments(&args); err != nil {
@@ -216,7 +258,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(result), nil
 	})
 
-	s.AddTool(mcp.NewTool("delete_event_v2",
+	s.AddTool(mcp.NewTool(names[toolDeleteEvent],
 		mcp.WithDescription("Delete a series, one occurrence, or this-and-following with explicit notification policy."),
 		mcp.WithInputSchema[deleteEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -235,7 +277,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(result), nil
 	})
 
-	s.AddTool(mcp.NewTool("get_event_instances_v2",
+	s.AddTool(mcp.NewTool(names[toolInstances],
 		mcp.WithDescription("List the concrete occurrences of a recurring series in a bounded time range."),
 		mcp.WithInputSchema[instancesV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -261,7 +303,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(page), nil
 	})
 
-	s.AddTool(mcp.NewTool("search_events_v2",
+	s.AddTool(mcp.NewTool(names[toolSearch],
 		mcp.WithDescription("Search events in one calendar or across all configured providers. Apple requires both start and end and matches a case-insensitive substring in title, description, or location; other providers support optional time and event-type filters."),
 		mcp.WithInputSchema[searchEventsV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -293,7 +335,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(page), nil
 	})
 
-	s.AddTool(mcp.NewTool("respond_to_event_v2",
+	s.AddTool(mcp.NewTool(names[toolRespond],
 		mcp.WithDescription("Respond to an event invitation as the authenticated calendar user."),
 		mcp.WithInputSchema[respondEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -311,7 +353,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(result), nil
 	})
 
-	s.AddTool(mcp.NewTool("move_event_v2",
+	s.AddTool(mcp.NewTool(names[toolMove],
 		mcp.WithDescription("Move a supported event to another calendar within the same provider."),
 		mcp.WithInputSchema[moveEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -329,7 +371,7 @@ func registerToolsV2(s *server.MCPServer, app *application.Service) {
 		return v2Result(result), nil
 	})
 
-	s.AddTool(mcp.NewTool("import_event_v2",
+	s.AddTool(mcp.NewTool(names[toolImport],
 		mcp.WithDescription("Import an externally identified event. Google requires event.ical_uid and supports only default events."),
 		mcp.WithInputSchema[importEventV2Args](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

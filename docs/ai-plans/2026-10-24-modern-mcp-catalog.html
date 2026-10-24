@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calendar MCP — единый современный каталог</title>
+<style>
+body{margin:0;background:#f4f6f8;color:#1e293b;font:16px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:clamp(16px,4vw,40px)}section{background:white;border:1px solid #d8e0e8;border-radius:10px;padding:24px;margin:20px 0}h1,h2,h3{line-height:1.25}h1{font-size:clamp(26px,4vw,38px)}h2{font-size:23px}h3{font-size:18px}code{background:#eef2f6;padding:2px 5px;border-radius:4px;font-size:.9em}p,li,td,code{overflow-wrap:anywhere}.table-wrap,pre{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #d8e0e8;text-align:left;vertical-align:top}th{background:#eef2f6}.status{display:inline-block;padding:5px 12px;background:#fff1cf;border-radius:6px}.note{border-left:4px solid #54749b;padding-left:16px}a{color:#245b9b}@media print{body{background:white}main{padding:0}section{break-inside:avoid}th{background:white}}
+</style>
+</head>
+<body><main>
+<h1>Один современный каталог Calendar MCP</h1>
+<p><span class="status">Implemented · Ревизия 1 · Локальная реализация проверена</span></p>
+<p>24 октября 2026 · Calendar MCP · Ответственность за план и приёмку: ведущий агент текущего чата.</p>
+
+<section><h2>1. Цель и границы</h2>
+<p>Пользователь и ассистент видят один современный набор инструментов с именами без <code>_v2</code>. Старые клиенты сохраняют свои имена, схемы и поведение в отдельном режиме совместимости. Выбор контракта происходит при настройке подключения, а не при каждом вызове.</p>
+<p>В объёме: регистрация MCP-каталогов, HTTP-маршруты, явный выбор режима основного адреса, конфигурация, тесты и инструкции миграции клиентов. Вне объёма: изменение провайдеров и бизнес-логики, REST/native API, синхронизация, схема БД, OAuth, отзыв ключей, изменение разрешений Gateway и производственных подключений.</p>
+<p>Приёмка: современный каталог содержит ровно 12 инструментов без суффикса; каталог совместимости сохраняет текущие 5 либо 16 инструментов в зависимости от <code>ENABLE_V2</code>; без новых настроек прежние клиенты продолжают работать на прежнем адресе. Ни одна операция не выбирает контракт по содержимому аргументов и не переключается на другой контракт при ошибке.</p>
+</section>
+
+<section><h2>2. Исходное состояние до реализации</h2>
+<ul>
+<li><code>internal/mcpserver/server.go</code>: <code>buildServer</code> всегда вызывает <code>registerTools</code>; при включённом флаге добавляет <code>registerToolsV2</code>. <code>Register</code> обслуживает <code>/mcp</code> и <code>/mcp/</code>.</li>
+<li><code>tools.go</code>: пять исходных инструментов. <code>tools_v2.go</code>: ещё одиннадцать, включая <code>get_calendar_capabilities</code>; чтение и запись проходят через <code>application.Service</code>. <code>list_calendars</code> общий для обоих будущих каталогов.</li>
+<li>Исходный <code>get_events</code> возвращает список событий через <code>jsonResult</code>. V2 возвращает структурированный результат страницы, сведения об источниках и полноте. Схемы создания/изменения также различаются. Замена обработчика под старым именем на том же подключении нарушит контракт.</li>
+<li><code>internal/runtime/serve.go</code> подключает MCP и отдельно использует <code>EnableV2</code> для REST. Оба CLI используют этот runtime. Тестовая утилита <code>scripts/measure_calendar_listing.go</code> вызывает существующий <code>Register</code>.</li>
+<li><code>internal/config/config.go</code> и <code>.env.example</code>: <code>ENABLE_V2=false</code> по умолчанию. Middleware применяет API key, дополнительный legacy key и существующий явный режим без аутентификации. Web UI показывает адрес с <code>/mcp</code>.</li>
+<li>Есть тесты регистрации и внутрипроцессный MCP-тест Apple search. CI содержит <code>go test -race -count=1 ./...</code>, <code>CGO_ENABLED=0 go build ./...</code>, <code>CGO_ENABLED=0 go vet ./...</code>.</li>
+</ul>
+<p>База: ветка <code>codex/google-orphan-occurrence</code>, HEAD <code>24c8e163b7e301040922f29b5f39ace150e3083d</code>. Рабочее дерево уже изменено: среди прочего <code>README.md</code>, <code>AGENTS.md</code>, <code>internal/mcpserver/tools_v2.go</code>, Apple/application/registry и новые тесты/скрипты. Исполнитель должен учитывать фактическое дерево, а не только HEAD, и сохранить эти изменения.</p>
+<p>На этапе планирования были изучены исходники и конфигурация; Go-тесты и сборка тогда ещё не выполнялись. Production и конфигурации реальных клиентов не проверялись. В доступном чату каталоге присутствуют обе версии чтения. Полный перечень потребителей неизвестен.</p>
+</section>
+
+<section><h2>3. Контракт и маршруты</h2>
+<h3>Современные имена</h3>
+<div class="table-wrap"><table><thead><tr><th>Современный каталог</th><th>Существующий источник поведения</th></tr></thead><tbody>
+<tr><td><code>list_calendars</code></td><td>Текущий общий обработчик; тот же результат и порядок, без изменения discovery/cache.</td></tr>
+<tr><td><code>get_calendar_capabilities</code></td><td>Текущий одноимённый V2-обработчик.</td></tr>
+<tr><td><code>get_events</code>, <code>get_event</code></td><td><code>get_events_v2</code>, <code>get_event_v2</code></td></tr>
+<tr><td><code>get_event_instances</code>, <code>search_events</code></td><td><code>get_event_instances_v2</code>, <code>search_events_v2</code></td></tr>
+<tr><td><code>create_event</code>, <code>update_event</code>, <code>delete_event</code></td><td>Соответствующие V2-обработчики.</td></tr>
+<tr><td><code>respond_to_event</code>, <code>move_event</code>, <code>import_event</code></td><td>Соответствующие V2-обработчики.</td></tr>
+</tbody></table></div>
+<p>Меняется только внешнее имя современного инструмента. Сохраняются его input schema, structured/text output, типизированные ошибки, пагинация, recurrence view, <code>complete</code>/<code>sources</code>, ограничения Apple search, ETag, preview, operation ID и notification policy. Внутренние Go-типы/файлы V2 и REST-маршруты не переименовываются. Не добавлять невидимые fallback-вызовы или преобразование современных ответов в старый список.</p>
+<h3>Явные адреса и безопасный default</h3>
+<p>Новая настройка <code>MCP_CATALOG_MODE=compat|modern</code>, default <code>compat</code>. Она выбирает только контракт <code>/mcp</code>. Это позволяет обновить бинарник без автоматического изменения контракта существующих клиентов.</p>
+<div class="table-wrap"><table><thead><tr><th>Адрес сервиса</th><th>Поведение</th></tr></thead><tbody>
+<tr><td><code>/mcp</code>, <code>/mcp/</code></td><td>Каталог, выбранный <code>MCP_CATALOG_MODE</code>. При отсутствии новой настройки — прежний каталог.</td></tr>
+<tr><td><code>/mcp/modern</code>, <code>/mcp/modern/</code></td><td>Только современный каталог, доступен при <code>ENABLE_V2=true</code>.</td></tr>
+<tr><td><code>/mcp/compat</code>, <code>/mcp/compat/</code></td><td>Зафиксированное прежнее поведение: исходные пять инструментов, плюс существующие одиннадцать при <code>ENABLE_V2=true</code>. Суффиксы сохраняются для уже использующих их клиентов.</td></tr>
+</tbody></table></div>
+<p>Неизвестный непустой режим — ошибка старта. <code>modern</code> вместе с <code>ENABLE_V2=false</code> — ошибка старта до открытия listener. При выключенном V2 modern-путь возвращает 404 после существующих auth/body-limit проверок, не попадает в compat-обработчик через <code>/mcp/</code> и не перенаправляет клиента. REST-флаг сохраняет прежнее значение и смысл.</p>
+<p>Все адреса используют одну действующую политику API key и ограничения тела запроса. Режим не выбирается по ключу, заголовку или параметрам инструмента; прав на запись он не расширяет. Выделить точные маршруты и изолированные MCP server/transport instances для двух каталогов; основной адрес использует транспорт выбранного каталога. Проверить, что сессия другого каталога не позволяет вызвать инструмент с чужим контрактом. Не использовать HTTP redirect для MCP POST.</p>
+<p class="note">Совместимость означает сохранение всего прежнего каталога, включая старые V2-имена. Поэтому дубли временно остаются только в compat-подключении. Одновременное подключение modern и compat к одному ассистенту снова создаст неоднозначность; клиенту выбирают один каталог.</p>
+</section>
+
+<section><h2>4. Переход клиентов и открытые вопросы</h2>
+<ol>
+<li>Реализовать и проверить оба каталога локально. Обновление с default <code>compat</code> не меняет текущий <code>/mcp</code>. Здесь планируется только код и документация, без выкладки.</li>
+<li>Перед реальной миграцией составить таблицу потребителей: клиент/подключение, прямой адрес или Gateway, вызываемые имена, ожидаемая схема, разрешённые операции. Проверять актуальную конфигурацию и безопасные метаданные, не сохранять ключи и частные события.</li>
+<li>После отдельного разрешения перевести один выбранный клиент на явный modern-путь. На Gateway использовать отдельную идентичность modern-сервера, чтобы одинаковое имя <code>get_events</code> не унаследовало legacy schema/cache/ACL. Существующую compat-регистрацию и разрешения не переиспользовать молча.</li>
+<li>Проверить <code>initialize</code>, <code>tools/list</code>, схемы, безопасное чтение, обработку частичных результатов и следующей страницы. Обновить кеши/подключение штатным способом, проверить отсутствие второго calendar-подключения. Перенос разрешений — явное сопоставление, без автоматического расширения.</li>
+<li>Остальных клиентов переводить по одному. После подтверждённой инвентаризации оставшиеся старые клиенты закрепить на <code>/mcp/compat</code>. Только затем отдельным разрешённым изменением выбрать <code>MCP_CATALOG_MODE=modern</code> для <code>/mcp</code>. Срок удаления compat не задаётся этим планом.</li>
+</ol>
+<div class="table-wrap"><table><thead><tr><th>Неизвестное</th><th>Как проверить / результат</th><th>Что блокирует</th></tr></thead><tbody>
+<tr><td>Все потребители и их схемы</td><td>Инвентаризация прямых подключений, Gateway и иных клиентов; таблица контрактов.</td><td>Реальный cutover основного адреса, но не локальную реализацию.</td></tr>
+<tr><td>Внешний proxy пропускает новые пути?</td><td>При разрешённой подготовке выкладки изучить rewrite/path rules и проверить initialize через внешний адрес. Приведённые выше пути — внутренний контракт сервиса, не утверждение о production URL.</td><td>Реальную миграцию клиента.</td></tr>
+<tr><td>Поведение сессий MCP SDK на нескольких путях</td><td>Закрыто локальной приёмкой: независимые HTTP-клиенты и чужой session ID сохраняют выбранный URL-каталог; подробности в разделе 8.</td><td>Приёмку маршрутизации до интеграции.</td></tr>
+</tbody></table></div>
+<p>Настройки и экран подключения Web UI пока сохраняют текущую ссылку <code>/mcp</code>: она следует выбранному режиму. В README явно указать modern-путь для новых подключений на переходном этапе. Изменение UI выбора подключений не включать скрыто в эту работу.</p>
+</section>
+
+<section><h2>5. Файлы и последовательность реализации</h2>
+<div class="table-wrap"><table><thead><tr><th>Этап</th><th>Файлы / граница</th><th>Результат и проверка</th></tr></thead><tbody>
+<tr><td>1. Зафиксировать контракт</td><td><code>internal/mcpserver/server_test.go</code>; новые <code>catalog_test.go</code> и <code>transport_test.go</code> в том же пакете.</td><td>До рефакторинга зафиксировать текущие каталоги и JSON-схемы, representative read/write/error ответы на fake-провайдерах. Современные имена проверять отдельно; зафиксировать запрет вызова невыставленных имён.</td></tr>
+<tr><td>2. Разделить регистрацию</td><td><code>internal/mcpserver/server.go</code>, <code>tools.go</code>, <code>tools_v2.go</code>; новый <code>catalog.go</code>.</td><td>Общий list_calendars регистрируется один раз; единые lifecycle-обработчики получают явную таблицу имён для modern или compat, без копирования бизнес-логики. Существующий <code>Register</code> сохранить как compat-обёртку для скрипта; новый options-based entry point для runtime. Произвольные неизвестные имена не преобразуются удалением суффикса.</td></tr>
+<tr><td>3. Конфигурация и транспорт</td><td><code>internal/config/config.go</code>, <code>config_test.go</code>; <code>internal/runtime/serve.go</code>, <code>serve_test.go</code>; MCP server/transport tests.</td><td>Строгая валидация режима, подключение точных путей, изолированные каталоги, прежние auth/body limits. Runtime использует новый entry point; REST получает прежний EnableV2. Все комбинации флагов проверены.</td></tr>
+<tr><td>4. Документация и итоговая проверка</td><td><code>.env.example</code>, <code>README.md</code>, раздел MCP Tools в <code>AGENTS.md</code>, этот HTML.</td><td>Таблица режимов и миграции, полные 12 modern-имён, примеры чтения/записи по современным схемам, предупреждение о разных контрактах одинакового имени. Кумулятивный diff, тесты, сборка и запись результатов в этот план.</td></tr>
+</tbody></table></div>
+<p>Этапы выполняются последовательно: контракт → общая регистрация → конфигурация/транспорт → приёмка. Provider/application/storage/auth implementation, frontend, Gateway и deploy-файлы не меняются. Если тест выявит требующий их изменения дефект, ведущий фиксирует отдельную дельту объёма до реализации.</p>
+<h3>Распределение исполнения после согласования</h3>
+<p>Планирование и интеграция — ведущий текущего чата. Основной согласованный пакет регистрации и тестов подходит агенту <code>gpt-6-luna</code> с усилием <code>high</code>: контракт и границы определены, бизнес-логика сохраняется. После согласования запущен ограниченный агент gpt-6-luna (high) для MCP-пакета; конфигурацию, runtime и документацию ведёт основной агент. Отдельный <code>gpt-6.1-sol</code> с усилием <code>high</code> подходит для ограниченной проверки совместимости и auth/transport diff. Ведущий принимает результат по исходникам и тестам. Если делегирование недоступно, исполнение последовательно в текущем чате.</p>
+<p>Brief исполнителя: база — указанные HEAD плюс текущее грязное дерево, которое перед запуском повторно перечитывается; разрешены только файлы этапов 1–3; запрещены provider/application изменения, реальные календари, Git/external actions. Сначала согласовать с ведущим снимок контрактов, затем общий пакет кода и проверки. Отчёт: файлы, фактический diff, команды и результаты, ограничения. Документацию и общий diff завершает ведущий после приёмки кода. Review получает этот план, реальный diff и результаты тестов; материал не отправляется внешним сервисам.</p>
+</section>
+
+<section><h2>6. Проверки и критерии приёмки</h2>
+<p>Ниже сохранены согласованные критерии проверки. Результаты выполнения приведены в разделе 8. Используются синтетические календари, локальный httptest и fake-провайдеры; реальные события не создаются и уведомления не отправляются.</p>
+<ol>
+<li><strong>Каталоги:</strong> compat + V2 off = прежние пять; compat + V2 on = прежние шестнадцать; modern = ровно двенадцать. Нет повторяющихся имён. В modern нет ни одного <code>_v2</code>; вызов <code>get_events_v2</code> возвращает unknown tool. В compat <code>get_events</code> сохраняет старый результат, <code>get_events_v2</code> — прежний современный контракт.</li>
+<li><strong>Эквивалентность:</strong> схемы каждого modern-инструмента равны схемам соответствующего текущего V2-инструмента, кроме имени. Проверить также raw schema <code>update_event</code>. Сравнить structured/text outputs и ошибки. Список событий: неполный источник, page token и продолжение не теряются; все инструменты вызывают тот же обработчик.</li>
+<li><strong>Запись:</strong> fake-провайдер видит те же scope/ETag/operation ID/presence-aware patch и notification policy. Проверить пропущенное значение, явный <code>none</code>, preview и отказ неподдерживаемой операции; не менять действующие defaults и защиту от уведомлений.</li>
+<li><strong>Маршруты:</strong> HTTP initialize → tools/list → tools/call на обоих явных адресах и основном адресе в обоих режимах. Проверить trailing slash, неизвестный подпуть, V2 off, отсутствие redirect/fallback, параллельные независимые клиенты и чужие session IDs. Уже открытая compat-сессия не превращается в modern при выборе другим клиентом другого пути.</li>
+<li><strong>Защита:</strong> valid primary/legacy API key, invalid/missing key, явно разрешённый unauthenticated-режим, прежний body limit на всех путях. Native/read-only tokens не приобретают доступ к MCP. Для неизвестных путей результат не должен раскрывать другой каталог.</li>
+<li><strong>Конфигурация:</strong> переменная отсутствует или пуста → compat; <code>compat</code>/<code>modern</code> принимаются; опечатка отклоняется; modern + V2 off отклоняется до listener. Старый вызов Register и локальный listing fixture продолжают собираться.</li>
+</ol>
+<pre><code>go test -race -count=1 ./internal/mcpserver ./internal/config ./internal/runtime ./internal/auth
+go test -race -count=1 ./...
+CGO_ENABLED=0 go build ./...
+CGO_ENABLED=0 go vet ./...
+go build -o /tmp/calendar-modern-listing-fixture scripts/measure_calendar_listing.go</code></pre>
+<p>Команды общего Go-контура взяты из проекта/CI; тест скрипта — проверка существующего вызова Register. При отсутствующем embedded frontend bundle применить штатную процедуру сборки проекта, не редактировать generated output вручную; сетевые установки не подразумеваются. Ошибки текущей базы отделить от регрессий изменений и записать, а не объявлять baseline зелёным.</p>
+<p>Ручная локальная QA: новый клиент, подключённый только к modern, видит один get_events и одну операцию каждого вида; описание объясняет страницы/полноту. Старый клиент с прежней схемой успешно читает fixture на неизменённом адресе. Реальная QA после отдельного разрешения выкладки: health и полный безопасный путь чтения через фактический proxy/Gateway. До любой проверки записи на реальных данных отдельно подтвердить изолированный календарь и отключение приглашений/уведомлений.</p>
+</section>
+
+<section><h2>7. Риски и откат</h2>
+<ul>
+<li><strong>Одинаковое имя — другой контракт:</strong> запрещено незаметно менять основной адрес, пока потребители не проверены. Снимки схем и ответы защищают compat; отдельные идентичности Gateway защищают кеши и разрешения.</li>
+<li><strong>Частичный результат принимается за пустой:</strong> modern сохраняет sources/complete и page metadata; примеры клиента обязаны их учитывать.</li>
+<li><strong>Пересечение маршрутов и сессий:</strong> явные пути, без редиректов и выбора режима по входным аргументам; проверить SDK HTTP-поведением, а не только списком Go-инструментов.</li>
+<li><strong>Устаревшие списки инструментов у клиента:</strong> переподключение и штатное обновление discovery/cache входят в миграцию; на этапе кода реальные настройки не трогаются.</li>
+<li><strong>Существующие незакоммиченные изменения:</strong> до реализации повторить status/diff; учитывать пересечения в tools_v2.go, README и AGENTS. Не выполнять reset/checkout поверх пользовательской работы.</li>
+</ul>
+<p>Локальный откат: отменить только изменения этой реализации по её проверенному diff, сохранив исходную грязную базу. После отдельно разрешённой выкладки откат клиента — вернуть его прежнее compat-подключение и схемы/разрешения; не удалять modern-регистрацию вместе с чужими настройками. После будущего переключения default возврат <code>MCP_CATALOG_MODE=compat</code> тоже требует разрешённого production-изменения и проверки клиентов, уже использующих основной адрес как modern. Клиентов на явных путях смена default не затрагивает.</p>
+<p>Откат бинарника требует сначала вернуть modern-клиентов на совместимый контракт: предыдущий бинарник не знает новых путей. Не удалять данные, токены, подключения или sync mappings ради отката.</p>
+</section>
+
+<section><h2>8. Согласование и запись исполнения</h2>
+<p><strong>Предмет согласования ревизии 1:</strong> локальная реализация двух MCP-каталогов и описанных маршрутов, default compat, новая настройка режима, сохранение ENABLE_V2 и legacy/V2 контрактов в compat; синтетические проверки, документация и предложенное ограниченное делегирование с ведущей приёмкой.</p>
+<p><strong>Отдельное разрешение:</strong> commit, push, PR, merge, выкладка, изменение proxy/Gateway/ACL и клиентских подключений, переключение production default, любые действия с реальными календарями. Одобрение плана само по себе их не разрешает.</p>
+<p>Пользователь согласовал ревизию 1 и реализацию 24 октября 2026, явно запретив commit, push и deploy. Согласование получено до изменения кода. План подготовлен по навыку <a href="/Users/dzarlax/.agents/skills/html-implementation-plan/SKILL.md">html-implementation-plan</a>: «Present the file and the concrete scope for approval before implementation». Реализация выполнена локально; production-каталог и подключения не изменены.</p>
+<h3>Фактические изменения</h3>
+<p>В <code>internal/mcpserver/server.go</code> добавлены <code>CatalogMode</code>, <code>Options</code>, <code>RegisterWithOptions</code>, два изолированных сервера/транспорта и точная маршрутизация. <code>Register</code>/<code>buildServer</code> сохранены как compat-обёртки. В <code>tools.go</code> выделен общий list_calendars; <code>tools_v2.go</code> получает явную таблицу имён. Сравнение с исходной грязной базой подтвердило: тела lifecycle-обработчиков сохранены.</p>
+<p>В <code>internal/config/config.go</code> добавлен строгий выбор <code>MCP_CATALOG_MODE</code> с прежним default. <code>internal/runtime/serve.go</code> передаёт options; конфигурация проверяется до подключения провайдеров/открытия listener. Обновлены <code>.env.example</code>, <code>README.md</code> и раздел MCP в <code>AGENTS.md</code>. Новые тесты: <code>catalog_test.go</code>, <code>catalog_behavior_test.go</code>, <code>transport_test.go</code>; дополнены config/runtime tests.</p>
+<h3>Проверки: успешно</h3>
+<ul>
+<li>Полный <code>GOCACHE=/tmp/calendar-modern-go-cache go test -race -count=1 ./...</code> — все 24 пакета прошли. После добавления дополнительных fake-provider и SDK transport tests повторно прошёл весь <code>./internal/mcpserver</code> с <code>-race -count=1</code>.</li>
+<li><code>CGO_ENABLED=0 go build ./...</code>, <code>CGO_ENABLED=0 go vet ./...</code> — успешно с тем же GOCACHE. После последних дополнений повторён vet MCP-пакета.</li>
+<li><code>go build -o /tmp/calendar-modern-listing-fixture scripts/measure_calendar_listing.go</code> — успешно; прежний Register совместим со скриптом.</li>
+<li>Зафиксированы снимки определений всех 16 прежних инструментов; прошли сравнение схем modern/compat, проверки 12/16/5 инструментов и отказ вызова _v2-имён на modern.</li>
+<li>Настоящие MCP SDK HTTP-клиенты через локальный httptest выполнили initialize, tools/list и tools/call на всех шести путях при default compat, default modern и V2 off. Primary/legacy keys, отключённый modern, неизвестные пути, авторизация, request body limit и параллельные каталоги проверены.</li>
+<li>Fake-provider тесты проверили legacy-список, современную страницу, partial/sources/token metadata и передачу параметров продолжения; совпадение modern/compat V2 ответа и ошибок. Проверены notifications none по умолчанию/явно, presence-aware empty patch, ETag/scope/operation ID/preview и запрет неподдерживаемой записи без вызова provider mutation.</li>
+<li><code>git diff --check</code> — успешно; README JSON-примеры разбираются. HTML проверен на сбалансированные теги и автономность.</li>
+</ul>
+<h3>Исполнение, отклонения и ограничения</h3>
+<p>Ограниченный агент <code>gpt-6-luna</code> (high) выполнил MCP-регистрацию и тесты, затем один цикл дополнений по замечаниям ведущего. Ведущий реализовал config/runtime/docs и тест реальными SDK-клиентами; независимо просмотрел исходный diff и выполнил общую приёмку. Отдельный Sol-review не запускался. Вместо предложенного нового <code>catalog.go</code> небольшие определения размещены в существующих server.go/tools_v2.go; контракт и объём не изменены.</p>
+<p>Первый запуск тестов в sandbox ограничивался запретом стандартного Go cache и loopback bind; cache перенесён в /tmp, синтетические HTTP-тесты успешно выполнены с разрешённым выходом из sandbox. Go toolchain в среде: 1.26.4. Действующий transport SDK принимает корректно сформированный session ID от другого экземпляра; тест подтверждает, что он не меняет каталог выбранного URL. Stateful policy не вводилась. Существующий body-limit middleware/SDK возвращает 400 с сообщением о превышении лимита; это поведение сохранено.</p>
+<p>Предыдущие незакоммиченные изменения сохранены. Commit, push, PR, merge, deploy, proxy/Gateway/ACL/client configuration и реальные календари не изменялись. Production-инвентаризация, миграция подключений и внешний health + read-path QA остаются отдельной стадией после соответствующего разрешения. Автоматического переключения или удаления compat нет.</p>
+<h3>Final review and release — 2026-10-24</h3>
+<p>The user authorized final review, commit, push, and deployment on 2026-10-24. The earlier no-commit/no-push/no-deploy instruction is superseded for this release. Client migration and changing the default catalog remain outside this rollout.</p>
+<p>The original branch PR #30 was already merged. A clean release copy at /tmp/calendar-modern-release starts from current origin/main a2b174e and carries only the catalog task delta, preserving newer Apple fixes and all unrelated dirty work in the original checkout. Release branch: codex/modern-mcp-catalog.</p>
+<p>An independent read-only Luna review found no blocking implementation issue. It confirmed schema compatibility, exact path dispatch, separate MCP servers, strict config and the compatibility default. Additional direct parity tests now cover compat update and delete as well as modern create/update/delete, including preview and notification forwarding. Respond/move/import retain the same handler bodies and are covered by definition/schema parity rather than live mutation tests.</p>
+<p>Deployment preflight confirmed the serving container is healthy on revision a2b174e, ENABLE_V2=true and default compat. The worker and legacy fallback are separate containers; this catalog-only rollout targets calendar-serve and retains their current images. No secrets or provider data are recorded in this document.</p>
+<p>Release validation and delivery are in progress; commit, CI and rollout results will be recorded separately after their outcomes are known. The existing CI publishes images only from main, so PR creation and merge require the separately requested authorization.</p>
+</section>
+</main></body></html>

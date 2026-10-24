@@ -24,6 +24,7 @@ type Config struct {
 	LegacyAPIKey           string
 	AllowUnauthenticated   bool
 	EnableV2               bool
+	MCPCatalogMode         string
 	TokenDir               string
 	DatabaseURL            string
 	EncryptionKey          string
@@ -81,6 +82,7 @@ func Load() *Config {
 		LegacyAPIKey:           envStr("API_KEY_LEGACY", ""),
 		AllowUnauthenticated:   envBool("ALLOW_UNAUTHENTICATED", false),
 		EnableV2:               envBool("ENABLE_V2", false),
+		MCPCatalogMode:         envStr("MCP_CATALOG_MODE", "compat"),
 		TokenDir:               envStr("TOKEN_DIR", "/app/data"),
 		DatabaseURL:            envStr("DATABASE_URL", ""),
 		EncryptionKey:          envStr("CALENDAR_ENCRYPTION_KEY", ""),
@@ -123,6 +125,9 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
+	if err := c.ValidateMCPCatalog(); err != nil {
+		return err
+	}
 	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
 		return fmt.Errorf("API_KEY, NATIVE_APP_TOKEN, or READ_ONLY_TOKEN is required unless ALLOW_UNAUTHENTICATED=true")
 	}
@@ -163,6 +168,22 @@ func (c *Config) Validate() error {
 		return c.ValidateEventReadModel()
 	}
 	return nil
+}
+
+// ValidateMCPCatalog preserves the compatibility catalog for existing callers
+// while requiring an explicit opt-in to change the default endpoint contract.
+func (c *Config) ValidateMCPCatalog() error {
+	switch c.MCPCatalogMode {
+	case "", "compat":
+		return nil
+	case "modern":
+		if !c.EnableV2 {
+			return fmt.Errorf("MCP_CATALOG_MODE=modern requires ENABLE_V2=true")
+		}
+		return nil
+	default:
+		return fmt.Errorf("MCP_CATALOG_MODE must be compat or modern")
+	}
 }
 
 func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
