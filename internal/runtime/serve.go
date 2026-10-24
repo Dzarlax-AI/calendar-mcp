@@ -116,7 +116,11 @@ func Serve(_ context.Context) error {
 		LegacyAPIKey:         cfg.LegacyAPIKey,
 		AllowUnauthenticated: cfg.AllowUnauthenticated,
 	}
-	mcpserver.Register(mux, reg, appService, apiAuth, cfg.EnableV2)
+	if err := mcpserver.RegisterWithOptions(mux, reg, appService, apiAuth, mcpserver.Options{
+		EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode),
+	}); err != nil {
+		return fmt.Errorf("initialize MCP catalogs: %w", err)
+	}
 	if (cfg.NativeAppToken != "" || cfg.ReadOnlyToken != "") && platformStore != nil {
 		// Keep existing native reads and writes on appService. Only the dedicated
 		// cached-events route receives a projection-aware clone, so it cannot

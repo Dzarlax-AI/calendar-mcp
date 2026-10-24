@@ -1,11 +1,26 @@
 package runtime
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"calendar-mcp/internal/config"
 )
+
+func TestServeRejectsInvalidMCPCatalogBeforeInitializingProviders(t *testing.T) {
+	for _, mode := range []string{"modern", "modren"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("MCP_CATALOG_MODE", mode)
+			t.Setenv("ENABLE_V2", "false")
+			err := Serve(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "configuration: MCP_CATALOG_MODE") {
+				t.Fatalf("Serve() = %v, want catalog configuration error before initialization", err)
+			}
+		})
+	}
+}
 
 func TestWebRuntimeConfigUsesParsedEventReadModelFlag(t *testing.T) {
 	for _, test := range []struct {

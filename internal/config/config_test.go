@@ -6,6 +6,53 @@ import (
 	"time"
 )
 
+func TestMCPCatalogConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, mode string
+		v2         bool
+		wantErr    bool
+	}{
+		{name: "empty keeps compatibility"},
+		{name: "compat without V2", mode: "compat"},
+		{name: "compat with V2", mode: "compat", v2: true},
+		{name: "modern", mode: "modern", v2: true},
+		{name: "modern requires V2", mode: "modern", wantErr: true},
+		{name: "unknown rejected", mode: "modren", v2: true, wantErr: true},
+		{name: "case not silently normalized", mode: "MODERN", v2: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("MCP_CATALOG_MODE", test.mode)
+			t.Setenv("ENABLE_V2", "false")
+			if test.v2 {
+				t.Setenv("ENABLE_V2", "true")
+			}
+			cfg := Load()
+			wantMode := test.mode
+			if wantMode == "" {
+				wantMode = "compat"
+			}
+			if cfg.MCPCatalogMode != wantMode {
+				t.Fatalf("catalog = %q, want %q", cfg.MCPCatalogMode, wantMode)
+			}
+			if err := cfg.ValidateMCPCatalog(); (err != nil) != test.wantErr {
+				t.Fatalf("ValidateMCPCatalog() = %v, want error %t", err, test.wantErr)
+			}
+			// Validate must enforce this before provider initialization/listeners.
+			cfg.APIKey = "fixture-key"
+			cfg.DatabaseURL = ""
+			cfg.NativeAppToken, cfg.ReadOnlyToken = "", ""
+			cfg.NativeAppWritesEnabled = false
+			if err := cfg.Validate(); (err != nil) != test.wantErr {
+				t.Fatalf("Validate() = %v, want error %t", err, test.wantErr)
+			}
+		})
+	}
+	// Existing callers constructing Config directly also retain compatibility.
+	if err := (&Config{}).ValidateMCPCatalog(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadEventReadModelDefaults(t *testing.T) {
 	for _, key := range []string{
 		"EVENT_READ_MODEL_ENABLED", "EVENT_CACHE_LOOKBACK_DAYS", "EVENT_CACHE_LOOKAHEAD_DAYS",
