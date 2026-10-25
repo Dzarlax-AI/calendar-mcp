@@ -11,7 +11,7 @@ go vet ./...                          # Lint
 API_KEY=test ./server                 # Run locally (add provider env vars as needed)
 ```
 
-Go version: 1.25 (from go.mod)
+Go version: 1.27.3 (from go.mod)
 
 ## Architecture
 
