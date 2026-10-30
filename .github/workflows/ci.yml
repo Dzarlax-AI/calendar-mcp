@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, security/2026-10-25-serve]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -98,7 +98,7 @@ jobs:
     name: Docker Build & Push
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: (github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || (github.ref == 'refs/heads/security/2026-10-25-serve' && github.event_name == 'push')
     permissions:
       contents: read
       packages: write
@@ -120,9 +120,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/dzarlax-ai/calendar-mcp
+          flavor: latest=false
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=,format=short
+            type=sha,prefix=,format=long
 
       - name: Build and push
         uses: docker/build-push-action@v6

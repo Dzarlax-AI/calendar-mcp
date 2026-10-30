@@ -3,6 +3,7 @@ package nativeapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,10 +20,14 @@ type testProvider struct {
 	createRequest calendar.CreateEventRequestV2
 	updateRequest calendar.UpdateEventRequestV2
 	listCalls     int
+	calendarCalls int
 }
 
-func (*testProvider) Name() string                                               { return "google" }
-func (*testProvider) ListCalendars(context.Context) ([]calendar.Calendar, error) { return nil, nil }
+func (*testProvider) Name() string { return "google" }
+func (p *testProvider) ListCalendars(context.Context) ([]calendar.Calendar, error) {
+	p.calendarCalls++
+	return nil, nil
+}
 func (*testProvider) GetEvents(context.Context, string, time.Time, time.Time) ([]calendar.Event, error) {
 	return nil, nil
 }
@@ -127,6 +132,82 @@ func TestNativeAPIRequiresDedicatedToken(t *testing.T) {
 	}
 	if got := request(handler, http.MethodPost, "/events", "read-only-token", `{}`).Code; got != http.StatusMethodNotAllowed {
 		t.Fatalf("write with read-only token status = %d, want %d", got, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestReadOnlyCalendarCatalog(t *testing.T) {
+	handler, provider, store := testHandler(t, true)
+	now := time.Now().UTC()
+	for _, item := range []storage.Calendar{
+		{ID: "google:unicode", ConnectionID: "account", ProviderCalendarID: "unicode", Name: "Календарь", Timezone: "Europe/Belgrade", CanRead: true, DiscoveredAt: now},
+		{ID: "google:first", ConnectionID: "account", ProviderCalendarID: "first", Name: "Alpha", CanRead: true, CanWrite: true, DiscoveredAt: now},
+		{ID: "google:hidden", ConnectionID: "account", ProviderCalendarID: "hidden", Name: "Hidden", CanRead: false, CanWrite: true, DiscoveredAt: now},
+	} {
+		if err := store.UpsertCalendar(t.Context(), item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, token := range []string{"", "wrong", "native-token", "mcp-token"} {
+		if got := request(handler, http.MethodGet, "/calendars", token).Code; got != http.StatusUnauthorized {
+			t.Fatalf("token %q: status %d", token, got)
+		}
+	}
+	if got := request(handler, http.MethodPost, "/calendars", "read-only-token").Code; got != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d", got)
+	}
+	if got := request(handler, http.MethodPost, "/events", "read-only-token", `{}`).Code; got != http.StatusUnauthorized {
+		t.Fatalf("write status = %d", got)
+	}
+	if got := request(handler, http.MethodGet, "/bootstrap", "read-only-token").Code; got != http.StatusUnauthorized {
+		t.Fatalf("bootstrap status = %d", got)
+	}
+	w := request(handler, http.MethodGet, "/calendars", "read-only-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Calendars []calendarResponse `json:"calendars"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Calendars) != 3 || response.Calendars[0].Name != "Alpha" || response.Calendars[1].Name != "Primary" || response.Calendars[2].Name != "Календарь" || response.Calendars[2].TimeZone != "Europe/Belgrade" {
+		t.Fatalf("catalog = %#v", response.Calendars)
+	}
+	for _, item := range response.Calendars {
+		if !item.CanRead || item.CanWrite || !item.ReadOnly {
+			t.Fatalf("permissions = %#v", item)
+		}
+	}
+	if provider.calendarCalls != 0 || provider.listCalls != 0 || provider.createRequest.CalendarID != "" || provider.updateRequest.Ref.CalendarID != "" {
+		t.Fatal("catalog invoked provider")
+	}
+	if got := New(Config{Store: store, Token: "native-token"}).Handler(); request(got, http.MethodGet, "/calendars", "native-token").Code != http.StatusNotFound {
+		t.Fatal("catalog enabled without read-only token")
+	}
+	if got := request(New(Config{ReadOnlyToken: "read-only-token"}).Handler(), http.MethodGet, "/calendars", "read-only-token").Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("missing store status = %d", got)
+	}
+}
+
+func TestReadOnlyCalendarCatalogLimit(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	now := time.Now().UTC()
+	for i := 0; i < 1999; i++ {
+		id := fmt.Sprintf("google:test-%04d", i)
+		if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: id, Name: id, CanRead: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := request(handler, http.MethodGet, "/calendars", "read-only-token").Code; got != http.StatusOK {
+		t.Fatalf("2000 entries status = %d", got)
+	}
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:overflow", ConnectionID: "account", ProviderCalendarID: "overflow", Name: "overflow", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	w := request(handler, http.MethodGet, "/calendars", "read-only-token")
+	if w.Code != http.StatusServiceUnavailable || strings.TrimSpace(w.Body.String()) != `{"error":"catalog_too_large"}` {
+		t.Fatalf("overflow status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
 

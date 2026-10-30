@@ -11,7 +11,7 @@ go vet ./...                          # Lint
 API_KEY=test ./server                 # Run locally (add provider env vars as needed)
 ```
 
-Go version: 1.25 (from go.mod)
+Go version: 1.27.3 (from go.mod)
 
 ## Architecture
 
@@ -52,7 +52,7 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>` (c
 | `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; explicit catalog paths remain stable |
 | `API_KEY` | _(empty)_ | Auth key for MCP endpoints |
 | `NATIVE_APP_TOKEN` | _(empty)_ | Dedicated token for the read-only native app API; requires platform storage |
-| `READ_ONLY_TOKEN` | _(empty)_ | Token restricted to cached-event reads for HomeDash; requires platform storage |
+| `READ_ONLY_TOKEN` | _(empty)_ | Token restricted to cached events and the read-only calendar catalog for HomeDash; requires platform storage |
 | `TOKEN_DIR` | `/app/data` | OAuth2 token file storage |
 | `GOOGLE_CLIENT_ID` | | Google OAuth2 client ID |
 | `GOOGLE_CLIENT_SECRET` | | Google OAuth2 client secret |

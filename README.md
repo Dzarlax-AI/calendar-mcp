@@ -197,7 +197,7 @@ Health endpoints:
 | `API_KEY` | empty | Bearer token or `X-API-Key` accepted by MCP and REST |
 | `API_KEY_LEGACY` | empty | Optional previous key accepted temporarily by MCP and REST during rotation |
 | `NATIVE_APP_TOKEN` | empty | Dedicated Bearer token for the read-only native app API; requires `DATABASE_URL` and is never revealed in web Settings |
-| `READ_ONLY_TOKEN` | empty | Dedicated Bearer token for `GET /api/native/v1/cached-events`; requires `DATABASE_URL` and has no native write access |
+| `READ_ONLY_TOKEN` | empty | Dedicated Bearer token for `GET /api/native/v1/cached-events` and `GET /api/native/v1/calendars`; requires `DATABASE_URL` and has no native write access |
 | `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
@@ -232,7 +232,7 @@ NATIVE_APP_TRUSTED_PROXY=true \
 
 Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`. With the default `NATIVE_APP_WRITES_ENABLED=false`, no event-mutation routes are exposed. When the explicit opt-in is enabled, `POST /api/native/v1/events` and `PATCH /api/native/v1/events/{calendar_id}/{event_id}` are available for ordinary events; provider notifications remain forced off. The token is never returned by the Settings page or any API response.
 
-`READ_ONLY_TOKEN` is independent from `NATIVE_APP_TOKEN` and enables only `GET /api/native/v1/cached-events`. The route reads the local projection exclusively and returns `503` when the event read model is unavailable. It never authorizes `/bootstrap`, `/events`, or any write route.
+`READ_ONLY_TOKEN` is independent from `NATIVE_APP_TOKEN` and enables only `GET /api/native/v1/cached-events` and `GET /api/native/v1/calendars`. Cached events read the local projection exclusively and return `503` when the event read model is unavailable. The calendar catalog reads stored readable calendars, sorted by name, and always reports them as read-only; it returns `503` with `catalog_too_large` if more than 2000 are readable. Neither route discovers providers. The token never authorizes `/bootstrap`, `/events`, or any write route.
 
 Examples:
 
