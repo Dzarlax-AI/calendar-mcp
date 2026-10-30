@@ -37,7 +37,7 @@ type Config struct {
 	// the separate NativeAppWritesEnabled opt-in.
 	NativeAppToken string
 	// ReadOnlyToken is a separate bearer token for projection-backed clients.
-	// It only authorizes GET /api/native/v1/cached-events.
+	// It only authorizes GET /api/native/v1/cached-events and /calendars.
 	ReadOnlyToken          string
 	NativeAppTrustedProxy  bool
 	NativeAppWritesEnabled bool

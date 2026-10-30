@@ -52,8 +52,31 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.readOnlyToken != "" {
 		mux.Handle("GET /cached-events", s.authorized(s.readOnlyToken, http.HandlerFunc(s.cachedEvents)))
+		mux.Handle("GET /calendars", s.authorized(s.readOnlyToken, http.HandlerFunc(s.readOnlyCalendars)))
 	}
 	return mux
+}
+
+// readOnlyCalendars serves only the stored catalog, without provider discovery.
+func (s *Server) readOnlyCalendars(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "calendar data is unavailable")
+		return
+	}
+	items, err := s.calendars(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
+		return
+	}
+	if len(items) > 2000 {
+		writeError(w, http.StatusServiceUnavailable, "catalog_too_large")
+		return
+	}
+	for i := range items {
+		items[i].CanWrite = false
+		items[i].ReadOnly = true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"calendars": items})
 }
 
 // nativeEventTime is intentionally narrower than calendar.EventTime. The
