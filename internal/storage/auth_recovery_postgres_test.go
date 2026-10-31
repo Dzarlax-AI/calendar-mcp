@@ -35,8 +35,8 @@ func TestPostgresAppleAuthRecovery(t *testing.T) {
 			return
 		}
 		defer cleanup.Close()
-		_, _ = cleanup.db.Exec("DELETE FROM calendars WHERE id='auth-recovery-calendar'")
-		_, _ = cleanup.db.Exec("DELETE FROM connections WHERE id='auth-recovery-connection'")
+		_, _ = cleanup.db.ExecContext(context.Background(), "DELETE FROM calendars WHERE id='auth-recovery-calendar'")
+		_, _ = cleanup.db.ExecContext(context.Background(), "DELETE FROM connections WHERE id='auth-recovery-connection'")
 	})
 	window := SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
 	if err := store.EnsureCalendarSyncStates(t.Context(), now, window); err != nil {
@@ -70,7 +70,7 @@ func TestPostgresAppleAuthRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status, cursor string
-	if err := store.db.QueryRow("SELECT status,cursor FROM calendar_sync_state WHERE calendar_id='auth-recovery-calendar'").Scan(&status, &cursor); err != nil {
+	if err := store.db.QueryRowContext(t.Context(), "SELECT status,cursor FROM calendar_sync_state WHERE calendar_id='auth-recovery-calendar'").Scan(&status, &cursor); err != nil {
 		t.Fatal(err)
 	}
 	if status != "ready" || cursor != "recovered" {

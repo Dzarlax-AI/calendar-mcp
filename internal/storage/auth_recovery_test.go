@@ -12,10 +12,10 @@ import (
 func TestAppleAuthRecoveryCadence(t *testing.T) {
 	store, now := newEventCacheStore(t)
 	ctx := t.Context()
-	if _, err := store.db.Exec("UPDATE connections SET provider='apple' WHERE id='connection'"); err != nil {
+	if _, err := store.db.ExecContext(t.Context(), "UPDATE connections SET provider='apple' WHERE id='connection'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("UPDATE calendar_sync_state SET cursor='saved-cursor' WHERE calendar_id='calendar'"); err != nil {
+	if _, err := store.db.ExecContext(t.Context(), "UPDATE calendar_sync_state SET cursor='saved-cursor' WHERE calendar_id='calendar'"); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := store.ConnectionByID(ctx, "connection")
@@ -59,7 +59,7 @@ func TestAppleAuthRecoveryCadence(t *testing.T) {
 	}
 	var status, cursor string
 	var errorCode sql.NullString
-	if err := store.db.QueryRow("SELECT status,cursor,last_error_code FROM calendar_sync_state").Scan(&status, &cursor, &errorCode); err != nil {
+	if err := store.db.QueryRowContext(t.Context(), "SELECT status,cursor,last_error_code FROM calendar_sync_state").Scan(&status, &cursor, &errorCode); err != nil {
 		t.Fatal(err)
 	}
 	if status != "ready" || cursor != "fresh-cursor" || errorCode.Valid {
@@ -90,14 +90,14 @@ func TestAutomaticRecoveryOnlyForReadableConnectedAppleAuth(t *testing.T) {
 	} {
 		t.Run(tc.provider+"/"+tc.code+"/"+tc.status+"/"+map[bool]string{true: "readable", false: "unreadable"}[tc.readable], func(t *testing.T) {
 			store, now := newEventCacheStore(t)
-			if _, err := store.db.Exec("UPDATE connections SET provider=?,status=?", tc.provider, tc.status); err != nil {
+			if _, err := store.db.ExecContext(t.Context(), "UPDATE connections SET provider=?,status=?", tc.provider, tc.status); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.db.Exec("UPDATE calendars SET can_read=?", tc.readable); err != nil {
+			if _, err := store.db.ExecContext(t.Context(), "UPDATE calendars SET can_read=?", tc.readable); err != nil {
 				t.Fatal(err)
 			}
 			// Simulate a parked state written by the previous release: no future retry deadline.
-			if _, err := store.db.Exec("UPDATE calendar_sync_state SET status='parked',last_error_code=?,next_sync_at=?", tc.code, now); err != nil {
+			if _, err := store.db.ExecContext(t.Context(), "UPDATE calendar_sync_state SET status='parked',last_error_code=?,next_sync_at=?", tc.code, now); err != nil {
 				t.Fatal(err)
 			}
 			state, err := store.ClaimDueCalendarSync(t.Context(), "worker", now.Add(time.Hour), now.Add(2*time.Hour))
@@ -112,11 +112,11 @@ func TestWindowRebaseDoesNotReactivateParkedSources(t *testing.T) {
 	for _, code := range []string{"auth", "permission", "protocol", "unsupported"} {
 		t.Run(code, func(t *testing.T) {
 			store, now := newEventCacheStore(t)
-			if _, err := store.db.Exec("UPDATE connections SET provider='apple'"); err != nil {
+			if _, err := store.db.ExecContext(t.Context(), "UPDATE connections SET provider='apple'"); err != nil {
 				t.Fatal(err)
 			}
 			retryAt := now.Add(15 * time.Minute)
-			if _, err := store.db.Exec("UPDATE calendar_sync_state SET status='parked',last_error_code=?,next_sync_at=?", code, retryAt); err != nil {
+			if _, err := store.db.ExecContext(t.Context(), "UPDATE calendar_sync_state SET status='parked',last_error_code=?,next_sync_at=?", code, retryAt); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.EnsureCalendarSyncStates(t.Context(), now.Add(time.Minute), SyncWindow{Start: now, End: now.Add(24 * time.Hour)}); err != nil {
@@ -124,7 +124,7 @@ func TestWindowRebaseDoesNotReactivateParkedSources(t *testing.T) {
 			}
 			var status, gotCode string
 			var next time.Time
-			if err := store.db.QueryRow("SELECT status,last_error_code,next_sync_at FROM calendar_sync_state").Scan(&status, &gotCode, &next); err != nil {
+			if err := store.db.QueryRowContext(t.Context(), "SELECT status,last_error_code,next_sync_at FROM calendar_sync_state").Scan(&status, &gotCode, &next); err != nil {
 				t.Fatal(err)
 			}
 			if status != "parked" || gotCode != code || !next.Equal(retryAt) {
@@ -136,7 +136,7 @@ func TestWindowRebaseDoesNotReactivateParkedSources(t *testing.T) {
 
 func TestAppleAuthDeadlineSurvivesReopen(t *testing.T) {
 	store, now := newEventCacheStore(t)
-	if _, err := store.db.Exec("UPDATE connections SET provider='apple'"); err != nil {
+	if _, err := store.db.ExecContext(t.Context(), "UPDATE connections SET provider='apple'"); err != nil {
 		t.Fatal(err)
 	}
 	state, err := store.ClaimDueCalendarSync(t.Context(), "first", now, now.Add(time.Hour))
@@ -148,7 +148,7 @@ func TestAppleAuthDeadlineSurvivesReopen(t *testing.T) {
 	}
 	var seq int
 	var name, path string
-	if err := store.db.QueryRow("PRAGMA database_list").Scan(&seq, &name, &path); err != nil {
+	if err := store.db.QueryRowContext(t.Context(), "PRAGMA database_list").Scan(&seq, &name, &path); err != nil {
 		t.Fatal(err)
 	}
 	if !filepath.IsAbs(path) {
