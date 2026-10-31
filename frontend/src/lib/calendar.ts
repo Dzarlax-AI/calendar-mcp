@@ -3,6 +3,7 @@ import type { CalendarRecord, EventCreateRequest, EventDraft, EventListResponse,
 
 export const EVENT_STATUS_POLL_INTERVAL_MS = 2_000;
 export const EVENT_STATUS_POLL_MAX_ATTEMPTS = 30;
+export const EVENT_AUTH_STATUS_POLL_INTERVAL_MS = 60_000;
 
 // FullCalendar accepts a duration for scrollTime. Keep the initial viewport
 // centered on the user's current local time instead of midnight.
@@ -15,6 +16,8 @@ export type EventStatusSummary = {
   label: string;
   failedCount: number;
   degradedCalendarIds?: string[];
+  resumeCalendarIds?: string[];
+  recoveryDetail?: string;
 };
 
 export function toCalendarEvent(event: EventRecord, calendar?: CalendarRecord): EventInput {
@@ -59,11 +62,26 @@ export function summarizeEventSources(response: Pick<EventListResponse, "sources
   const retrying = sources.filter((source) => isActiveRetryableSource(source, now));
   const failed = sources.filter((source) => !isActiveRetryableSource(source, now) && (source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false)));
   const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing" || source.status === "degraded" || isActiveRetryableSource(source, now)) ? 1 : 0);
-  if (failedCount) return { kind: "failed", label: `${failedCount} calendar${failedCount === 1 ? "" : "s"} failed`, failedCount };
+  if (failedCount) {
+    const parked = failed.filter((source) => source.status === "parked");
+    const resumeCalendarIds = [...new Set(parked.map((source) => source.calendar_id).filter((id): id is string => Boolean(id)))];
+    const automatic = parked.filter(isAppleAuthRecheck);
+    const deadlines = automatic.map((source) => new Date(source.next_sync_at!).getTime());
+    const next = deadlines.length ? Math.min(...deadlines) : undefined;
+    const auth = parked.some((source) => source.error_code === "auth");
+    const lastSuccess = parked.map((source) => source.last_success_at).filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value!))).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    const recoveryDetail = [
+      auth ? "Calendar access was rejected." : "Calendar sync is paused.",
+      next !== undefined ? (next > now.getTime() ? `Next automatic access check: ${new Date(next).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "Automatic access check is due.") : "",
+      lastSuccess ? `Last successful sync: ${formatRelativeTime(lastSuccess, now)}.` : "",
+      resumeCalendarIds.length ? "Resume uses saved credentials; no password entry is needed." : "",
+    ].filter(Boolean).join(" ");
+    return { kind: "failed", label: `${failedCount} calendar${failedCount === 1 ? "" : "s"} failed`, failedCount, resumeCalendarIds, recoveryDetail: parked.length ? recoveryDetail : undefined };
+  }
   const degradedCalendarIds = sources.filter((source) => source.status === "degraded").map((source) => source.calendar_id).filter((id): id is string => Boolean(id));
   if (degradedCalendarIds.length) return { kind: "degraded", label: `${degradedCalendarIds.length} calendar${degradedCalendarIds.length === 1 ? " needs" : "s need"} repair`, failedCount: 0, degradedCalendarIds };
   if (retrying.length) return { kind: "syncing", label: "Syncing", failedCount: 0 };
-  if (sources.some((source) => source.stale)) return { kind: "stale", label: "Some calendars are stale", failedCount: 0 };
+  if (sources.some((source) => source.stale && source.status !== "pending" && source.status !== "syncing")) return { kind: "stale", label: "Some calendars are stale", failedCount: 0 };
   if (sources.some((source) => source.status === "pending" || source.status === "syncing")) return { kind: "syncing", label: "Syncing", failedCount: 0 };
   const latest = sources.map((source) => source.last_success_at).filter((value): value is string => Boolean(value)).reduce<string | undefined>((current, value) => {
     if (!current) return value;
@@ -76,7 +94,14 @@ export function summarizeEventSources(response: Pick<EventListResponse, "sources
 
 export function eventStatusPollInterval(sources: EventListResponse["sources"], attempts: number, maxAttempts = EVENT_STATUS_POLL_MAX_ATTEMPTS, now = new Date()): number | false {
   const syncing = hasActiveEventSync(sources, now);
-  return syncing && attempts < maxAttempts ? EVENT_STATUS_POLL_INTERVAL_MS : false;
+  if (syncing && attempts < maxAttempts) return EVENT_STATUS_POLL_INTERVAL_MS;
+  // Waiting for an access check must not consume the short active-sync poll budget.
+  return sources?.some(isAppleAuthRecheck) ? EVENT_AUTH_STATUS_POLL_INTERVAL_MS : false;
+}
+
+function isAppleAuthRecheck(source: NonNullable<EventListResponse["sources"]>[number]): boolean {
+  return source.provider === "apple" && source.status === "parked" && source.error_code === "auth"
+    && Boolean(source.next_sync_at) && Number.isFinite(Date.parse(source.next_sync_at!));
 }
 
 export function hasActiveEventSync(sources: EventListResponse["sources"], now = new Date()): boolean {

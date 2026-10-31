@@ -867,3 +867,61 @@ func newUIJSONRequest(t *testing.T, method, target, body, token string) *http.Re
 	}
 	return req
 }
+
+func TestUIAPIResumeThreeAppleCalendarsWithoutCredentialInput(t *testing.T) {
+	provider := uiProvider()
+	provider.name = "apple"
+	enabled := true
+	window := testEventReadModelWindow()
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: window}, provider)
+	now := time.Now().UTC()
+	ids := []string{"apple:primary", "apple:family", "apple:personal"}
+	for _, id := range ids[1:] {
+		if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: strings.TrimPrefix(id, "apple:"), Name: "Synthetic", CanRead: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, window); err != nil {
+		t.Fatal(err)
+	}
+	for range ids {
+		state, err := store.ClaimDueCalendarSync(t.Context(), "park", now, now.Add(time.Hour))
+		if err != nil || state == nil {
+			t.Fatalf("claim=%#v err=%v", state, err)
+		}
+		if err := store.ParkCalendarSync(t.Context(), *state, "auth", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := store.ConnectionByID(t.Context(), "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		request := newUIJSONRequest(t, http.MethodPost, "https://calendar.example/api/ui/calendars/"+id+"/refresh", "", "token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted || response.Header().Get("Location") != "" {
+			t.Fatalf("resume %s status=%d location=%s body=%s", id, response.Code, response.Header().Get("Location"), response.Body.String())
+		}
+	}
+	_, sources, err := store.ListCachedEvents(t.Context(), ids, window.Start, window.End)
+	if err != nil || len(sources) != 3 {
+		t.Fatalf("sources=%#v err=%v", sources, err)
+	}
+	for _, source := range sources {
+		if source.Status != "pending" || source.ErrorCode != "" {
+			t.Fatalf("not queued: %#v", source)
+		}
+	}
+	after, err := store.ConnectionByID(t.Context(), "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before.EncryptedCredentials, after.EncryptedCredentials) || before.CredentialVersion != after.CredentialVersion {
+		t.Fatal("resume changed credentials")
+	}
+	if len(provider.listCalls) != 0 || provider.createCalls != 0 || provider.updateCalls != 0 || provider.deleteCalls != 0 {
+		t.Fatal("resume called provider instead of queuing read-model sync")
+	}
+}

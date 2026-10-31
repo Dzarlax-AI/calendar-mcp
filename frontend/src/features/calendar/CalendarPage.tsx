@@ -12,7 +12,7 @@ import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, ListFilter,
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
 import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
-import { EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
+import { type EventStatusSummary, EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 import { HtmlDescription } from "../../components/HtmlDescription";
@@ -322,6 +322,10 @@ export default function CalendarPage() {
     refreshCalendarIds(sortedSelectedCalendarIds);
   }
 
+  function resumeParkedCalendars() {
+    refreshCalendarIds(eventStatus?.resumeCalendarIds ?? []);
+  }
+
   function refreshDegradedCalendars() {
     const degraded = eventStatus?.kind === "degraded" ? eventStatus.degradedCalendarIds ?? [] : [];
     refreshCalendarIds(degraded);
@@ -344,7 +348,7 @@ export default function CalendarPage() {
         <div className="toolbar-actions">{!showMobileMonth && <div className="toolbar-scroll-controls">{!persistentSidebar && <><button className="button button-primary calendar-create-button" onClick={() => openCreate()} aria-label="New event" title="New event"><Plus size={16} /><span>New event</span></button><button className="button button-outline calendar-filter-button" onClick={() => setSurface({ kind: "filters" })} aria-label="Choose calendars" title="Choose calendars"><CalendarDays size={17} /><span className="calendar-filter-label">Calendars</span></button></>}</div>}{usingCalendarMocks && !showMobileMonth && <span className="mock-data-indicator" role="status">Mock data</span>}{phoneCalendarLayout || !narrowCalendarLayout ? <div className="view-switcher" role="group" aria-label="Calendar view">{VIEW_OPTIONS.map((option) => <button key={option.value} className={view === option.value ? "is-selected" : ""} aria-pressed={view === option.value} onClick={() => changeView(option.value)}>{option.label}</button>)}</div> : <label className="compact-view-picker"><span className="visually-hidden">Calendar view</span><select value={view} onChange={(event) => changeView(event.target.value as ViewName)}>{VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}</div>
       </div>
       <div className="calendar-mobile-filter"><button className="button button-outline" onClick={() => setSurface({ kind: "filters" })}><ListFilter size={16} /> Calendars</button><button className="button button-primary" onClick={() => openCreate()}><Plus size={16} /> New event</button></div>
-      {visibleEventStatus && <div className={`event-status-strip event-status-row event-status-row--${visibleEventStatus.kind}`} role={visibleEventStatus.kind === "failed" ? "alert" : "status"} aria-live="polite"><span>{visibleEventStatus.label}</span>{(visibleEventStatus.kind === "failed" || visibleEventStatus.kind === "degraded") && <span className="event-status-detail">Cached events remain visible.</span>}{visibleEventStatus.kind === "degraded" && <button className="status-action" type="button" onClick={refreshDegradedCalendars} disabled={refreshMutation.isPending}>Refresh affected calendars</button>}</div>}
+      {visibleEventStatus && <EventSyncStatus summary={visibleEventStatus} onResume={resumeParkedCalendars} onRepair={refreshDegradedCalendars} refreshing={refreshMutation.isPending} />}
       {notice && <div className={`notice notice--${notice.intent}`} role={notice.intent === "error" ? "alert" : "status"}><span>{notice.message}</span><button className="icon-button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16} /></button></div>}
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className={`calendar-canvas-wrap ${narrowCalendarLayout && !phoneCalendarLayout && view === "timeGridWeek" ? "is-narrow-week" : ""} ${phoneCalendarLayout && view === "timeGridWeek" ? "is-phone-week" : ""} ${showMobileMonth ? "has-mobile-month" : ""}`}>
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
@@ -421,6 +425,15 @@ function SurfaceSheet({ children, className, labelledBy, onClose }: { children: 
     return () => { sheet.removeEventListener("keydown", handleKeyDown); previousFocusRef.current?.isConnected && previousFocusRef.current.focus(); };
   }, []);
   return <><button className="sidebar-scrim" type="button" aria-label="Close panel" onClick={onClose} /><aside ref={sheetRef} className={`${className} is-open`} role="dialog" aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>{children}</aside></>;
+}
+
+export function EventSyncStatus({ summary, onResume, onRepair, refreshing }: { summary: EventStatusSummary; onResume: () => void; onRepair: () => void; refreshing: boolean }) {
+  return <div className={`event-status-strip event-status-row event-status-row--${summary.kind}`} role={summary.kind === "failed" ? "alert" : "status"} aria-live="polite">
+    <span>{summary.label}</span>
+    {(summary.kind === "failed" || summary.kind === "degraded") && <span className="event-status-detail">Cached events remain visible. {summary.recoveryDetail}</span>}
+    {summary.kind === "failed" && Boolean(summary.resumeCalendarIds?.length) && <button className="status-action" type="button" onClick={onResume} disabled={refreshing}>{refreshing ? "Scheduling…" : "Resume sync"}</button>}
+    {summary.kind === "degraded" && <button className="status-action" type="button" onClick={onRepair} disabled={refreshing}>Refresh affected calendars</button>}
+  </div>;
 }
 
 export function CalendarSidebar({ calendars, selected, onToggle, onCreate, onRefresh, refreshDisabled, refreshing, onClose, onJumpToDate, showClose = true, visibleDate = new Date() }: { calendars: CalendarRecord[]; selected: string[]; onToggle: (calendar: CalendarRecord) => void; onCreate: () => void; onRefresh: () => void; refreshDisabled: boolean; refreshing: boolean; onClose: () => void; onJumpToDate: (date: Date) => void; showClose?: boolean; visibleDate?: Date }) {

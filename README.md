@@ -126,6 +126,12 @@ make build
 
 `make build`, the Dockerfile, and CI all stage `frontend/dist/` into the Go embed directory before compiling. Generated bundles are ignored; only the source-controlled placeholder is retained. Automated and visual QA must use fake providers or synthetic data. Before any later live mutation, use a dedicated empty calendar and separately confirm invitation and notification suppression.
 
+### Recovering paused calendar reads
+
+The calendar error banner offers **Resume sync** for parked sources. One click queues the affected selected calendars through the existing authenticated refresh API, using saved encrypted credentials. It does not open provider sign-in or request an app-specific password. A queued request is not reported as a successful sync; cached events remain visible until the worker completes recovery. **Reconnect** on the Connections page remains a separate action for replacing credentials.
+
+Apple calendars parked after an `auth` error are automatically checked every 15 minutes while their connection is connected and the calendar is readable. The retry deadline is durable, survives worker restarts and daily projection-window changes, and existing parked Apple auth states are eligible after upgrade. Other parked error classes and other providers require explicit recovery. While waiting, the UI keeps the access error visible, shows the next check and last successful sync, and checks cached status once a minute. Resume does not enable paused event-copy rules or change notification policy.
+
 ### Local Calendar mock workbench
 
 For UI polishing without Authentik, provider credentials, or real calendar data:

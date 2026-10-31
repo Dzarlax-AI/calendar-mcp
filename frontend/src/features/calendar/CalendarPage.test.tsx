@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CalendarSidebar, ManageMenu, calendarDayKey, eventDayKey, monthDays, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
+import { EventSyncStatus, CalendarSidebar, ManageMenu, calendarDayKey, eventDayKey, monthDays, shouldShowDetailedEventContent, usesCompactCalendarLayout } from "./CalendarPage";
 import type { CalendarRecord, EventRecord } from "../../lib/types";
 
 let container: HTMLDivElement;
@@ -137,5 +137,23 @@ describe("mobile month data", () => {
     expect(days.find((day) => day.key === "2026-08-28")?.events).toEqual([allDayEvent]);
     expect(days.find((day) => day.key === calendarDayKey(crossingStart))?.events).toContain(crossingEvent);
     expect(days.find((day) => day.key === calendarDayKey(crossingEnd))?.events).toContain(crossingEvent);
+  });
+});
+
+
+describe("parked sync recovery", () => {
+  it("offers one recovery action without a credential form", () => {
+    const onResume = vi.fn();
+    act(() => root.render(<EventSyncStatus summary={{ kind: "failed", label: "3 calendars failed", failedCount: 3, resumeCalendarIds: ["apple:one", "apple:two", "apple:three"], recoveryDetail: "Resume uses saved credentials; no password entry is needed." }} onResume={onResume} onRepair={vi.fn()} refreshing={false} />));
+    const button = container.querySelector<HTMLButtonElement>("button");
+    expect(button?.textContent).toBe("Resume sync");
+    expect(container.querySelector("input, form, a")).toBeNull();
+    expect(container.textContent).toContain("saved credentials");
+    act(() => button!.click());
+    expect(onResume).toHaveBeenCalledOnce();
+    act(() => root.render(<EventSyncStatus summary={{ kind: "failed", label: "3 calendars failed", failedCount: 3, resumeCalendarIds: ["apple:one"] }} onResume={onResume} onRepair={vi.fn()} refreshing={true} />));
+    expect(container.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Scheduling…");
+    expect(container.textContent).not.toContain("Updated");
   });
 });
