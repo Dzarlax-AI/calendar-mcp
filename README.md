@@ -510,7 +510,9 @@ terminates its fixture processes. Production deployment is a separate action.
 `GET /api/native/v1/cached-events` adds nullable RFC3339 UTC `last_success_at`
 and `next_sync_at`, nullable `coverage_complete`, and optional allowlisted
 `error_code` to each source. Coverage is calculated against the requested interval
-only when the stored projection has a successful bounded sync; unknown remains
+only when the current window finished syncing (ready or degraded). Pending,
+syncing, failed and parked windows report unknown even if an older window once
+succeeded; unknown remains
 null. Error codes are transient, rate_limited, auth, permission, unsupported, and
 protocol. Raw provider messages and credentials are excluded.
 
