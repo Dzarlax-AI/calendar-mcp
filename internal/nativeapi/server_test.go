@@ -497,3 +497,43 @@ func TestSortEventsByStartUsesInstantsAndPlacesAllDayFirstOnATie(t *testing.T) {
 		t.Fatalf("first equal-instant event = %q, want all-day", items[0].ID)
 	}
 }
+
+func TestNativeCachedCoverageUnknownUntilChangedWindowFinishes(t *testing.T) {
+	handler, provider, store := testHandler(t, false)
+	oldWindow := storage.SyncWindow{Start: mustNativeTime(t, "2026-08-28T00:00:00Z"), End: mustNativeTime(t, "2026-08-29T00:00:00Z")}
+	prepareCachedCalendarWithWindow(t, store, "google:primary", oldWindow, "")
+	now := time.Now().UTC().Add(time.Second)
+	newWindow := storage.SyncWindow{Start: oldWindow.Start.Add(-24 * time.Hour), End: oldWindow.End.Add(24 * time.Hour)}
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, newWindow); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"pending", "failed"} {
+		if expected == "failed" {
+			claim, err := store.ClaimDueCalendarSync(t.Context(), "changed-window-worker", now, now.Add(time.Minute))
+			if err != nil || claim == nil {
+				t.Fatalf("claim=%#v err=%v", claim, err)
+			}
+			if err := store.FailCalendarSync(t.Context(), *claim, "transient", now.Add(time.Second), now.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := request(handler, http.MethodGet, "/cached-events?start=2026-08-27T00:00:00Z&end=2026-08-28T00:00:00Z&calendar_id=google:primary", "read-only-token")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d", w.Code)
+		}
+		var response cachedEventsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Sources) != 1 {
+			t.Fatalf("sources=%#v", response.Sources)
+		}
+		source := response.Sources[0]
+		if response.Complete || source.Status != expected || source.LastSuccessAt == nil || source.CoverageComplete != nil {
+			t.Fatalf("changed window falsely considered synchronized: complete=%t source=%#v", response.Complete, source)
+		}
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("read-only diagnostics invoked provider %d times", provider.listCalls)
+	}
+}

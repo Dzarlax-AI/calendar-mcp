@@ -491,7 +491,7 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var coverageComplete *bool
-		if status.LastSuccessAt != nil && !status.WindowStart.IsZero() && !status.WindowEnd.IsZero() {
+		if (status.Status == "ready" || status.Status == "degraded") && status.LastSuccessAt != nil && !status.LastSuccessAt.IsZero() && !status.WindowStart.IsZero() && !status.WindowEnd.IsZero() {
 			coverage := !status.WindowStart.After(start) && !status.WindowEnd.Before(end)
 			coverageComplete = &coverage
 		}
