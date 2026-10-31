@@ -504,3 +504,16 @@ python3 scripts/verify_calendar_listing_gateway.py
 The integration script additionally needs the local gateway test binary at
 `/tmp/mcp-gateway-read-batch`; it creates disposable synthetic configuration and
 terminates its fixture processes. Production deployment is a separate action.
+
+### Read-only cached source diagnostics
+
+`GET /api/native/v1/cached-events` adds nullable RFC3339 UTC `last_success_at`
+and `next_sync_at`, nullable `coverage_complete`, and optional allowlisted
+`error_code` to each source. Coverage is calculated against the requested interval
+only when the stored projection has a successful bounded sync; unknown remains
+null. Error codes are transient, rate_limited, auth, permission, unsupported, and
+protocol. Raw provider messages and credentials are excluded.
+
+These fields read existing stored sync status only. They do not call providers,
+change the database schema, trigger synchronization, or change READ_ONLY_TOKEN
+permissions. Existing event items and calendar selection remain compatible.
