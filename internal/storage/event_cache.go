@@ -387,8 +387,11 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 			continue
 		}
 		res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
-			SET strategy=?, cursor='', window_start=?, window_end=?, generation=generation+1, status=?, next_sync_at=?,
-				last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
+			SET strategy=?, cursor='', window_start=?, window_end=?, generation=generation+1,
+				status=CASE WHEN status='parked' THEN status ELSE ? END,
+				next_sync_at=CASE WHEN status='parked' THEN next_sync_at ELSE ? END,
+				last_error_code=CASE WHEN status='parked' THEN last_error_code ELSE NULL END,
+				lease_owner=NULL, lease_until=NULL, updated_at=?
 			WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)`), value.provider, window.Start, window.End,
 			"pending", now, now, value.id, now)
 		if err != nil {
@@ -428,7 +431,8 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		FROM calendar_sync_state ss
 		JOIN calendars c ON c.id=ss.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
-		WHERE ss.status IN (?, ?, ?, ?, ?) AND conn.status=? AND c.can_read=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
+		WHERE (ss.status IN (?, ?, ?, ?, ?) OR (ss.status='parked' AND ss.last_error_code='auth' AND conn.provider='apple'))
+			AND conn.status=? AND c.can_read=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
@@ -725,8 +729,12 @@ func (s *Store) FailCalendarSync(ctx context.Context, state CalendarSyncState, c
 	return nil
 }
 
-// ParkCalendarSync stops retrying a calendar until an explicit reconnect or
-// configuration action reactivates it. The opaque cursor remains authoritative.
+// AppleAuthRecheckInterval bounds automatic recovery attempts after an account
+// is unlocked. The existing encrypted credentials and opaque cursor are reused.
+const AppleAuthRecheckInterval = 15 * time.Minute
+
+// ParkCalendarSync retains the failure for manual recovery. Apple auth failures
+// also become eligible for a read-only sync attempt after a durable delay.
 func (s *Store) ParkCalendarSync(ctx context.Context, state CalendarSyncState, code string, now time.Time) error {
 	if state.CalendarID == "" || state.LeaseOwner == "" {
 		return ErrCalendarSyncLeaseLost
@@ -743,8 +751,13 @@ func (s *Store) ParkCalendarSync(ctx context.Context, state CalendarSyncState, c
 		return err
 	}
 	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
-		SET status=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "parked", code, now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		SET status=?, last_error_code=?,
+			next_sync_at=CASE WHEN ?='auth' AND EXISTS (
+				SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
+				WHERE c.id=calendar_sync_state.calendar_id AND conn.provider='apple'
+			) THEN ? ELSE next_sync_at END,
+			lease_owner=NULL, lease_until=NULL, updated_at=?
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "parked", code, code, now.Add(AppleAuthRecheckInterval), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 	if err != nil {
 		return fmt.Errorf("park calendar sync: %w", err)
 	}

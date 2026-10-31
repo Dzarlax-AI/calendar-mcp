@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
+import { EVENT_AUTH_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -137,5 +137,31 @@ describe("calendar mapping", () => {
     expect(eventStatusPollInterval(retrying, EVENT_STATUS_POLL_MAX_ATTEMPTS, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:00:00Z"))).toBe(false);
     expect(eventStatusPollInterval(retrying, 0, EVENT_STATUS_POLL_MAX_ATTEMPTS, new Date("2026-09-15T12:02:00Z"))).toBe(false);
     expect(eventStatusPollInterval([{ ...syncing[0], status: "ready" as const }], 0)).toBe(false);
+  });
+});
+
+
+describe("Apple access recovery", () => {
+  const now = new Date("2026-10-31T12:00:00Z");
+  const source = { provider: "apple", calendar_id: "apple:one", complete: false, status: "parked", error_code: "auth", next_sync_at: "2026-10-31T12:15:00Z", last_success_at: "2026-10-31T01:00:00Z", stale: true };
+  it("keeps auth failures visible with a saved-credential recovery action", () => {
+    const summary = summarizeEventSources({ complete: false, sources: [source, { ...source, calendar_id: "apple:two" }, { ...source, calendar_id: "apple:three" }, { ...source, provider: "google", calendar_id: "google:ok", status: "ready", complete: true }] }, now);
+    expect(summary).toMatchObject({ kind: "failed", failedCount: 3, resumeCalendarIds: ["apple:one", "apple:two", "apple:three"] });
+    expect(summary.recoveryDetail).toContain("Next automatic access check:");
+    expect(summary.recoveryDetail).toContain("Last successful sync: 11 hr ago.");
+    expect(summary.recoveryDetail).toContain("saved credentials");
+    expect(summarizeEventSources({ complete: false, sources: [source] }, new Date("2026-10-31T12:16:00Z")).recoveryDetail).toContain("Automatic access check is due.");
+  });
+  it("checks waiting Apple status once a minute without fast polling", () => {
+    expect(hasActiveEventSync([source], now)).toBe(false);
+    expect(eventStatusPollInterval([source], 0, 30, now)).toBe(EVENT_AUTH_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval([source], 30, 30, now)).toBe(EVENT_AUTH_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval([source], 0, 30, new Date("2026-10-31T12:16:00Z"))).toBe(EVENT_AUTH_STATUS_POLL_INTERVAL_MS);
+    expect(eventStatusPollInterval([{ ...source, provider: "google" }], 0, 30, now)).toBe(false);
+    expect(eventStatusPollInterval([{ ...source, error_code: "permission" }], 0, 30, now)).toBe(false);
+    expect(eventStatusPollInterval([{ ...source, next_sync_at: "invalid" }], 0, 30, now)).toBe(false);
+    expect(eventStatusPollInterval([{ ...source, status: "pending" }], 0, 30, now)).toBe(EVENT_STATUS_POLL_INTERVAL_MS);
+    expect(summarizeEventSources({ complete: false, sources: [{ ...source, status: "pending", error_code: null }] }, now).kind).toBe("syncing");
+    expect(summarizeEventSources({ complete: true, sources: [{ ...source, status: "ready", error_code: null, complete: true, stale: false }] }, now).kind).toBe("updated");
   });
 });
