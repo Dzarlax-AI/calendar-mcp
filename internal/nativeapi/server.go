@@ -96,9 +96,30 @@ type nativeEvent struct {
 }
 
 type cachedSource struct {
-	CalendarID string `json:"calendar_id"`
-	Status     string `json:"status"`
-	Stale      bool   `json:"stale"`
+	CalendarID       string  `json:"calendar_id"`
+	Status           string  `json:"status"`
+	Stale            bool    `json:"stale"`
+	LastSuccessAt    *string `json:"last_success_at"`
+	NextSyncAt       *string `json:"next_sync_at"`
+	CoverageComplete *bool   `json:"coverage_complete"`
+	ErrorCode        string  `json:"error_code,omitempty"`
+}
+
+func nativeStatusTime(value *time.Time) *string {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	formatted := value.UTC().Format(time.RFC3339)
+	return &formatted
+}
+
+func safeNativeSyncErrorCode(code string) string {
+	switch code {
+	case "transient", "rate_limited", "auth", "permission", "unsupported", "protocol":
+		return code
+	default:
+		return ""
+	}
 }
 
 type cachedEventsResponse struct {
@@ -469,7 +490,16 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 			response.Complete = false
 			continue
 		}
-		response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: status.Status, Stale: status.Stale})
+		var coverageComplete *bool
+		if status.LastSuccessAt != nil && !status.WindowStart.IsZero() && !status.WindowEnd.IsZero() {
+			coverage := !status.WindowStart.After(start) && !status.WindowEnd.Before(end)
+			coverageComplete = &coverage
+		}
+		response.Sources = append(response.Sources, cachedSource{
+			CalendarID: id, Status: status.Status, Stale: status.Stale,
+			LastSuccessAt: nativeStatusTime(status.LastSuccessAt), NextSyncAt: nativeStatusTime(status.NextSyncAt),
+			CoverageComplete: coverageComplete, ErrorCode: safeNativeSyncErrorCode(status.ErrorCode),
+		})
 		if status.Status != "ready" || status.Stale || status.WindowStart.After(start) || status.WindowEnd.Before(end) {
 			response.Complete = false
 		}

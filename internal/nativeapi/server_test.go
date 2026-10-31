@@ -250,11 +250,24 @@ func TestNativeAPICachedEventsUsesProjectionAndReportsPartialFreshness(t *testin
 	if response.Items[1].Start.DateTime != "2026-08-28T09:00:00Z" || response.Items[1].End.DateTime != "2026-08-28T10:00:00Z" {
 		t.Fatalf("timed event = %#v", response.Items[1])
 	}
-	if response.Sources[0] != (cachedSource{CalendarID: "google:primary", Status: "ready", Stale: false}) {
+	if source := response.Sources[0]; source.CalendarID != "google:primary" || source.Status != "ready" || source.Stale || source.LastSuccessAt == nil || source.NextSyncAt == nil || source.CoverageComplete == nil {
 		t.Fatalf("ready source = %#v", response.Sources[0])
 	}
-	if response.Sources[1] != (cachedSource{CalendarID: "google:unwarmed", Status: "pending", Stale: true}) {
+	if source := response.Sources[1]; source.CalendarID != "google:unwarmed" || source.Status != "pending" || !source.Stale || source.LastSuccessAt != nil || source.NextSyncAt != nil || source.CoverageComplete != nil {
 		t.Fatalf("pending source = %#v", response.Sources[1])
+	}
+}
+
+func TestNativeCachedSourceErrorCodeIsAllowlisted(t *testing.T) {
+	for _, code := range []string{"transient", "rate_limited", "auth", "permission", "unsupported", "protocol"} {
+		if got := safeNativeSyncErrorCode(code); got != code {
+			t.Fatalf("safeNativeSyncErrorCode(%q) = %q", code, got)
+		}
+	}
+	for _, code := range []string{"provider_down", "https://private.example/token", "raw error"} {
+		if got := safeNativeSyncErrorCode(code); got != "" {
+			t.Fatalf("unsafe error code %q escaped as %q", code, got)
+		}
 	}
 }
 
@@ -271,6 +284,53 @@ func TestNativeAPICachedEventsIsIncompleteOutsideProjectionWindow(t *testing.T) 
 	}
 	if response.Complete {
 		t.Fatalf("response outside projection window must be incomplete: %#v", response)
+	}
+	if source := response.Sources[0]; source.CoverageComplete == nil || *source.CoverageComplete {
+		t.Fatalf("coverage outside the stored window = %#v, want false", source.CoverageComplete)
+	}
+}
+
+func TestNativeAPICachedSourceProjectsWindowBoundaryTimesAndSafeError(t *testing.T) {
+	handler, provider, store := testHandler(t, false)
+	window := storage.SyncWindow{Start: mustNativeTime(t, "2026-08-28T00:00:00Z"), End: mustNativeTime(t, "2026-08-29T00:00:00Z")}
+	expected := prepareCachedCalendarWithWindow(t, store, "google:primary", window, "protocol")
+	path := "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:primary"
+	w := request(handler, http.MethodGet, path, "read-only-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("cached diagnostics called provider ListEventsV2 %d times", provider.listCalls)
+	}
+	if len(response.Sources) != 1 {
+		t.Fatalf("sources = %#v", response.Sources)
+	}
+	source := response.Sources[0]
+	if source.Status != "degraded" || source.ErrorCode != "protocol" || source.LastSuccessAt == nil || source.NextSyncAt == nil {
+		t.Fatalf("diagnostic source = %#v", source)
+	}
+	if *source.LastSuccessAt != expected.LastSuccessAt.UTC().Format(time.RFC3339) || *source.NextSyncAt != expected.NextSyncAt.UTC().Format(time.RFC3339) {
+		t.Fatalf("UTC timestamps = last:%q next:%q, expected %#v", *source.LastSuccessAt, *source.NextSyncAt, expected)
+	}
+	if source.CoverageComplete == nil || !*source.CoverageComplete {
+		t.Fatalf("exact window boundary coverage = %#v, want true", source.CoverageComplete)
+	}
+	outside := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:01Z&calendar_id=google:primary", "read-only-token")
+	if outside.Code != http.StatusOK {
+		t.Fatalf("outside boundary status = %d, body = %s", outside.Code, outside.Body.String())
+	}
+	if err := json.Unmarshal(outside.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if source := response.Sources[0]; source.CoverageComplete == nil || *source.CoverageComplete {
+		t.Fatalf("coverage past the stored boundary = %#v, want false", source.CoverageComplete)
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("diagnostic range check called provider ListEventsV2 %d times", provider.listCalls)
 	}
 }
 
@@ -298,6 +358,41 @@ func prepareCachedCalendar(t *testing.T, store *storage.Store, calendarID string
 	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{NextSyncAt: &next}, true, now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func prepareCachedCalendarWithWindow(t *testing.T, store *storage.Store, calendarID string, window storage.SyncWindow, errorCode string) storage.CachedSourceStatus {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := store.EnsureCalendarSyncStates(t.Context(), now, window); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.ClaimDueCalendarSync(t.Context(), "diagnostic-worker", now, now.Add(time.Minute))
+	if err != nil || state == nil || state.CalendarID != calendarID {
+		t.Fatalf("claim diagnostic calendar state=%#v err=%v", state, err)
+	}
+	next := now.Add(time.Hour)
+	batch := storage.EventSyncBatch{NextSyncAt: &next}
+	if errorCode != "" {
+		batch.Degraded = true
+		batch.ErrorCode = errorCode
+	}
+	if err := store.ApplyEventSyncPage(t.Context(), *state, batch, true, now); err != nil {
+		t.Fatal(err)
+	}
+	_, statuses, err := store.ListCachedEvents(t.Context(), []string{calendarID}, window.Start, window.End)
+	if err != nil || len(statuses) != 1 {
+		t.Fatalf("diagnostic statuses=%#v err=%v", statuses, err)
+	}
+	return statuses[0]
+}
+
+func mustNativeTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }
 
 func TestNativeAPIListsReadOnlyDataAndWritesOrdinaryEventsWithoutNotifications(t *testing.T) {
