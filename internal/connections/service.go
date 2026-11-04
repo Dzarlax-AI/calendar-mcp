@@ -150,13 +150,27 @@ func (s *Service) LoadApple(ctx context.Context, connectionID string) (AppleCred
 	return value, nil
 }
 
-func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, provider calendar.Provider) error {
+func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, provider calendar.Provider) (resultErr error) {
 	record, err := s.store.ConnectionByID(ctx, connectionID)
 	if err != nil {
 		return err
 	}
 	if record.Provider != provider.Name() {
 		return errors.New("connection provider mismatch")
+	}
+	if record.Provider == "google" {
+		if err := s.store.ClearGooglePrimaryCalendars(ctx, connectionID); err != nil {
+			return fmt.Errorf("clear Google primary discovery: %w", err)
+		}
+		defer func() {
+			if resultErr != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if err := s.store.ClearGooglePrimaryCalendars(cleanupCtx, connectionID); err != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("clear Google primary discovery after failure: %w", err))
+				}
+			}
+		}()
 	}
 	calendars, err := provider.ListCalendars(ctx)
 	if err != nil {
@@ -179,6 +193,14 @@ func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, pr
 		}
 		return err
 	}
+	primaryCount := 0
+	primaryID := ""
+	for _, discovered := range calendars {
+		if discovered.Primary {
+			primaryCount++
+			primaryID = discovered.ID
+		}
+	}
 	for _, discovered := range calendars {
 		canWrite := !discovered.ReadOnly
 		supportsRecurrence := false
@@ -197,6 +219,14 @@ func (s *Service) VerifyAndDiscover(ctx context.Context, connectionID string, pr
 		}); err != nil {
 			_ = s.store.UpdateConnectionVerification(ctx, connectionID, "error", "provider_discovery_failed", s.now())
 			return err
+		}
+	}
+	if record.Provider == "google" {
+		if primaryCount != 1 {
+			primaryID = ""
+		}
+		if err := s.store.SetGooglePrimaryCalendar(ctx, connectionID, primaryID); err != nil {
+			return fmt.Errorf("save Google primary discovery: %w", err)
 		}
 	}
 	return s.store.UpdateConnectionVerification(ctx, connectionID, "connected", "", now)

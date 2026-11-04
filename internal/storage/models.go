@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -21,6 +21,7 @@ type Connection struct {
 type Calendar struct {
 	ID, ConnectionID, ProviderCalendarID, Name, Timezone string
 	CanRead, CanWrite, SupportsRecurrence                bool
+	GooglePrimary                                        bool
 	DiscoveredAt                                         time.Time
 }
 

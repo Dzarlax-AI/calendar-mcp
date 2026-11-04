@@ -237,3 +237,50 @@ func (p *fakeProvider) UpdateEvent(context.Context, string, string, calendar.Eve
 func (p *fakeProvider) DeleteEvent(context.Context, string, string) error {
 	return errors.New("not implemented")
 }
+
+func TestGooglePrimaryDiscoveryAndFailure(t *testing.T) {
+	service, store := newTestService(t)
+	ctx := context.Background()
+	if err := service.CreateOAuth(ctx, "google-1", "google", "Google", &oauth2.Token{RefreshToken: "refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{name: "google", calendars: []calendar.Calendar{{ID: "owner@example.test", Primary: true}, {ID: "shared@example.test"}}}
+	check := func(want string) {
+		t.Helper()
+		got, err := store.ListCalendars(ctx, "google-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := ""
+		for _, c := range got {
+			if c.GooglePrimary {
+				if found != "" {
+					t.Fatal("multiple primary flags")
+				}
+				found = c.ProviderCalendarID
+			}
+		}
+		if found != want {
+			t.Fatalf("primary = %q, want %q", found, want)
+		}
+	}
+	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+		t.Fatal(err)
+	}
+	check("owner@example.test")
+	provider.calendars[1].Primary = true
+	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+		t.Fatal(err)
+	}
+	check("")
+	provider.calendars[1].Primary = false
+	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+		t.Fatal(err)
+	}
+	check("owner@example.test")
+	provider.capabilitiesErr = errors.New("unavailable")
+	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err == nil {
+		t.Fatal("expected failure")
+	}
+	check("")
+}

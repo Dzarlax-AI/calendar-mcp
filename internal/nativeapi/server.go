@@ -88,11 +88,12 @@ type nativeEventTime struct {
 }
 
 type nativeEvent struct {
-	CalendarID string          `json:"calendar_id"`
-	Title      string          `json:"title,omitempty"`
-	Status     string          `json:"status,omitempty"`
-	Start      nativeEventTime `json:"start"`
-	End        nativeEventTime `json:"end"`
+	CalendarID         string          `json:"calendar_id"`
+	Title              string          `json:"title,omitempty"`
+	Status             string          `json:"status,omitempty"`
+	SelfResponseStatus string          `json:"self_response_status,omitempty"`
+	Start              nativeEventTime `json:"start"`
+	End                nativeEventTime `json:"end"`
 }
 
 type cachedSource struct {
@@ -140,13 +141,14 @@ func (s *Server) authorized(token string, next http.Handler) http.Handler {
 }
 
 type calendarResponse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	TimeZone string `json:"time_zone,omitempty"`
-	Color    string `json:"color,omitempty"`
-	CanRead  bool   `json:"can_read"`
-	CanWrite bool   `json:"can_write"`
-	ReadOnly bool   `json:"read_only"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	TimeZone      string `json:"time_zone,omitempty"`
+	Color         string `json:"color,omitempty"`
+	CanRead       bool   `json:"can_read"`
+	CanWrite      bool   `json:"can_write"`
+	ReadOnly      bool   `json:"read_only"`
+	googlePrimary bool   `json:"-"`
 }
 
 func (s *Server) calendars(r *http.Request) ([]calendarResponse, error) {
@@ -160,7 +162,7 @@ func (s *Server) calendars(r *http.Request) ([]calendarResponse, error) {
 			continue
 		}
 		canWrite := s.writesEnabled && item.CanWrite
-		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite})
+		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite, googlePrimary: strings.HasPrefix(item.ID, "google:") && (item.ProviderCalendarID == "primary" || item.GooglePrimary)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
@@ -441,9 +443,9 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
 	}
-	allowedIDs := make(map[string]struct{}, len(allowed))
+	allowedIDs := make(map[string]calendarResponse, len(allowed))
 	for _, item := range allowed {
-		allowedIDs[item.ID] = struct{}{}
+		allowedIDs[item.ID] = item
 	}
 	ids := unique(r.URL.Query()["calendar_id"])
 	if len(ids) == 0 {
@@ -467,11 +469,12 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 	items := make([]nativeEvent, 0, len(events))
 	for _, event := range events {
 		items = append(items, nativeEvent{
-			CalendarID: event.CalendarID,
-			Title:      event.Title,
-			Status:     event.Status,
-			Start:      nativeEventTime{Date: event.Start.Date, DateTime: event.Start.DateTime},
-			End:        nativeEventTime{Date: event.End.Date, DateTime: event.End.DateTime},
+			CalendarID:         event.CalendarID,
+			Title:              event.Title,
+			Status:             event.Status,
+			SelfResponseStatus: cachedSelfResponseStatus(event, allowedIDs[event.CalendarID].googlePrimary),
+			Start:              nativeEventTime{Date: event.Start.Date, DateTime: event.Start.DateTime},
+			End:                nativeEventTime{Date: event.End.Date, DateTime: event.End.DateTime},
 		})
 	}
 	response := cachedEventsResponse{
@@ -505,6 +508,30 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// cachedSelfResponseStatus trusts self only for the connected account's primary calendar.
+func cachedSelfResponseStatus(event calendar.EventV2, primary bool) string {
+	if !primary || !strings.HasPrefix(event.CalendarID, "google:") || (event.Provider != "" && event.Provider != "google") {
+		return ""
+	}
+	var status string
+	count := 0
+	for _, attendee := range event.Attendees {
+		if attendee.Self {
+			count++
+			status = attendee.Status
+		}
+	}
+	if count != 1 {
+		return ""
+	}
+	switch status {
+	case "accepted", "declined", "tentative", "needsAction":
+		return status
+	default:
+		return ""
+	}
 }
 
 func parseNativeEventRange(w http.ResponseWriter, r *http.Request) (time.Time, time.Time, bool) {
