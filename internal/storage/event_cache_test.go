@@ -1056,7 +1056,40 @@ func TestGooglePrimaryMigrationPreservesExistingCalendars(t *testing.T) {
 		t.Fatal(err)
 	}
 	calendars, err := store.ListCalendars(ctx, "a")
-	if err != nil || len(calendars) != 1 || calendars[0].GooglePrimary || calendars[0].Name != "Old" {
+	if err != nil || len(calendars) != 1 || calendars[0].GooglePrimary || !calendars[0].Enabled || calendars[0].Name != "Old" {
 		t.Fatalf("calendars=%#v err=%v", calendars, err)
+	}
+}
+
+func TestCalendarSelectionInvalidatesLeaseAndHidesCachedEvents(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	ctx := t.Context()
+	event := cachedTimedEvent("selected", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z")
+	if err := store.UpsertCachedEvent(ctx, event, now); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimDueCalendarSync(ctx, "selection-worker", now, now.Add(time.Hour))
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "calendar", false, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := store.ListCachedEvents(ctx, []string{"calendar"}, mustTime(t, "2026-08-22T09:00:00Z"), mustTime(t, "2026-08-22T12:00:00Z"))
+	if err != nil || len(events) != 0 {
+		t.Fatalf("disabled events=%#v err=%v", events, err)
+	}
+	if err := store.ApplyEventSyncPage(ctx, *claim, EventSyncBatch{Upserts: []CachedEventUpsert{{Event: event}}}, true, now.Add(2*time.Second)); !errors.Is(err, ErrCalendarSyncLeaseLost) {
+		t.Fatalf("in-flight apply error=%v", err)
+	}
+	if next, err := store.ClaimDueCalendarSync(ctx, "selection-worker", now.Add(3*time.Second), now.Add(time.Hour)); err != nil || next != nil {
+		t.Fatalf("disabled claim=%#v err=%v", next, err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "calendar", true, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	next, err := store.ClaimDueCalendarSync(ctx, "selection-worker", now.Add(5*time.Second), now.Add(time.Hour))
+	if err != nil || next == nil || next.Cursor != "" {
+		t.Fatalf("enabled claim=%#v err=%v", next, err)
 	}
 }

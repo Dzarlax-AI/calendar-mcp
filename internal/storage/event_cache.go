@@ -353,7 +353,7 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-		WHERE c.can_read=? AND conn.status=? ORDER BY c.id`), true, "connected")
+		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`), true, true, "connected")
 	if err != nil {
 		return fmt.Errorf("list readable calendars: %w", err)
 	}
@@ -432,12 +432,12 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		JOIN calendars c ON c.id=ss.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
 		WHERE (ss.status IN (?, ?, ?, ?, ?) OR (ss.status='parked' AND ss.last_error_code='auth' AND conn.provider='apple'))
-			AND conn.status=? AND c.can_read=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
+			AND conn.status=? AND c.can_read=? AND c.enabled=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
 	}
-	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, now, now))
+	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, true, now, now))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
@@ -786,7 +786,7 @@ func (s *Store) ScheduleCalendarSync(ctx context.Context, calendarID string, now
 			last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
 		WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)
 			AND EXISTS (SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-				WHERE c.id=calendar_sync_state.calendar_id AND c.can_read=? AND conn.status=?)`), "pending", now, resetCursor, resetCursor, now, calendarID, now, true, "connected")
+				WHERE c.id=calendar_sync_state.calendar_id AND c.can_read=? AND c.enabled=? AND conn.status=?)`), "pending", now, resetCursor, resetCursor, now, calendarID, now, true, true, "connected")
 	if err != nil {
 		return fmt.Errorf("schedule calendar sync: %w", err)
 	}
@@ -806,7 +806,7 @@ func (s *Store) ScheduleCalendarSync(ctx context.Context, calendarID string, now
 	}
 	var eligible int
 	if err := s.db.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-		WHERE c.id=? AND c.can_read=? AND conn.status=?`), calendarID, true, "connected").Scan(&eligible); err != nil {
+		WHERE c.id=? AND c.can_read=? AND c.enabled=? AND conn.status=?`), calendarID, true, true, "connected").Scan(&eligible); err != nil {
 		return fmt.Errorf("check calendar sync eligibility: %w", err)
 	}
 	if eligible == 0 {
@@ -867,11 +867,11 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 	if allDayEnd.Hour() != 0 || allDayEnd.Minute() != 0 || allDayEnd.Second() != 0 || allDayEnd.Nanosecond() != 0 {
 		allDayEnd = allDayEnd.AddDate(0, 0, 1)
 	}
-	eventArgs := append(append([]any{}, args...), true, "connected", false, end, start, allDayEnd.Format(calendar.DateLayout), start.UTC().Format(calendar.DateLayout))
+	eventArgs := append(append([]any{}, args...), true, true, "connected", false, end, start, allDayEnd.Format(calendar.DateLayout), start.UTC().Format(calendar.DateLayout))
 	q := fmt.Sprintf(`SELECT e.payload_json FROM cached_events e
 		JOIN calendars c ON c.id=e.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
-		WHERE e.calendar_id IN (%s) AND c.can_read=? AND conn.status=? AND e.deleted=? AND (
+		WHERE e.calendar_id IN (%s) AND c.can_read=? AND c.enabled=? AND conn.status=? AND e.deleted=? AND (
 			(start_at IS NOT NULL AND start_at<? AND end_at>?) OR
 			(start_date IS NOT NULL AND start_date<? AND end_date>?)
 		) ORDER BY e.start_at IS NULL, e.start_at, e.start_date, e.event_id`, placeholders)
@@ -903,7 +903,7 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 	}
 	statusRows, err := s.db.QueryContext(ctx, s.query(fmt.Sprintf(`SELECT c.id, conn.provider, ss.status, ss.last_success_at, ss.last_error_code, ss.next_sync_at, ss.window_start, ss.window_end
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id JOIN calendar_sync_state ss ON ss.calendar_id=c.id
-		WHERE c.id IN (%s) AND c.can_read=? AND conn.status=? ORDER BY c.id`, placeholders)), append(args, true, "connected")...)
+		WHERE c.id IN (%s) AND c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`, placeholders)), append(args, true, true, "connected")...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list cached source status: %w", err)
 	}

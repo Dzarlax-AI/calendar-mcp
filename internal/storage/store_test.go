@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"calendar-mcp/internal/calendar"
 )
 
 func newSQLiteStore(t *testing.T) *Store {
@@ -320,5 +322,108 @@ func TestParseDatabaseURL(t *testing.T) {
 		if !strings.Contains(dsn, value) {
 			t.Fatalf("SQLite DSN %q does not contain %q", dsn, value)
 		}
+	}
+}
+
+func TestCalendarEnabledDefaultsAndSurvivesRediscovery(t *testing.T) {
+	store := newSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, Connection{ID: "selection-test", Provider: "google", AccountFingerprint: "selection-test", DisplayName: "Selection", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	item := Calendar{ID: "google:selection-test:calendar", ConnectionID: "selection-test", ProviderCalendarID: "calendar", Name: "Original", CanRead: true, DiscoveredAt: now}
+	if err := store.UpsertCalendar(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	values, err := store.ListCalendars(ctx, item.ConnectionID)
+	if err != nil || len(values) != 1 || !values[0].Enabled {
+		t.Fatalf("default calendars=%#v err=%v", values, err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE calendars SET enabled=? WHERE id=?", false, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	item.Name = "Rediscovered"
+	if err := store.UpsertCalendar(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	values, err = store.ListCalendars(ctx, item.ConnectionID)
+	if err != nil || len(values) != 1 || values[0].Enabled || values[0].Name != "Rediscovered" {
+		t.Fatalf("rediscovered calendars=%#v err=%v", values, err)
+	}
+}
+
+func TestRegisterDiscoveredCalendarPreservesSelectionAndMetadata(t *testing.T) {
+	store := newSQLiteStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, Connection{ID: "account", Provider: "google", AccountFingerprint: "account", Status: "connected", EncryptedCredentials: []byte("test"), CredentialVersion: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	item := calendar.Calendar{ID: "new", Name: "New", ReadOnly: true}
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@account", item); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, err := store.CalendarEnabled(ctx, "google:account:new"); err != nil || !enabled {
+		t.Fatalf("enabled=%v err=%v", enabled, err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "google:account:new", false, now); err != nil {
+		t.Fatal(err)
+	}
+	item.Name, item.ReadOnly = "Changed", false
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@account", item); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListCalendars(ctx, "account")
+	if err != nil || len(items) != 1 || items[0].Enabled || items[0].CanWrite || items[0].Name != "New" {
+		t.Fatalf("calendars=%+v err=%v", items, err)
+	}
+	if err := store.RegisterDiscoveredCalendar(ctx, "apple@account", calendar.Calendar{ID: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListCalendars(ctx, "account")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("mismatched provider inserted calendar: %+v %v", items, err)
+	}
+}
+
+func TestDisabledCalendarsBlockRuleJobsUntilReenabled(t *testing.T) {
+	store := newSQLiteStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, Connection{ID: "selection-jobs", Provider: "google", AccountFingerprint: "selection-jobs", DisplayName: "Jobs", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"source", "target"} {
+		if err := store.UpsertCalendar(ctx, Calendar{ID: id, ConnectionID: "selection-jobs", ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule := Rule{ID: "selection-rule", SourceCalendarID: "source", TargetCalendarID: "target", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	job := Job{ID: "queued", RuleID: rule.ID, Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now}
+	if err := store.EnqueueJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "source", false, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ClaimJob(ctx, "worker", now); err != nil || got != nil {
+		t.Fatalf("disabled claim=%#v err=%v", got, err)
+	}
+	if count, err := store.ScheduleDueJobs(ctx, now); err != nil || count != 0 {
+		t.Fatalf("disabled schedule=%d err=%v", count, err)
+	}
+	job.ID = "new"
+	if err := store.EnqueueJob(ctx, job); !errors.Is(err, ErrCalendarSyncIneligible) {
+		t.Fatalf("disabled enqueue=%v", err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "source", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ClaimJob(ctx, "worker", now); err != nil || got == nil || got.ID != "queued" {
+		t.Fatalf("reenabled claim=%#v err=%v", got, err)
 	}
 }

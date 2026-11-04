@@ -9,6 +9,41 @@ import (
 	"time"
 )
 
+func TestReenableParkedCalendarQueuesSingleFreshAttempt(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	ctx := t.Context()
+	deadline := now.Add(time.Hour)
+	if _, err := store.db.ExecContext(ctx, "UPDATE calendar_sync_state SET status='parked',last_error_code='auth',next_sync_at=? WHERE calendar_id='calendar'", deadline); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "calendar", false, now); err != nil {
+		t.Fatal(err)
+	}
+	var state, code string
+	var next time.Time
+	if err := store.db.QueryRowContext(ctx, "SELECT status,last_error_code,next_sync_at FROM calendar_sync_state WHERE calendar_id='calendar'").Scan(&state, &code, &next); err != nil {
+		t.Fatal(err)
+	}
+	if state != "parked" || code != "auth" || !next.Equal(deadline) {
+		t.Fatalf("disabled: %s %s %s", state, code, next)
+	}
+	enabledAt := now.Add(time.Minute)
+	if err := store.SetCalendarEnabled(ctx, "calendar", true, enabledAt); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimDueCalendarSync(ctx, "worker", enabledAt, enabledAt.Add(time.Minute))
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	if err := store.ParkCalendarSync(ctx, *claim, "auth", enabledAt); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = store.ClaimDueCalendarSync(ctx, "worker", enabledAt.Add(time.Minute), enabledAt.Add(2*time.Minute))
+	if err != nil || claim != nil {
+		t.Fatalf("parked retry unexpectedly claimed=%+v err=%v", claim, err)
+	}
+}
+
 func TestAppleAuthRecoveryCadence(t *testing.T) {
 	store, now := newEventCacheStore(t)
 	ctx := t.Context()

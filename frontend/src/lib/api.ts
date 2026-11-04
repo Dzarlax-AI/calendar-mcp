@@ -170,7 +170,7 @@ export function deleteEvent(csrfToken: string, calendarId: string, eventId: stri
   }).then((result) => ({ warnings: safeWarnings(result.warnings) }));
 }
 
-type RawCalendar = { id: string; name: string; provider?: string; connection_name?: string; time_zone?: string; timezone?: string; can_read?: boolean; can_write?: boolean; supports_recurrence?: boolean; color?: string };
+type RawCalendar = { id: string; name: string; provider?: string; connection_name?: string; time_zone?: string; timezone?: string; can_read?: boolean; can_write?: boolean; supports_recurrence?: boolean; enabled?: boolean; color?: string };
 type RawBootstrap = Omit<Bootstrap, "calendars" | "connections" | "settings" | "rules" | "runs"> & { calendars: RawCalendar[]; capabilities?: Record<string, RawCalendarCapabilities>; connections: Array<{ id: string; provider: string; display_name?: string; label?: string; status: string; connect_url?: string; can_reconnect?: boolean; email?: string }>; rules: RawRule[]; runs: RawRun[]; settings: Bootstrap["settings"] & { mcp_endpoint?: string; legacy_api_key_configured?: boolean } };
 type RawRule = { id: string; source_calendar_id?: string; target_calendar_id?: string; state?: string; notification_policy?: string; next_run_at?: string; created_at?: string; updated_at?: string };
 type RawRun = { id: string; rule_id?: string; trigger?: string; outcome?: string; started_at?: string; finished_at?: string; error_summary?: string; created_count?: number; updated_count?: number; deleted_count?: number };
@@ -193,8 +193,10 @@ function normalizeBootstrap(raw: RawBootstrap): Bootstrap {
       accountLabel: calendar.connection_name,
       timezone: calendar.time_zone ?? calendar.timezone,
       color: calendar.color ?? colors[index % colors.length],
-      readOnly: capability?.read_only ?? !calendar.can_write,
-      capability: { read: capability?.operations?.list ?? calendar.can_read !== false, create: capability?.operations?.create ?? calendar.can_write === true, write: capability?.operations?.update ?? calendar.can_write === true, delete: capability?.operations?.delete ?? calendar.can_write === true, recurring: calendar.supports_recurrence === true, recurrenceScopes: [...scopes] },
+      enabled: calendar.enabled !== false,
+      providerAccess: { read: calendar.can_read ?? null, write: calendar.can_write ?? null },
+      readOnly: calendar.enabled === false || (capability?.read_only ?? !calendar.can_write),
+      capability: { read: calendar.enabled !== false && (capability?.operations?.list ?? calendar.can_read !== false), create: calendar.enabled !== false && (capability?.operations?.create ?? calendar.can_write === true), write: calendar.enabled !== false && (capability?.operations?.update ?? calendar.can_write === true), delete: calendar.enabled !== false && (capability?.operations?.delete ?? calendar.can_write === true), recurring: calendar.supports_recurrence === true, recurrenceScopes: [...scopes] },
     }); }),
     connections: raw.connections.map((connection) => ({ id: connection.id, provider: connection.provider, label: connection.display_name ?? connection.label ?? connection.provider, email: connection.email, status: connection.status, connectURL: connection.connect_url, canReconnect: connection.can_reconnect })),
     rules: raw.rules.map((rule): SyncRule => ({ id: rule.id, sourceCalendarId: rule.source_calendar_id, targetCalendarId: rule.target_calendar_id, state: rule.state, enabled: rule.state === "enabled", lastRun: rule.next_run_at })),

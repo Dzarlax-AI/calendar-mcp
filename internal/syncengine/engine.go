@@ -36,6 +36,40 @@ type Engine struct {
 	now      func() time.Time
 }
 
+type selectionGuardedTarget struct {
+	calendar.EventProviderV2
+	registry           *calendar.Registry
+	sourceID, targetID string
+}
+
+func (g selectionGuardedTarget) check(ctx context.Context) error {
+	for _, id := range []string{g.sourceID, g.targetID} {
+		if _, _, err := g.registry.ResolveEnabled(ctx, id); err != nil {
+			return fmt.Errorf("sync calendar selection changed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (g selectionGuardedTarget) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	if err := g.check(ctx); err != nil {
+		return nil, err
+	}
+	return g.EventProviderV2.CreateEventV2(ctx, request)
+}
+func (g selectionGuardedTarget) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	if err := g.check(ctx); err != nil {
+		return nil, err
+	}
+	return g.EventProviderV2.UpdateEventV2(ctx, request)
+}
+func (g selectionGuardedTarget) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	if err := g.check(ctx); err != nil {
+		return nil, err
+	}
+	return g.EventProviderV2.DeleteEventV2(ctx, request)
+}
+
 func New(registry *calendar.Registry, mappings MappingStore) *Engine {
 	return &Engine{registry: registry, mappings: mappings, now: func() time.Time { return time.Now().UTC() }}
 }
@@ -44,11 +78,11 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	if err := storage.ValidateRule(rule); err != nil {
 		return Result{}, err
 	}
-	sourceProvider, sourceCalendarID, err := e.registry.Resolve(rule.SourceCalendarID)
+	sourceProvider, sourceCalendarID, err := e.registry.ResolveEnabled(ctx, rule.SourceCalendarID)
 	if err != nil {
 		return Result{}, err
 	}
-	targetProvider, targetCalendarID, err := e.registry.Resolve(rule.TargetCalendarID)
+	targetProvider, targetCalendarID, err := e.registry.ResolveEnabled(ctx, rule.TargetCalendarID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -60,6 +94,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	if !ok {
 		return Result{}, errors.New("target provider does not support typed event writes")
 	}
+	target = selectionGuardedTarget{EventProviderV2: target, registry: e.registry, sourceID: rule.SourceCalendarID, targetID: rule.TargetCalendarID}
 	now := e.now()
 	start, end := now.AddDate(0, 0, -rule.LookbackDays), now.AddDate(0, 0, rule.LookaheadDays)
 	events, err := listAll(ctx, source, calendar.ListEventsRequestV2{CalendarID: sourceCalendarID, Start: start, End: end, View: calendar.RecurrenceBoth, ShowDeleted: true})

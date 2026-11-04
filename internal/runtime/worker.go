@@ -265,7 +265,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	providers, err := factory.Build(syncCtx)
 	var result syncengine.Result
 	if err == nil {
-		result, err = syncengine.New(calendar.NewRegistry(providers), store).Run(syncCtx, rule, run.DryRun)
+		result, err = syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).Run(syncCtx, rule, run.DryRun)
 	}
 	stopHeartbeat()
 	ticker.Stop()

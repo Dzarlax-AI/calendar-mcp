@@ -54,6 +54,7 @@ type fakeV2Provider struct {
 	lookupCount               int
 	lastInstancesRequest      calendar.InstancesRequestV2
 	filterInstancesByWindow   bool
+	onList                    func()
 }
 
 func (p *fakeV2Provider) Name() string                                               { return p.name }
@@ -72,8 +73,54 @@ func (p *fakeV2Provider) Capabilities(context.Context, string) (calendar.Calenda
 	return calendar.CalendarCapabilities{}, nil
 }
 func (p *fakeV2Provider) ListEventsV2(_ context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	if p.onList != nil {
+		p.onList()
+	}
 	p.lastRequest = request
 	return calendar.Page[calendar.EventV2]{Items: p.events, Complete: true}, nil
+}
+
+type mutableSelection map[string]bool
+
+func (s mutableSelection) CalendarEnabled(_ context.Context, id string) (bool, error) {
+	return s[id], nil
+}
+
+func TestEngineStopsWritesWhenCalendarDisabledDuringListing(t *testing.T) {
+	for _, id := range []string{"google:source", "apple:target"} {
+		t.Run(id, func(t *testing.T) {
+			selection := mutableSelection{"google:source": true, "apple:target": true}
+			source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "event", Start: calendar.EventTime{Date: "2026-10-01"}, End: calendar.EventTime{Date: "2026-10-02"}}}, onList: func() { selection[id] = false }}
+			target := &fakeV2Provider{name: "apple"}
+			engine := New(calendar.NewRegistry([]calendar.Provider{source, target}, calendar.RegistryOptions{Selection: selection}), &fakeMappings{values: map[string]storage.Mapping{}})
+			rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+			if _, err := engine.Run(t.Context(), rule, false); err == nil {
+				t.Fatal("expected disabled calendar error")
+			}
+			if target.created != 0 || target.updated != 0 || target.deleted != 0 {
+				t.Fatalf("writes after disable: %+v", target)
+			}
+		})
+	}
+}
+
+func TestSelectionGuardChecksEveryMutation(t *testing.T) {
+	selection := mutableSelection{"google:source": true, "apple:target": true}
+	target := &fakeV2Provider{name: "apple"}
+	guard := selectionGuardedTarget{EventProviderV2: target, registry: calendar.NewRegistry([]calendar.Provider{&fakeV2Provider{name: "google"}, target}, calendar.RegistryOptions{Selection: selection}), sourceID: "google:source", targetID: "apple:target"}
+	selection["google:source"] = false
+	if _, err := guard.CreateEventV2(t.Context(), calendar.CreateEventRequestV2{}); err == nil {
+		t.Fatal("create allowed")
+	}
+	if _, err := guard.UpdateEventV2(t.Context(), calendar.UpdateEventRequestV2{}); err == nil {
+		t.Fatal("update allowed")
+	}
+	if _, err := guard.DeleteEventV2(t.Context(), calendar.DeleteEventRequestV2{}); err == nil {
+		t.Fatal("delete allowed")
+	}
+	if target.created != 0 || target.updated != 0 || target.deleted != 0 {
+		t.Fatal("provider received a write")
+	}
 }
 func (p *fakeV2Provider) GetEventV2(context.Context, calendar.EventRef) (*calendar.EventV2, error) {
 	return nil, nil
