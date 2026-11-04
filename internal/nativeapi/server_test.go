@@ -677,3 +677,40 @@ func TestCachedEventsDiscoveredGooglePrimary(t *testing.T) {
 		t.Fatalf("response: %s", w.Body.String())
 	}
 }
+
+func TestCachedEventsDisabledSourceIsNeutralAndPrivate(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	prepareCachedCalendar(t, store, "google:primary")
+	event := calendar.EventV2{ID: "event", CalendarID: "google:primary", Provider: "google", Title: "must not be exposed", Start: calendar.EventTime{Date: "2026-08-28"}, End: calendar.EventTime{Date: "2026-08-29"}}
+	if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(t.Context(), "google:primary", false, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	path := "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:primary"
+	w := request(handler, http.MethodGet, path, "read-only-token")
+	var result cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || !result.Complete || len(result.Items) != 0 || len(result.Sources) != 1 || result.Sources[0].Status != "disabled" || result.Sources[0].Stale {
+		t.Fatalf("response=%s", w.Body.String())
+	}
+	if result.Sources[0].LastSuccessAt != nil || result.Sources[0].NextSyncAt != nil || result.Sources[0].CoverageComplete != nil {
+		t.Fatalf("disabled metadata=%#v", result.Sources[0])
+	}
+	if got := request(handler, http.MethodGet, path+"&calendar_id=google:unknown", "read-only-token").Code; got != http.StatusForbidden {
+		t.Fatalf("unknown id status=%d", got)
+	}
+	if err := store.SetCalendarEnabled(t.Context(), "google:primary", true, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	w = request(handler, http.MethodGet, path, "read-only-token")
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Complete || len(result.Sources) != 1 || result.Sources[0].Status != "pending" {
+		t.Fatalf("reenabled response=%s", w.Body.String())
+	}
+}

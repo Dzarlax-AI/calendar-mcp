@@ -130,3 +130,31 @@ func (p *fakeProvider) DeleteEvent(context.Context, string, string) error {
 	p.deleted = true
 	return nil
 }
+
+type testCalendarSelection map[string]bool
+
+func (s testCalendarSelection) CalendarEnabled(_ context.Context, id string) (bool, error) {
+	return s[id], nil
+}
+
+func TestRegistryCalendarSelectionAppliesToDirectAndFanOut(t *testing.T) {
+	p := &routedFakeProvider{fakeProvider: fakeProvider{name: "google", calendars: []Calendar{{ID: "on"}, {ID: "off"}}, events: []Event{{ID: "event", CalendarID: "on"}}}, route: "google@account", owned: map[string]bool{"on": true, "off": true}}
+	reg := NewRegistry([]Provider{p}, RegistryOptions{Selection: testCalendarSelection{"google:account:on": true}})
+	cals, err := reg.ListCalendars(t.Context())
+	if err != nil || len(cals) != 1 || cals[0].ID != "google:account:on" {
+		t.Fatalf("calendars=%#v err=%v", cals, err)
+	}
+	if _, _, err := reg.ResolveEnabled(t.Context(), "google:account:off"); err == nil {
+		t.Fatal("disabled calendar resolved")
+	}
+	if _, _, err := reg.ResolveEnabled(t.Context(), "google:off"); err == nil {
+		t.Fatal("disabled legacy alias resolved")
+	}
+	if _, _, err := reg.ResolveEnabled(t.Context(), "google:account:on"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = reg.GetEvents(t.Context(), "google:account:off", time.Now(), time.Now().Add(time.Hour))
+	if err == nil {
+		t.Fatal("disabled direct read allowed")
+	}
+}

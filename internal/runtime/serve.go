@@ -94,9 +94,14 @@ func Serve(_ context.Context) error {
 		return errors.New("no calendar providers configured")
 	}
 
+	var selection calendar.CalendarSelection
+	if platformStore != nil {
+		selection = platformStore
+	}
 	reg := calendar.NewRegistry(calendarProviders, calendar.RegistryOptions{
 		ExcludeIDs:               cfg.ExcludeCalendarIDs,
 		IncludeImportedCalendars: cfg.IncludeImportedCalendars,
+		Selection:                selection,
 	})
 	appService := application.New(reg)
 	if len(cfg.ExcludeCalendarIDs) > 0 {

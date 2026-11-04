@@ -331,3 +331,35 @@ func (p *stubV2Provider) DeleteEventV2(context.Context, calendar.DeleteEventRequ
 	p.deleteCalls++
 	return &calendar.OperationResult{Status: "completed"}, nil
 }
+
+type selectionFixture map[string]bool
+
+func (s selectionFixture) CalendarEnabled(_ context.Context, id string) (bool, error) {
+	return s[id], nil
+}
+
+func TestDisabledCalendarExcludedFromTypedReadsAndWrites(t *testing.T) {
+	calls := []string{}
+	p := &stubV2Provider{name: "google", calendars: []calendar.Calendar{{ID: "on"}, {ID: "off"}}, pageFunc: func(r calendar.ListEventsRequestV2) calendar.Page[calendar.EventV2] {
+		calls = append(calls, r.CalendarID)
+		return calendar.Page[calendar.EventV2]{Complete: true}
+	}}
+	reg := calendar.NewRegistry([]calendar.Provider{p}, calendar.RegistryOptions{Selection: selectionFixture{"google:on": true}})
+	svc := New(reg)
+	start := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	if _, err := svc.ListEvents(t.Context(), calendar.ListEventsRequestV2{CalendarID: "google:off", Start: start, End: end}); err == nil {
+		t.Fatal("disabled explicit read allowed")
+	}
+	page, err := svc.ListEvents(t.Context(), calendar.ListEventsRequestV2{Start: start, End: end})
+	if err != nil || !page.Complete || len(calls) != 1 || calls[0] != "on" {
+		t.Fatalf("fanout=%#v calls=%v err=%v", page, calls, err)
+	}
+	if _, err := svc.GetEvent(t.Context(), calendar.EventRef{CalendarID: "google:off", EventID: "event"}); err == nil {
+		t.Fatal("disabled get allowed")
+	}
+	_, err = svc.CreateEvent(t.Context(), calendar.CreateEventRequestV2{CalendarID: "google:off", Event: calendar.EventCreateV2{Title: "Synthetic", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}})
+	if err == nil || p.createCalled {
+		t.Fatalf("disabled create err=%v calls=%d", err, p.createCalls)
+	}
+}

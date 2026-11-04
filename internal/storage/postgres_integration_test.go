@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -427,5 +428,124 @@ func TestPostgresGooglePrimarySelection(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("other connection changed: %#v", cb)
+	}
+}
+
+func TestPostgresCalendarSelectionInvalidatesLease(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	ctx := t.Context()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	connectionID := "selection-" + suffix
+	calendarID := "google:" + connectionID + ":calendar"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := store.CreateConnection(ctx, Connection{ID: connectionID, Provider: "google", AccountFingerprint: connectionID, DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM calendars WHERE id=?"), calendarID); err != nil {
+			t.Error(err)
+		}
+		if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), connectionID); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := store.UpsertCalendar(ctx, Calendar{ID: calendarID, ConnectionID: connectionID, ProviderCalendarID: "calendar", Name: "Synthetic", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureCalendarSyncStates(ctx, now, SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimDueCalendarSync(ctx, "selection-worker", now, now.Add(time.Hour))
+	if err != nil || claim == nil || claim.CalendarID != calendarID {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+	if err := store.SetCalendarEnabled(ctx, calendarID, false, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyEventSyncPage(ctx, *claim, EventSyncBatch{}, true, now.Add(2*time.Second)); !errors.Is(err, ErrCalendarSyncLeaseLost) {
+		t.Fatalf("stale lease error=%v", err)
+	}
+	if err := store.SetCalendarEnabled(ctx, calendarID, true, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = store.ClaimDueCalendarSync(ctx, "selection-worker", now.Add(4*time.Second), now.Add(time.Hour))
+	if err != nil || claim == nil || claim.CalendarID != calendarID || claim.Cursor != "" {
+		t.Fatalf("reenabled claim=%#v err=%v", claim, err)
+	}
+}
+
+func TestPostgresDisabledCalendarBlocksRuleScheduling(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	ctx := t.Context()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	conn := "selection-rules-" + suffix
+	source := conn + ":source"
+	target := conn + ":target"
+	ruleID := conn + ":rule"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := store.CreateConnection(ctx, Connection{ID: conn, Provider: "google", AccountFingerprint: conn, DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, stmt := range []string{"DELETE FROM sync_rules WHERE id=?", "DELETE FROM calendars WHERE connection_id=?", "DELETE FROM connections WHERE id=?"} {
+			arg := conn
+			if strings.Contains(stmt, "sync_rules") {
+				arg = ruleID
+			}
+			if _, err := store.db.ExecContext(context.Background(), store.query(stmt), arg); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	for _, id := range []string{source, target} {
+		if err := store.UpsertCalendar(ctx, Calendar{ID: id, ConnectionID: conn, ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule := Rule{ID: ruleID, SourceCalendarID: source, TargetCalendarID: target, State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(ctx, source, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.ScheduleDueJobs(ctx, now); err != nil || n != 0 {
+		t.Fatalf("disabled schedule=%d err=%v", n, err)
+	}
+	job := Job{ID: conn + ":job", RuleID: ruleID, Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now}
+	if err := store.EnqueueJob(ctx, job); !errors.Is(err, ErrCalendarSyncIneligible) {
+		t.Fatalf("disabled enqueue=%v", err)
+	}
+	if err := store.SetCalendarEnabled(ctx, source, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.ScheduleDueJobs(ctx, now); err != nil || n != 1 {
+		t.Fatalf("enabled schedule=%d err=%v", n, err)
+	}
+	claim, err := store.ClaimJob(ctx, "selection-worker", now)
+	if err != nil || claim == nil || claim.RuleID != ruleID {
+		t.Fatalf("claim=%#v err=%v", claim, err)
 	}
 }

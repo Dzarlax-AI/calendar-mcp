@@ -619,6 +619,22 @@ func TestUIAPIEventReadModelShowsUnwarmedAndPartialSources(t *testing.T) {
 	}
 }
 
+func TestUIAPICachedDisabledCalendarIsNeutral(t *testing.T) {
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	if err := store.SetCalendarEnabled(t.Context(), "google:primary", false, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	response := listUIEventsResponse(t, handler, "calendar_id=google:primary")
+	for _, want := range []string{`"status":"disabled"`, `"stale":false`, `"complete":true`, `"items":[]`} {
+		if !strings.Contains(response, want) {
+			t.Fatalf("disabled response missing %s: %s", want, response)
+		}
+	}
+}
+
 func TestUIAPIRefreshEnqueuesWithoutProviderCall(t *testing.T) {
 	provider := uiProvider()
 	enabled := true
@@ -923,5 +939,34 @@ func TestUIAPIResumeThreeAppleCalendarsWithoutCredentialInput(t *testing.T) {
 	}
 	if len(provider.listCalls) != 0 || provider.createCalls != 0 || provider.updateCalls != 0 || provider.deleteCalls != 0 {
 		t.Fatal("resume called provider instead of queuing read-model sync")
+	}
+}
+
+func TestCalendarSelectionRequiresCSRFAndUpdatesControlPlane(t *testing.T) {
+	handler, store := newUIAPIHandlerWithStore(t, Config{AllowUnauthenticated: true}, &uiAPIProvider{name: "google"})
+	call := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "https://calendar.example/connections/calendars/google:primary/selection", strings.NewReader("enabled=false&csrf_token="+token))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "https://calendar.example")
+		req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: "expected"})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if got := call("wrong").Code; got != http.StatusForbidden {
+		t.Fatalf("bad CSRF status=%d", got)
+	}
+	if got := call("expected").Code; got != http.StatusSeeOther {
+		t.Fatalf("valid status=%d", got)
+	}
+	calendars, err := store.ListAllCalendars(t.Context())
+	if err != nil || len(calendars) != 1 || calendars[0].Enabled {
+		t.Fatalf("calendars=%#v err=%v", calendars, err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://calendar.example/api/ui/control-plane", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
+		t.Fatalf("control plane %d %s", rec.Code, rec.Body.String())
 	}
 }

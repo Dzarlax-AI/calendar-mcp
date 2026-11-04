@@ -81,7 +81,7 @@ func (s *Service) ScheduleCalendarSync(ctx context.Context, calendarID string, n
 }
 
 func (s *Service) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
-	provider, rawCalendarID, err := s.registry.Resolve(calendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, calendarID)
 	if err != nil {
 		return calendar.CalendarCapabilities{}, invalidArgument(err.Error())
 	}
@@ -111,7 +111,7 @@ func (s *Service) ListEvents(ctx context.Context, request calendar.ListEventsReq
 	if request.CalendarID == "" {
 		return s.listEventsFanOut(ctx, request), nil
 	}
-	provider, rawCalendarID, err := s.registry.Resolve(request.CalendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
 		return calendar.Page[calendar.EventV2]{}, invalidArgument(err.Error())
 	}
@@ -133,7 +133,7 @@ func (s *Service) ListEvents(ctx context.Context, request calendar.ListEventsReq
 }
 
 func (s *Service) GetEvent(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
-	provider, rawRef, err := s.resolveEventRef(ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	if err := calendar.ValidateRecurrence(request.Event.Recurrence); err != nil {
 		return nil, nil, &calendar.APIError{Code: calendar.ErrorInvalidRecurrence, Message: err.Error(), Cause: err}
 	}
-	provider, rawCalendarID, err := s.registry.Resolve(request.CalendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
 		return nil, nil, invalidArgument(err.Error())
 	}
@@ -193,7 +193,7 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 		return nil, err
 	}
 	prefixedCalendarID := request.Ref.CalendarID
-	provider, rawRef, err := s.resolveEventRef(request.Ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		return nil, err
 	}
 	prefixedCalendarID := request.Ref.CalendarID
-	provider, rawRef, err := s.resolveEventRef(request.Ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
 	if err != nil {
 		return nil, err
 	}
@@ -250,11 +250,11 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	return result, nil
 }
 
-func (s *Service) resolveEventRef(ref calendar.EventRef) (calendar.Provider, calendar.EventRef, error) {
+func (s *Service) resolveEventRef(ctx context.Context, ref calendar.EventRef) (calendar.Provider, calendar.EventRef, error) {
 	if ref.CalendarID == "" || ref.EventID == "" {
 		return nil, calendar.EventRef{}, invalidArgument("calendar_id and event_id are required")
 	}
-	provider, rawCalendarID, err := s.registry.Resolve(ref.CalendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, ref.CalendarID)
 	if err != nil {
 		return nil, calendar.EventRef{}, invalidArgument(err.Error())
 	}

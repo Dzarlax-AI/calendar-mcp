@@ -63,7 +63,7 @@ func (s *Server) readOnlyCalendars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "calendar data is unavailable")
 		return
 	}
-	items, err := s.calendars(r)
+	items, err := s.calendars(r, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
@@ -149,20 +149,21 @@ type calendarResponse struct {
 	CanWrite      bool   `json:"can_write"`
 	ReadOnly      bool   `json:"read_only"`
 	googlePrimary bool   `json:"-"`
+	enabled       bool   `json:"-"`
 }
 
-func (s *Server) calendars(r *http.Request) ([]calendarResponse, error) {
+func (s *Server) calendars(r *http.Request, includeDisabled bool) ([]calendarResponse, error) {
 	items, err := s.store.ListAllCalendars(r.Context())
 	if err != nil {
 		return nil, err
 	}
 	result := make([]calendarResponse, 0, len(items))
 	for _, item := range items {
-		if !item.CanRead {
+		if !item.CanRead || (!includeDisabled && !item.Enabled) {
 			continue
 		}
 		canWrite := s.writesEnabled && item.CanWrite
-		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite, googlePrimary: strings.HasPrefix(item.ID, "google:") && item.GooglePrimary})
+		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite, googlePrimary: strings.HasPrefix(item.ID, "google:") && item.GooglePrimary, enabled: item.Enabled})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
@@ -230,7 +231,7 @@ func (s *Server) requireWritableCalendar(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	for _, item := range items {
-		if item.ID == calendarID && item.CanRead && item.CanWrite {
+		if item.ID == calendarID && item.CanRead && item.CanWrite && item.Enabled {
 			return true
 		}
 	}
@@ -366,7 +367,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "native API is unavailable")
 		return
 	}
-	items, err := s.calendars(r)
+	items, err := s.calendars(r, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
@@ -389,7 +390,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "end must be RFC3339 and after start")
 		return
 	}
-	allowed, err := s.calendars(r)
+	allowed, err := s.calendars(r, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
@@ -438,7 +439,7 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	allowed, err := s.calendars(r)
+	allowed, err := s.calendars(r, true)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
@@ -450,7 +451,9 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 	ids := unique(r.URL.Query()["calendar_id"])
 	if len(ids) == 0 {
 		for _, item := range allowed {
-			ids = append(ids, item.ID)
+			if item.enabled {
+				ids = append(ids, item.ID)
+			}
 		}
 	}
 	for _, id := range ids {
@@ -468,6 +471,9 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 	sortEventsByStart(events)
 	items := make([]nativeEvent, 0, len(events))
 	for _, event := range events {
+		if !allowedIDs[event.CalendarID].enabled {
+			continue
+		}
 		items = append(items, nativeEvent{
 			CalendarID:         event.CalendarID,
 			Title:              event.Title,
@@ -487,6 +493,10 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 		statusByCalendar[status.CalendarID] = status
 	}
 	for _, id := range ids {
+		if !allowedIDs[id].enabled {
+			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "disabled", Stale: false})
+			continue
+		}
 		status, found := statusByCalendar[id]
 		if !found {
 			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "pending", Stale: true})

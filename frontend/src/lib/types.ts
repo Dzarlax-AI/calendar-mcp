@@ -18,6 +18,7 @@ export type CalendarRecord = {
   group?: string;
   color: string;
   readOnly?: boolean;
+  enabled?: boolean;
   capability: CalendarCapability;
 };
 

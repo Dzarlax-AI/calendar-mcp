@@ -105,7 +105,8 @@ const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
 ];
 
 export default function CalendarPage() {
-  const { csrf_token: csrfToken, calendars } = useBootstrapData();
+  const { csrf_token: csrfToken, calendars: allCalendars } = useBootstrapData();
+  const calendars = useMemo(() => allCalendars.filter((calendar) => calendar.enabled !== false), [allCalendars]);
   const calendarRef = useRef<FullCalendar>(null);
   const initialScrollTime = useMemo(() => currentTimeScrollTime(), []);
   const queryClient = useQueryClient();

@@ -182,6 +182,7 @@ type uiCalendar struct {
 	CanRead            bool   `json:"can_read"`
 	CanWrite           bool   `json:"can_write"`
 	SupportsRecurrence bool   `json:"supports_recurrence"`
+	Enabled            bool   `json:"enabled"`
 }
 
 type uiConnection struct {
@@ -270,6 +271,9 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	capabilities := make(map[string]calendar.CalendarCapabilities, len(control.Calendars))
 	sources := make([]uiSourceStatus, 0)
 	for _, item := range control.Calendars {
+		if !item.Enabled {
+			continue
+		}
 		capability, err := s.app.Capabilities(r.Context(), item.ID)
 		if err != nil {
 			sources = append(sources, failedUISource("", item.ID, err))
@@ -528,7 +532,7 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 		if !connected[item.ConnectionID] {
 			continue
 		}
-		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence})
+		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence, Enabled: item.Enabled})
 	}
 	for _, item := range rules {
 		result.Rules = append(result.Rules, uiRule{ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
@@ -594,13 +598,19 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, start, end time.Time) (uiEventsResponse, error) {
-	if len(calendarIDs) == 0 {
-		control, err := s.uiControlPlane(ctx)
-		if err != nil {
-			return uiEventsResponse{}, err
+	control, err := s.uiControlPlane(ctx)
+	if err != nil {
+		return uiEventsResponse{}, err
+	}
+	disabled := make(map[string]bool)
+	for _, item := range control.Calendars {
+		if item.CanRead && !item.Enabled {
+			disabled[item.ID] = true
 		}
+	}
+	if len(calendarIDs) == 0 {
 		for _, item := range control.Calendars {
-			if item.CanRead {
+			if item.CanRead && item.Enabled {
 				calendarIDs = append(calendarIDs, item.ID)
 			}
 		}
@@ -612,10 +622,16 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 	}
 	response := uiEventsResponse{Items: make([]uiEvent, 0, len(events)), Sources: make([]uiSourceStatus, 0, len(calendarIDs)), Complete: true}
 	for _, event := range events {
+		if disabled[event.CalendarID] {
+			continue
+		}
 		response.Items = append(response.Items, toUIEvent(normalizeCachedUIEvent(event)))
 	}
 	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
+		if disabled[source.CalendarID] {
+			continue
+		}
 		response.Sources = append(response.Sources, toCachedUISource(source))
 		seen[source.CalendarID] = struct{}{}
 	}
@@ -623,11 +639,15 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 		if _, ok := seen[calendarID]; ok {
 			continue
 		}
+		if disabled[calendarID] {
+			response.Sources = append(response.Sources, uiSourceStatus{Provider: uiCalendarProvider(calendarID), CalendarID: calendarID, Status: "disabled", Complete: true})
+			continue
+		}
 		// A readable calendar with no durable state has not been warmed yet.
 		response.Sources = append(response.Sources, uiSourceStatus{Provider: uiCalendarProvider(calendarID), CalendarID: calendarID, Status: "pending", Stale: true})
 	}
 	for _, source := range response.Sources {
-		if source.Status != "ready" || source.Stale {
+		if (source.Status != "ready" && source.Status != "disabled") || source.Stale {
 			response.Complete = false
 		}
 	}

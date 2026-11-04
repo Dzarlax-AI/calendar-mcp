@@ -12,7 +12,7 @@ func (s *Service) GetEventInstances(ctx context.Context, request calendar.Instan
 	if err := validateRange(request.Start, request.End); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
-	provider, rawRef, err := s.resolveEventRef(request.Ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
 	if err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
@@ -45,7 +45,7 @@ func (s *Service) SearchEvents(ctx context.Context, request calendar.SearchEvent
 	if request.CalendarID == "" {
 		return s.searchEventsFanOut(ctx, request), nil
 	}
-	provider, rawCalendarID, err := s.registry.Resolve(request.CalendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
 		return calendar.Page[calendar.EventV2]{}, invalidArgument(err.Error())
 	}
@@ -64,7 +64,7 @@ func (s *Service) SearchEvents(ctx context.Context, request calendar.SearchEvent
 }
 
 func (s *Service) RespondToEvent(ctx context.Context, request calendar.RespondToEventRequestV2) (*calendar.OperationResult, error) {
-	provider, rawRef, err := s.resolveEventRef(request.Ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +86,11 @@ func (s *Service) RespondToEvent(ctx context.Context, request calendar.RespondTo
 }
 
 func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventRequestV2) (*calendar.OperationResult, error) {
-	provider, rawRef, err := s.resolveEventRef(request.Ref)
+	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
 	if err != nil {
 		return nil, err
 	}
-	destinationProvider, rawDestination, err := s.registry.Resolve(request.DestinationCalendarID)
+	destinationProvider, rawDestination, err := s.registry.ResolveEnabled(ctx, request.DestinationCalendarID)
 	if err != nil {
 		return nil, invalidArgument("invalid destination_calendar_id: " + err.Error())
 	}
@@ -125,7 +125,7 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 	if err := calendar.ValidateRecurrence(request.Event.Recurrence); err != nil {
 		return nil, &calendar.APIError{Code: calendar.ErrorInvalidRecurrence, Message: err.Error(), Cause: err}
 	}
-	provider, rawCalendarID, err := s.registry.Resolve(request.CalendarID)
+	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
 		return nil, invalidArgument(err.Error())
 	}
@@ -164,6 +164,14 @@ func (s *Service) searchEventsFanOut(ctx context.Context, request calendar.Searc
 			for _, cal := range calendars {
 				prefixedID := provider.Name() + ":" + cal.ID
 				if s.registry.SkipInFanOut(prefixedID) {
+					continue
+				}
+				enabled, selectionErr := s.registry.CalendarEnabled(ctx, provider, cal.ID)
+				if selectionErr != nil {
+					results <- failedSource(provider.Name(), prefixedID, selectionErr)
+					continue
+				}
+				if !enabled {
 					continue
 				}
 				providerRequest := request

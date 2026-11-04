@@ -3,11 +3,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunRecord } from "../../lib/types";
+import type { CalendarRecord, RunRecord } from "../../lib/types";
 
 const bootstrap = {
   csrf_token: "test-csrf",
-  calendars: [],
+  calendars: [] as CalendarRecord[],
   rules: [],
   runs: [] as RunRecord[],
   connections: [],
@@ -30,9 +30,27 @@ beforeEach(() => {
 
 afterEach(() => {
   bootstrap.runs = [];
+  bootstrap.calendars = [];
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+});
+
+describe("calendar selection", () => {
+  it("shows a secure enable or disable form for each calendar", () => {
+    const capability = { read: true, create: true, write: true, delete: true, recurring: false };
+    bootstrap.calendars = [
+      { id: "google:account:on", name: "Enabled", provider: "google", color: "blue", enabled: true, capability },
+      { id: "google:account:off", name: "Disabled", provider: "google", color: "red", enabled: false, capability: { ...capability, read: false, write: false } },
+    ];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="connections" /></MemoryRouter>));
+    const forms = Array.from(container.querySelectorAll<HTMLFormElement>('form[action*="/calendars/"]'));
+    expect(forms).toHaveLength(2);
+    expect(forms[0].querySelector('[name="enabled"]')?.getAttribute("value")).toBe("false");
+    expect(forms[1].querySelector('[name="enabled"]')?.getAttribute("value")).toBe("true");
+    expect(forms[0].querySelector('[name="csrf_token"]')?.getAttribute("value")).toBe("test-csrf");
+    expect(forms[1].textContent).toContain("Enable");
+  });
 });
 
 describe("sync activity", () => {

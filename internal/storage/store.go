@@ -157,6 +157,8 @@ func migrationName(version int) string {
 		return "event_sync_provider_corrections"
 	case 7:
 		return "google_primary_calendar"
+	case 8:
+		return "calendar_enabled"
 	default:
 		return ""
 	}
@@ -366,6 +368,52 @@ func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
 	return nil
 }
 
+// SetCalendarEnabled persists the user's choice and invalidates any in-flight
+// projection lease. Existing cached rows are retained for later reconciliation.
+func (s *Store) SetCalendarEnabled(ctx context.Context, id string, enabled bool, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, s.query(`UPDATE calendars SET enabled=? WHERE id=? AND enabled<>?`), enabled, id, enabled)
+	if err != nil {
+		return fmt.Errorf("update calendar selection: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT EXISTS(SELECT 1 FROM calendars WHERE id=?)`), id).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		return tx.Commit()
+	}
+	_, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1, cursor='',
+		status=CASE WHEN status='parked' THEN status ELSE 'pending' END,
+		next_sync_at=CASE WHEN status='parked' THEN next_sync_at ELSE ? END,
+		last_error_code=CASE WHEN status='parked' THEN last_error_code ELSE NULL END,
+		last_success_at=NULL, lease_owner=NULL, lease_until=NULL, updated_at=? WHERE calendar_id=?`), now, now, id)
+	if err != nil {
+		return fmt.Errorf("invalidate calendar sync: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) CalendarEnabled(ctx context.Context, id string) (bool, error) {
+	var enabled bool
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT enabled FROM calendars WHERE id=?`), id).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return enabled, err
+}
+
 func (s *Store) ClearGooglePrimaryCalendars(ctx context.Context, connectionID string) error {
 	_, err := s.db.ExecContext(ctx, s.query(`UPDATE calendars SET google_primary=? WHERE connection_id=?`), false, connectionID)
 	return err
@@ -378,7 +426,7 @@ func (s *Store) SetGooglePrimaryCalendar(ctx context.Context, connectionID, prov
 
 func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calendar, error) {
 	rows, err := s.db.QueryContext(ctx, s.query(`SELECT id, connection_id, provider_calendar_id, name, timezone,
-		can_read, can_write, supports_recurrence, discovered_at, google_primary FROM calendars WHERE connection_id = ? ORDER BY name`), connectionID)
+		can_read, can_write, supports_recurrence, discovered_at, google_primary, enabled FROM calendars WHERE connection_id = ? ORDER BY name`), connectionID)
 	if err != nil {
 		return nil, fmt.Errorf("list calendars: %w", err)
 	}
@@ -386,7 +434,7 @@ func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calen
 	var result []Calendar
 	for rows.Next() {
 		var c Calendar
-		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary); err != nil {
+		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary, &c.Enabled); err != nil {
 			return nil, err
 		}
 		result = append(result, c)
@@ -396,7 +444,7 @@ func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calen
 
 func (s *Store) ListAllCalendars(ctx context.Context) ([]Calendar, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, connection_id, provider_calendar_id, name, timezone,
-		can_read, can_write, supports_recurrence, discovered_at, google_primary FROM calendars ORDER BY name`)
+		can_read, can_write, supports_recurrence, discovered_at, google_primary, enabled FROM calendars ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list all calendars: %w", err)
 	}
@@ -404,7 +452,7 @@ func (s *Store) ListAllCalendars(ctx context.Context) ([]Calendar, error) {
 	var result []Calendar
 	for rows.Next() {
 		var c Calendar
-		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary); err != nil {
+		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary, &c.Enabled); err != nil {
 			return nil, err
 		}
 		result = append(result, c)
@@ -521,7 +569,7 @@ func (s *Store) lockRuleGraph(ctx context.Context, tx *sql.Tx) error {
 
 func (s *Store) validateRuleRoute(ctx context.Context, tx *sql.Tx, candidate Rule) error {
 	var sourceReadable, targetWritable bool
-	if err := tx.QueryRowContext(ctx, s.query("SELECT can_read FROM calendars WHERE id=?"), candidate.SourceCalendarID).Scan(&sourceReadable); err != nil {
+	if err := tx.QueryRowContext(ctx, s.query("SELECT (can_read AND enabled) FROM calendars WHERE id=?"), candidate.SourceCalendarID).Scan(&sourceReadable); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("source calendar is not connected")
 		}
@@ -530,7 +578,7 @@ func (s *Store) validateRuleRoute(ctx context.Context, tx *sql.Tx, candidate Rul
 	if !sourceReadable {
 		return errors.New("source calendar is not readable")
 	}
-	if err := tx.QueryRowContext(ctx, s.query("SELECT can_write FROM calendars WHERE id=?"), candidate.TargetCalendarID).Scan(&targetWritable); err != nil {
+	if err := tx.QueryRowContext(ctx, s.query("SELECT (can_write AND enabled) FROM calendars WHERE id=?"), candidate.TargetCalendarID).Scan(&targetWritable); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("target calendar is not connected")
 		}
@@ -695,7 +743,9 @@ func (s *Store) SetRuleState(ctx context.Context, id, state string, nextRunAt *t
 	if state != "paused" && state != "enabled" {
 		return errors.New("rule state must be paused or enabled")
 	}
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=?`), state, nextRunAt, updatedAt, id)
+	res, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND
+		(? <> 'enabled' OR EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
+		WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE))`), state, nextRunAt, updatedAt, id, state)
 	if err != nil {
 		return fmt.Errorf("set rule state: %w", err)
 	}

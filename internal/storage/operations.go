@@ -16,7 +16,9 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := `SELECT id, interval_seconds FROM sync_rules WHERE state=? AND (next_run_at IS NULL OR next_run_at<=?) ORDER BY created_at`
+	q := `SELECT id, interval_seconds FROM sync_rules WHERE state=? AND (next_run_at IS NULL OR next_run_at<=?)
+		AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
+			WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE) ORDER BY created_at`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
 	}
@@ -60,12 +62,20 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 }
 
 func (s *Store) EnqueueJob(ctx context.Context, j Job) error {
-	_, err := s.db.ExecContext(ctx, s.query(`INSERT INTO sync_jobs
+	result, err := s.db.ExecContext(ctx, s.query(`INSERT INTO sync_jobs
 		(id, rule_id, kind, state, available_at, claimed_at, claimed_by, attempt, created_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), j.ID, j.RuleID, j.Kind, j.State, j.AvailableAt,
-		j.ClaimedAt, nullString(j.ClaimedBy), j.Attempt, j.CreatedAt, j.FinishedAt)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
+			SELECT 1 FROM sync_rules r JOIN calendars source ON source.id=r.source_calendar_id
+			JOIN calendars target ON target.id=r.target_calendar_id
+			WHERE r.id=? AND source.enabled=TRUE AND target.enabled=TRUE)`), j.ID, j.RuleID, j.Kind, j.State, j.AvailableAt,
+		j.ClaimedAt, nullString(j.ClaimedBy), j.Attempt, j.CreatedAt, j.FinishedAt, j.RuleID)
 	if err != nil {
 		return fmt.Errorf("enqueue job: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return err
+	} else if changed == 0 {
+		return ErrCalendarSyncIneligible
 	}
 	return nil
 }
@@ -79,6 +89,9 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 	q := `SELECT candidate.id, candidate.rule_id, candidate.kind, candidate.state, candidate.available_at,
 		candidate.claimed_at, candidate.claimed_by, candidate.attempt, candidate.created_at, candidate.finished_at
 		FROM sync_jobs AS candidate WHERE candidate.state = ? AND candidate.available_at <= ?
+		AND EXISTS (SELECT 1 FROM sync_rules r JOIN calendars source ON source.id=r.source_calendar_id
+			JOIN calendars target ON target.id=r.target_calendar_id
+			WHERE r.id=candidate.rule_id AND source.enabled=TRUE AND target.enabled=TRUE)
 		AND NOT EXISTS (SELECT 1 FROM sync_jobs AS active WHERE active.rule_id = candidate.rule_id AND active.state = ?)
 		ORDER BY candidate.available_at, candidate.created_at LIMIT 1`
 	if s.dialect == DialectPostgres {

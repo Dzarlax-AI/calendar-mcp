@@ -44,11 +44,11 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	if err := storage.ValidateRule(rule); err != nil {
 		return Result{}, err
 	}
-	sourceProvider, sourceCalendarID, err := e.registry.Resolve(rule.SourceCalendarID)
+	sourceProvider, sourceCalendarID, err := e.registry.ResolveEnabled(ctx, rule.SourceCalendarID)
 	if err != nil {
 		return Result{}, err
 	}
-	targetProvider, targetCalendarID, err := e.registry.Resolve(rule.TargetCalendarID)
+	targetProvider, targetCalendarID, err := e.registry.ResolveEnabled(ctx, rule.TargetCalendarID)
 	if err != nil {
 		return Result{}, err
 	}

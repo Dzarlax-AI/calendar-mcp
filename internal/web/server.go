@@ -169,6 +169,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /connections/{id}/oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
 	mux.Handle("POST /connections/apple", s.protected(s.mutating(http.HandlerFunc(s.connectApple))))
 	mux.Handle("POST /connections/{id}/delete", s.protected(s.mutating(http.HandlerFunc(s.deleteConnection))))
+	mux.Handle("POST /connections/calendars/{id}/selection", s.protected(s.mutating(http.HandlerFunc(s.setCalendarSelection))))
 	mux.Handle("POST /rules", s.protected(s.mutating(http.HandlerFunc(s.createRule))))
 	mux.Handle("POST /rules/{id}/enable", s.protected(s.mutating(http.HandlerFunc(s.enableRule))))
 	mux.Handle("POST /rules/{id}/run", s.protected(s.mutating(http.HandlerFunc(s.runRule))))
@@ -493,6 +494,20 @@ func (s *Server) connectApple(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/connections?status=connected", http.StatusSeeOther)
+}
+
+func (s *Server) setCalendarSelection(w http.ResponseWriter, r *http.Request) {
+	value := r.FormValue("enabled")
+	if value != "true" && value != "false" {
+		http.Error(w, "Invalid calendar selection", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetCalendarEnabled(r.Context(), r.PathValue("id"), value == "true", time.Now().UTC()); err != nil {
+		log.Printf("set calendar selection: %v", err)
+		http.Redirect(w, r, "/connections?status=calendar_selection_failed", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/connections?status=calendar_selection_saved", http.StatusSeeOther)
 }
 
 func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
