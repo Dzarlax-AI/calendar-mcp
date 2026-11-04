@@ -19,6 +19,7 @@ export type CalendarRecord = {
   color: string;
   readOnly?: boolean;
   enabled?: boolean;
+  providerAccess?: { read: boolean | null; write: boolean | null };
   capability: CalendarCapability;
 };
 

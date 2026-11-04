@@ -11,6 +11,13 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves last reported provider access while gating disabled calendars", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ csrf_token: "csrf", calendars: [{ id: "c1", name: "Disabled", enabled: false, can_read: true, can_write: false }], connections: [], rules: [], runs: [], settings: {}, capabilities: {} }), { status: 200 })));
+    const bootstrap = await getBootstrap();
+    expect(bootstrap.calendars[0]).toMatchObject({ enabled: false, providerAccess: { read: true, write: false }, capability: { read: false, write: false } });
+    vi.unstubAllGlobals();
+  });
+
   it("sends same-origin credentials and the CSRF header on creates", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "e1", calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }), { status: 201, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);

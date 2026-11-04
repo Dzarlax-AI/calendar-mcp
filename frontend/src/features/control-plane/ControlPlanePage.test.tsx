@@ -41,15 +41,18 @@ describe("calendar selection", () => {
     const capability = { read: true, create: true, write: true, delete: true, recurring: false };
     bootstrap.calendars = [
       { id: "google:account:on", name: "Enabled", provider: "google", color: "blue", enabled: true, capability },
-      { id: "google:account:off", name: "Disabled", provider: "google", color: "red", enabled: false, capability: { ...capability, read: false, write: false } },
+      { id: "google:account:off", name: "Disabled", provider: "google", color: "red", enabled: false, providerAccess: { read: true, write: false }, capability: { ...capability, read: false, write: false } },
+      { id: "google:account:noaccess", name: "No provider access", provider: "google", color: "red", enabled: false, providerAccess: { read: false, write: false }, capability: { ...capability, read: false, write: false } },
     ];
     act(() => root.render(<MemoryRouter><ControlPlanePage section="connections" /></MemoryRouter>));
     const forms = Array.from(container.querySelectorAll<HTMLFormElement>('form[action*="/calendars/"]'));
-    expect(forms).toHaveLength(2);
+    expect(forms).toHaveLength(3);
     expect(forms[0].querySelector('[name="enabled"]')?.getAttribute("value")).toBe("false");
     expect(forms[1].querySelector('[name="enabled"]')?.getAttribute("value")).toBe("true");
     expect(forms[0].querySelector('[name="csrf_token"]')?.getAttribute("value")).toBe("test-csrf");
     expect(forms[1].textContent).toContain("Enable");
+    expect(container.textContent).toContain("Disabled · Last reported: read only");
+    expect(container.textContent).toContain("Disabled · Last reported: no access");
   });
 });
 

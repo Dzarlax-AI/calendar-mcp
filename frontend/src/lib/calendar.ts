@@ -119,7 +119,7 @@ export function selectedReadableCalendarIds(calendars: CalendarRecord[], saved: 
   const allReadable = [...readable];
   if (Array.isArray(saved)) {
     const valid = saved.filter((id): id is string => typeof id === "string" && readable.has(id));
-    return valid.length ? valid : allReadable;
+    return valid;
   }
   return allReadable;
 }

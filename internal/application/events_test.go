@@ -338,6 +338,59 @@ func (s selectionFixture) CalendarEnabled(_ context.Context, id string) (bool, e
 	return s[id], nil
 }
 
+type failingSelection struct{ failID string }
+
+func (s failingSelection) CalendarEnabled(_ context.Context, id string) (bool, error) {
+	if id == s.failID {
+		return false, errors.New("synthetic storage failure")
+	}
+	return true, nil
+}
+
+func TestSelectionLookupErrorsAreRetryableAcrossEntryPoints(t *testing.T) {
+	provider := &stubV2Provider{name: "google"}
+	start := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	event := calendar.EventCreateV2{Title: "Synthetic", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}
+	ref := calendar.EventRef{CalendarID: "google:primary", EventID: "event"}
+	cases := []struct {
+		name, failID string
+		call         func(*Service) error
+	}{
+		{"capabilities", "google:primary", func(s *Service) error { _, err := s.Capabilities(t.Context(), ref.CalendarID); return err }},
+		{"list", "google:primary", func(s *Service) error {
+			_, err := s.ListEvents(t.Context(), calendar.ListEventsRequestV2{CalendarID: ref.CalendarID, Start: start, End: start.Add(time.Hour)})
+			return err
+		}},
+		{"create", "google:primary", func(s *Service) error {
+			_, err := s.CreateEvent(t.Context(), calendar.CreateEventRequestV2{CalendarID: ref.CalendarID, Event: event})
+			return err
+		}},
+		{"get", "google:primary", func(s *Service) error { _, err := s.GetEvent(t.Context(), ref); return err }},
+		{"search", "google:primary", func(s *Service) error {
+			_, err := s.SearchEvents(t.Context(), calendar.SearchEventsRequestV2{CalendarID: ref.CalendarID, Query: "test"})
+			return err
+		}},
+		{"move destination", "google:destination", func(s *Service) error {
+			_, err := s.MoveEvent(t.Context(), calendar.MoveEventRequestV2{Ref: ref, DestinationCalendarID: "google:destination"})
+			return err
+		}},
+		{"import", "google:primary", func(s *Service) error {
+			_, err := s.ImportEvent(t.Context(), calendar.ImportEventRequestV2{CalendarID: ref.CalendarID, Event: event})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := New(calendar.NewRegistry([]calendar.Provider{provider}, calendar.RegistryOptions{Selection: failingSelection{failID: tc.failID}}))
+			err := tc.call(svc)
+			var apiErr *calendar.APIError
+			if !errors.As(err, &apiErr) || apiErr.Code != calendar.ErrorProviderUnavailable || !apiErr.Retryable || !errors.Is(err, calendar.ErrCalendarSelectionUnavailable) {
+				t.Fatalf("error=%#v", err)
+			}
+		})
+	}
+}
+
 func TestDisabledCalendarExcludedFromTypedReadsAndWrites(t *testing.T) {
 	calls := []string{}
 	p := &stubV2Provider{name: "google", calendars: []calendar.Calendar{{ID: "on"}, {ID: "off"}}, pageFunc: func(r calendar.ListEventsRequestV2) calendar.Page[calendar.EventV2] {

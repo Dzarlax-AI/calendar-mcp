@@ -47,7 +47,7 @@ func (s *Service) SearchEvents(ctx context.Context, request calendar.SearchEvent
 	}
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
-		return calendar.Page[calendar.EventV2]{}, invalidArgument(err.Error())
+		return calendar.Page[calendar.EventV2]{}, selectionResolveFailure(request.CalendarID, err)
 	}
 	search, ok := provider.(calendar.SearchProviderV2)
 	if !ok {
@@ -92,7 +92,7 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	}
 	destinationProvider, rawDestination, err := s.registry.ResolveEnabled(ctx, request.DestinationCalendarID)
 	if err != nil {
-		return nil, invalidArgument("invalid destination_calendar_id: " + err.Error())
+		return nil, selectionResolveFailure(request.DestinationCalendarID, err)
 	}
 	if destinationProvider.Name() != provider.Name() {
 		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "cross-provider event moves are not supported")
@@ -127,7 +127,7 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 	}
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
-		return nil, invalidArgument(err.Error())
+		return nil, selectionResolveFailure(request.CalendarID, err)
 	}
 	importer, ok := provider.(calendar.ImportProviderV2)
 	if !ok {

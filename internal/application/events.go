@@ -83,7 +83,7 @@ func (s *Service) ScheduleCalendarSync(ctx context.Context, calendarID string, n
 func (s *Service) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, calendarID)
 	if err != nil {
-		return calendar.CalendarCapabilities{}, invalidArgument(err.Error())
+		return calendar.CalendarCapabilities{}, selectionResolveFailure(calendarID, err)
 	}
 	capabilityProvider, ok := provider.(calendar.CapabilityProvider)
 	if !ok {
@@ -113,7 +113,7 @@ func (s *Service) ListEvents(ctx context.Context, request calendar.ListEventsReq
 	}
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
-		return calendar.Page[calendar.EventV2]{}, invalidArgument(err.Error())
+		return calendar.Page[calendar.EventV2]{}, selectionResolveFailure(request.CalendarID, err)
 	}
 	v2, ok := provider.(calendar.EventProviderV2)
 	if !ok {
@@ -169,7 +169,7 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	}
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, request.CalendarID)
 	if err != nil {
-		return nil, nil, invalidArgument(err.Error())
+		return nil, nil, selectionResolveFailure(request.CalendarID, err)
 	}
 	v2, ok := provider.(calendar.EventProviderV2)
 	if !ok {
@@ -256,7 +256,7 @@ func (s *Service) resolveEventRef(ctx context.Context, ref calendar.EventRef) (c
 	}
 	provider, rawCalendarID, err := s.registry.ResolveEnabled(ctx, ref.CalendarID)
 	if err != nil {
-		return nil, calendar.EventRef{}, invalidArgument(err.Error())
+		return nil, calendar.EventRef{}, selectionResolveFailure(ref.CalendarID, err)
 	}
 	eventProvider, rawEventID := splitPrefix(ref.EventID)
 	if eventProvider != "" && eventProvider != provider.Name() {
@@ -376,6 +376,13 @@ func splitPrefix(id string) (string, string) {
 
 func invalidArgument(message string) *calendar.APIError {
 	return calendar.NewAPIError(calendar.ErrorInvalidArgument, message)
+}
+
+func selectionResolveFailure(calendarID string, err error) *calendar.APIError {
+	if errors.Is(err, calendar.ErrCalendarSelectionUnavailable) {
+		return &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: "calendar selection is unavailable", CalendarID: calendarID, Retryable: true, Cause: err}
+	}
+	return invalidArgument(err.Error())
 }
 
 func unsupported(provider, calendarID, message string) *calendar.APIError {

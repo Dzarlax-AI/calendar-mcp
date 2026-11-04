@@ -522,6 +522,19 @@ func TestPostgresCalendarSelectionInvalidatesLease(t *testing.T) {
 	if err != nil || claim == nil || claim.CalendarID != calendarID || claim.Cursor != "" {
 		t.Fatalf("reenabled claim=%#v err=%v", claim, err)
 	}
+	if err := store.ParkCalendarSync(ctx, *claim, "auth", now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(ctx, calendarID, false, now.Add(6*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCalendarEnabled(ctx, calendarID, true, now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = store.ClaimDueCalendarSync(ctx, "selection-worker", now.Add(7*time.Second), now.Add(time.Hour))
+	if err != nil || claim == nil || claim.CalendarID != calendarID {
+		t.Fatalf("reenabled parked claim=%#v err=%v", claim, err)
+	}
 }
 
 func TestPostgresDisabledCalendarBlocksRuleScheduling(t *testing.T) {

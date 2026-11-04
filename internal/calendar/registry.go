@@ -22,6 +22,8 @@ type CalendarSelection interface {
 	CalendarEnabled(context.Context, string) (bool, error)
 }
 
+var ErrCalendarSelectionUnavailable = errors.New("calendar selection unavailable")
+
 // CalendarDiscovery records calendars returned by a provider without changing
 // existing user choices. Only actual provider discovery calls this interface.
 type CalendarDiscovery interface {
@@ -73,7 +75,7 @@ func (r *Registry) ResolveEnabled(ctx context.Context, id string) (Provider, str
 	}
 	enabled, err := r.CalendarEnabled(ctx, provider, raw)
 	if err != nil {
-		return nil, "", fmt.Errorf("calendar selection unavailable: %w", err)
+		return nil, "", fmt.Errorf("%w: %w", ErrCalendarSelectionUnavailable, err)
 	}
 	if !enabled {
 		return nil, "", fmt.Errorf("calendar is disabled or unavailable")

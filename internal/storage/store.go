@@ -413,10 +413,10 @@ func (s *Store) SetCalendarEnabled(ctx context.Context, id string, enabled bool,
 		return tx.Commit()
 	}
 	_, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1, cursor='',
-		status=CASE WHEN status='parked' THEN status ELSE 'pending' END,
-		next_sync_at=CASE WHEN status='parked' THEN next_sync_at ELSE ? END,
-		last_error_code=CASE WHEN status='parked' THEN last_error_code ELSE NULL END,
-		last_success_at=NULL, lease_owner=NULL, lease_until=NULL, updated_at=? WHERE calendar_id=?`), now, now, id)
+		status=CASE WHEN ? OR status<>'parked' THEN 'pending' ELSE status END,
+		next_sync_at=CASE WHEN ? OR status<>'parked' THEN ? ELSE next_sync_at END,
+		last_error_code=CASE WHEN ? OR status<>'parked' THEN NULL ELSE last_error_code END,
+		last_success_at=NULL, lease_owner=NULL, lease_until=NULL, updated_at=? WHERE calendar_id=?`), enabled, enabled, now, enabled, now, id)
 	if err != nil {
 		return fmt.Errorf("invalidate calendar sync: %w", err)
 	}

@@ -194,6 +194,7 @@ function normalizeBootstrap(raw: RawBootstrap): Bootstrap {
       timezone: calendar.time_zone ?? calendar.timezone,
       color: calendar.color ?? colors[index % colors.length],
       enabled: calendar.enabled !== false,
+      providerAccess: { read: calendar.can_read ?? null, write: calendar.can_write ?? null },
       readOnly: calendar.enabled === false || (capability?.read_only ?? !calendar.can_write),
       capability: { read: calendar.enabled !== false && (capability?.operations?.list ?? calendar.can_read !== false), create: calendar.enabled !== false && (capability?.operations?.create ?? calendar.can_write === true), write: calendar.enabled !== false && (capability?.operations?.update ?? calendar.can_write === true), delete: calendar.enabled !== false && (capability?.operations?.delete ?? calendar.can_write === true), recurring: calendar.supports_recurrence === true, recurrenceScopes: [...scopes] },
     }); }),

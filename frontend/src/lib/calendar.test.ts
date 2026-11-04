@@ -88,7 +88,8 @@ describe("calendar mapping", () => {
     const readOnly: CalendarRecord = { ...calendar, id: "google:readonly", capability: { ...calendar.capability, read: true, write: false } };
     const unreadable: CalendarRecord = { ...calendar, id: "google:hidden", capability: { ...calendar.capability, read: false } };
     expect(selectedReadableCalendarIds([calendar, readOnly, unreadable], ["missing", readOnly.id, unreadable.id])).toEqual([readOnly.id]);
-    expect(selectedReadableCalendarIds([calendar, unreadable], ["missing", unreadable.id])).toEqual([calendar.id]);
+    expect(selectedReadableCalendarIds([calendar, unreadable], ["missing", unreadable.id])).toEqual([]);
+    expect(selectedReadableCalendarIds([calendar, unreadable], [])).toEqual([]);
     expect(selectedReadableCalendarIds([calendar, unreadable], null)).toEqual([calendar.id]);
   });
 
