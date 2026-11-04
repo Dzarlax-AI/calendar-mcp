@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"calendar-mcp/internal/calendar"
 )
 
 func newSQLiteStore(t *testing.T) *Store {
@@ -348,6 +350,40 @@ func TestCalendarEnabledDefaultsAndSurvivesRediscovery(t *testing.T) {
 	values, err = store.ListCalendars(ctx, item.ConnectionID)
 	if err != nil || len(values) != 1 || values[0].Enabled || values[0].Name != "Rediscovered" {
 		t.Fatalf("rediscovered calendars=%#v err=%v", values, err)
+	}
+}
+
+func TestRegisterDiscoveredCalendarPreservesSelectionAndMetadata(t *testing.T) {
+	store := newSQLiteStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, Connection{ID: "account", Provider: "google", AccountFingerprint: "account", Status: "connected", EncryptedCredentials: []byte("test"), CredentialVersion: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	item := calendar.Calendar{ID: "new", Name: "New", ReadOnly: true}
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@account", item); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, err := store.CalendarEnabled(ctx, "google:account:new"); err != nil || !enabled {
+		t.Fatalf("enabled=%v err=%v", enabled, err)
+	}
+	if err := store.SetCalendarEnabled(ctx, "google:account:new", false, now); err != nil {
+		t.Fatal(err)
+	}
+	item.Name, item.ReadOnly = "Changed", false
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@account", item); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListCalendars(ctx, "account")
+	if err != nil || len(items) != 1 || items[0].Enabled || items[0].CanWrite || items[0].Name != "New" {
+		t.Fatalf("calendars=%+v err=%v", items, err)
+	}
+	if err := store.RegisterDiscoveredCalendar(ctx, "apple@account", calendar.Calendar{ID: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListCalendars(ctx, "account")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("mismatched provider inserted calendar: %+v %v", items, err)
 	}
 }
 

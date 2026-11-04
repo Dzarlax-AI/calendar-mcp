@@ -22,6 +22,12 @@ type CalendarSelection interface {
 	CalendarEnabled(context.Context, string) (bool, error)
 }
 
+// CalendarDiscovery records calendars returned by a provider without changing
+// existing user choices. Only actual provider discovery calls this interface.
+type CalendarDiscovery interface {
+	RegisterDiscoveredCalendar(context.Context, string, Calendar) error
+}
+
 type RegistryOptions struct {
 	ExcludeIDs               []string
 	IncludeImportedCalendars bool
@@ -49,6 +55,15 @@ func (r *Registry) CalendarEnabled(ctx context.Context, provider Provider, rawID
 		return true, nil
 	}
 	return r.selection.CalendarEnabled(ctx, CanonicalCalendarID(provider, rawID))
+}
+
+func (r *Registry) DiscoveredCalendarEnabled(ctx context.Context, provider Provider, discovered Calendar) (bool, error) {
+	if discovery, ok := r.selection.(CalendarDiscovery); ok {
+		if err := discovery.RegisterDiscoveredCalendar(ctx, ProviderRouteName(provider), discovered); err != nil {
+			return false, err
+		}
+	}
+	return r.CalendarEnabled(ctx, provider, discovered.ID)
 }
 
 func (r *Registry) ResolveEnabled(ctx context.Context, id string) (Provider, string, error) {
@@ -109,6 +124,15 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 				// Providers may retain their raw slice; canonicalize only our own copy.
 				copied := append([]Calendar(nil), cals...)
 				for j := range copied {
+					enabled, selectionErr := r.DiscoveredCalendarEnabled(ctx, providers[i], copied[j])
+					if selectionErr != nil {
+						results[i].err = selectionErr
+						break
+					}
+					if !enabled {
+						copied[j].ID = ""
+						continue
+					}
 					copied[j].ID = CanonicalCalendarID(providers[i], copied[j].ID)
 					copied[j].Provider = providers[i].Name()
 				}
@@ -123,15 +147,7 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 			return nil, fmt.Errorf("%s: %w", providers[i].Name(), result.err)
 		}
 		for _, c := range result.calendars {
-			if r.selection == nil {
-				all = append(all, c)
-				continue
-			}
-			enabled, err := r.selection.CalendarEnabled(ctx, c.ID)
-			if err != nil {
-				return nil, fmt.Errorf("calendar selection unavailable: %w", err)
-			}
-			if enabled {
+			if c.ID != "" {
 				all = append(all, c)
 			}
 		}
@@ -181,7 +197,7 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 				if r.skipInFanOut(canonicalID) || r.skipInFanOut(legacyID) {
 					continue
 				}
-				enabled, err := r.CalendarEnabled(ctx, p, cal.ID)
+				enabled, err := r.DiscoveredCalendarEnabled(ctx, p, cal)
 				if err != nil {
 					providerErrs = append(providerErrs, err)
 					continue

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/credentials"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
@@ -364,6 +365,23 @@ func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
 		c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary)
 	if err != nil {
 		return fmt.Errorf("upsert calendar: %w", err)
+	}
+	return nil
+}
+
+// RegisterDiscoveredCalendar only inserts a new provider-returned calendar.
+// Existing permissions, primary metadata, and the user's selection are untouched.
+func (s *Store) RegisterDiscoveredCalendar(ctx context.Context, route string, item calendar.Calendar) error {
+	provider, connectionID, ok := strings.Cut(route, "@")
+	if !ok || provider == "" || connectionID == "" || item.ID == "" {
+		return nil
+	}
+	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary)
+		SELECT ?, id, ?, ?, '', ?, ?, ?, ?, ? FROM connections WHERE id=? AND provider=? AND status='connected'
+		ON CONFLICT(connection_id, provider_calendar_id) DO NOTHING`
+	_, err := s.db.ExecContext(ctx, s.query(q), calendar.AccountCalendarID(provider, connectionID, item.ID), item.ID, item.Name, true, !item.ReadOnly, false, time.Now().UTC(), false, connectionID, provider)
+	if err != nil {
+		return fmt.Errorf("register discovered calendar: %w", err)
 	}
 	return nil
 }

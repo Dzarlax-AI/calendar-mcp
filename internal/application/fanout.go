@@ -40,7 +40,7 @@ func (s *Service) listEventsFanOut(ctx context.Context, request calendar.ListEve
 				if s.registry.SkipInFanOut(prefixedID) {
 					continue
 				}
-				enabled, selectionErr := s.registry.CalendarEnabled(ctx, provider, cal.ID)
+				enabled, selectionErr := s.registry.DiscoveredCalendarEnabled(ctx, provider, cal)
 				if selectionErr != nil {
 					results <- failedSource(provider.Name(), prefixedID, selectionErr)
 					continue

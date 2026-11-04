@@ -17,6 +17,45 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+func TestPostgresRegisterDiscoveredCalendar(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	ctx := t.Context()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := "discovery-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, Connection{ID: id, Provider: "google", AccountFingerprint: id, Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(context.Background(), store.query("DELETE FROM calendars WHERE connection_id=?"), id)
+		_, _ = store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), id)
+	})
+	item := calendar.Calendar{ID: "new", Name: "New"}
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@"+id, item); err != nil {
+		t.Fatal(err)
+	}
+	calendarID := calendar.AccountCalendarID("google", id, item.ID)
+	if err := store.SetCalendarEnabled(ctx, calendarID, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterDiscoveredCalendar(ctx, "google@"+id, item); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, err := store.CalendarEnabled(ctx, calendarID); err != nil || enabled {
+		t.Fatalf("enabled=%v err=%v", enabled, err)
+	}
+}
+
 func TestPostgresStorageContract(t *testing.T) {
 	databaseURL := os.Getenv("TEST_POSTGRES_URL")
 	if databaseURL == "" {
