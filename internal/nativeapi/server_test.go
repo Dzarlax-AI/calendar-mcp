@@ -571,6 +571,15 @@ func TestCachedEventsSelfResponseProjection(t *testing.T) {
 	prepareCachedCalendar(t, store, "google:primary")
 	event := calendar.EventV2{ID: "instance", CalendarID: "google:primary", Provider: "google", Title: "Instance", Status: "confirmed", RecurringEventID: "series", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}, Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true, Email: "secret@example.com"}, Status: "declined"}}}
 	path := "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:primary"
+	if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(handler, http.MethodGet, path, "read-only-token"); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("unverified primary: %d %s", w.Code, w.Body.String())
+	}
+	if err := store.SetGooglePrimaryCalendar(t.Context(), "account", "primary"); err != nil {
+		t.Fatal(err)
+	}
 	for _, status := range []string{"declined", "accepted", ""} {
 		if status == "" {
 			event.Attendees = nil
@@ -600,6 +609,16 @@ func TestCachedEventsSelfResponseProjection(t *testing.T) {
 		if strings.Contains(w.Body.String(), "attendees") || strings.Contains(w.Body.String(), "secret@example.com") {
 			t.Fatalf("private data: %s", w.Body.String())
 		}
+	}
+	if err := store.ClearGooglePrimaryCalendars(t.Context(), "account"); err != nil {
+		t.Fatal(err)
+	}
+	event.Attendees = []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true}, Status: "declined"}}
+	if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(handler, http.MethodGet, path, "read-only-token"); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("cleared primary: %d %s", w.Code, w.Body.String())
 	}
 	if provider.listCalls != 0 {
 		t.Fatalf("provider called %d times", provider.listCalls)

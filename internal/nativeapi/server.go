@@ -162,7 +162,7 @@ func (s *Server) calendars(r *http.Request) ([]calendarResponse, error) {
 			continue
 		}
 		canWrite := s.writesEnabled && item.CanWrite
-		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite, googlePrimary: strings.HasPrefix(item.ID, "google:") && (item.ProviderCalendarID == "primary" || item.GooglePrimary)})
+		result = append(result, calendarResponse{ID: item.ID, Name: item.Name, TimeZone: item.Timezone, CanRead: true, CanWrite: canWrite, ReadOnly: !canWrite, googlePrimary: strings.HasPrefix(item.ID, "google:") && item.GooglePrimary})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
