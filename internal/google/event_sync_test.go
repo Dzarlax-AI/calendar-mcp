@@ -440,3 +440,17 @@ func sameStrings(got, want []string) bool {
 	}
 	return true
 }
+
+func TestSyncEventsPreservesSelfResponse(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"items":[{"id":"instance","recurringEventId":"series","start":{"dateTime":"2026-08-20T09:00:00Z"},"end":{"dateTime":"2026-08-20T10:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]}],"nextSyncToken":"cursor"}`)
+	})
+	defer closeServer()
+	page, err := provider.SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "primary", Window: syncWindow(), Mode: calendar.EventSyncReplacement})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Upserts) != 1 || len(page.Upserts[0].Event.Attendees) != 1 || !page.Upserts[0].Event.Attendees[0].Self || page.Upserts[0].Event.Attendees[0].Status != "declined" {
+		t.Fatalf("upserts = %#v", page.Upserts)
+	}
+}

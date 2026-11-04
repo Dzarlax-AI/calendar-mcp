@@ -155,6 +155,8 @@ func migrationName(version int) string {
 		return "event_sync_repair_authorization"
 	case 6:
 		return "event_sync_provider_corrections"
+	case 7:
+		return "google_primary_calendar"
 	default:
 		return ""
 	}
@@ -352,21 +354,31 @@ func scanConnection(row rowScanner) (Connection, error) {
 }
 
 func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
-	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(connection_id, provider_calendar_id) DO UPDATE SET
+	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(connection_id, provider_calendar_id) DO UPDATE SET
 		name=excluded.name, timezone=excluded.timezone, can_read=excluded.can_read, can_write=excluded.can_write,
-		supports_recurrence=excluded.supports_recurrence, discovered_at=excluded.discovered_at`
+		supports_recurrence=excluded.supports_recurrence, discovered_at=excluded.discovered_at, google_primary=excluded.google_primary`
 	_, err := s.db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone,
-		c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt)
+		c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary)
 	if err != nil {
 		return fmt.Errorf("upsert calendar: %w", err)
 	}
 	return nil
 }
 
+func (s *Store) ClearGooglePrimaryCalendars(ctx context.Context, connectionID string) error {
+	_, err := s.db.ExecContext(ctx, s.query(`UPDATE calendars SET google_primary=? WHERE connection_id=?`), false, connectionID)
+	return err
+}
+
+func (s *Store) SetGooglePrimaryCalendar(ctx context.Context, connectionID, providerCalendarID string) error {
+	_, err := s.db.ExecContext(ctx, s.query(`UPDATE calendars SET google_primary=(provider_calendar_id=? AND ? <> '') WHERE connection_id=?`), providerCalendarID, providerCalendarID, connectionID)
+	return err
+}
+
 func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calendar, error) {
 	rows, err := s.db.QueryContext(ctx, s.query(`SELECT id, connection_id, provider_calendar_id, name, timezone,
-		can_read, can_write, supports_recurrence, discovered_at FROM calendars WHERE connection_id = ? ORDER BY name`), connectionID)
+		can_read, can_write, supports_recurrence, discovered_at, google_primary FROM calendars WHERE connection_id = ? ORDER BY name`), connectionID)
 	if err != nil {
 		return nil, fmt.Errorf("list calendars: %w", err)
 	}
@@ -374,7 +386,7 @@ func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calen
 	var result []Calendar
 	for rows.Next() {
 		var c Calendar
-		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary); err != nil {
 			return nil, err
 		}
 		result = append(result, c)
@@ -384,7 +396,7 @@ func (s *Store) ListCalendars(ctx context.Context, connectionID string) ([]Calen
 
 func (s *Store) ListAllCalendars(ctx context.Context) ([]Calendar, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, connection_id, provider_calendar_id, name, timezone,
-		can_read, can_write, supports_recurrence, discovered_at FROM calendars ORDER BY name`)
+		can_read, can_write, supports_recurrence, discovered_at, google_primary FROM calendars ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list all calendars: %w", err)
 	}
@@ -392,7 +404,7 @@ func (s *Store) ListAllCalendars(ctx context.Context) ([]Calendar, error) {
 	var result []Calendar
 	for rows.Next() {
 		var c Calendar
-		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.ConnectionID, &c.ProviderCalendarID, &c.Name, &c.Timezone, &c.CanRead, &c.CanWrite, &c.SupportsRecurrence, &c.DiscoveredAt, &c.GooglePrimary); err != nil {
 			return nil, err
 		}
 		result = append(result, c)

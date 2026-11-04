@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -184,7 +185,12 @@ func TestPostgresEventReadModelIntegration(t *testing.T) {
 	calendarID := "event-read-model-calendar-" + suffix
 	now := time.Now().UTC()
 	t.Cleanup(func() {
-		_, _ = store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), connectionID)
+		if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM calendars WHERE id=?"), calendarID); err != nil {
+			t.Errorf("delete test calendar: %v", err)
+		}
+		if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), connectionID); err != nil {
+			t.Errorf("delete test connection: %v", err)
+		}
 	})
 	if err := store.CreateConnection(t.Context(), Connection{ID: connectionID, Provider: "google", DisplayName: "Integration", Status: "connected", EncryptedCredentials: []byte("test"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -1016,5 +1022,41 @@ func assertSchemaVersion(t *testing.T, store *Store, want int) {
 	}
 	if got != want {
 		t.Fatalf("schema version = %d, want %d", got, want)
+	}
+}
+
+func TestGooglePrimaryMigrationPreservesExistingCalendars(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "v6.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for version := 1; version <= 6; version++ {
+		path := fmt.Sprintf("migrations/sqlite/%03d_%s.sql", version, migrationName(version))
+		script, err := migrations.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, string(script)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", version, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO connections(id, provider, account_fingerprint, display_name, status, encrypted_credentials, credential_version, created_at, updated_at) VALUES ('a','google','fp','A','connected',?,1,?,?)`, []byte("synthetic"), now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, can_read, can_write, supports_recurrence, discovered_at) VALUES ('google:a:old','a','old','Old',1,0,0,?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	calendars, err := store.ListCalendars(ctx, "a")
+	if err != nil || len(calendars) != 1 || calendars[0].GooglePrimary || calendars[0].Name != "Old" {
+		t.Fatalf("calendars=%#v err=%v", calendars, err)
 	}
 }

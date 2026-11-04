@@ -29,6 +29,19 @@ func TestPostgresStorageContract(t *testing.T) {
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, q := range []string{
+			`DELETE FROM oauth_attempts WHERE state_hash IN ('state','expired')`,
+			`DELETE FROM sync_rules WHERE id IN ('rule','parallel-claim-rule','finish-recovery-rule')`,
+			`DELETE FROM calendars WHERE id IN ('microsoft:ms:source-provider','google:google:target-provider')`,
+			`DELETE FROM connections WHERE id IN ('ms','google','second-pending')`,
+		} {
+			if _, err := store.db.ExecContext(ctx, q); err != nil {
+				t.Errorf("clean storage contract fixture: %v", err)
+			}
+		}
+	})
 	runStorageContract(t, store)
 	testPostgresClaimsOnlyOneJobPerRule(t, databaseURL, store)
 	testPostgresFinishAndRecoveryUseConsistentLockOrder(t, databaseURL, store)
@@ -133,8 +146,9 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 	degradedRetry := degradedAt.Add(5 * time.Minute)
 	if err := store.ApplyEventSyncPage(ctx, *degraded, EventSyncBatch{
 		FullSync: true, Degraded: true, ErrorCode: "protocol",
-		Upserts: []CachedEventUpsert{event("valid-a", "valid-a.ics", "valid A refreshed"), event("valid-b", "valid-b.ics", "valid B refreshed")},
-		Objects: []SyncObject{{ObjectID: "valid-a.ics", ETag: "a-v2"}, {ObjectID: "valid-b.ics", ETag: "b-v2"}},
+		Warnings: []EventSyncWarning{{ObjectID: "malformed.ics", ErrorCode: "protocol", ETag: "m-v1"}},
+		Upserts:  []CachedEventUpsert{event("valid-a", "valid-a.ics", "valid A refreshed"), event("valid-b", "valid-b.ics", "valid B refreshed")},
+		Objects:  []SyncObject{{ObjectID: "valid-a.ics", ETag: "a-v2"}, {ObjectID: "valid-b.ics", ETag: "b-v2"}},
 		// A provider cursor returned alongside a malformed object is not
 		// authoritative and must not replace the last successful cursor.
 		NextCursor: "must-not-advance-on-malformed-object", NextSyncAt: &degradedRetry,
@@ -156,7 +170,7 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 	if seen["valid-a"].Title != "valid A refreshed" || seen["valid-b"].Title != "valid B refreshed" || seen["old-malformed"].Title != "old unresolved membership" {
 		t.Fatalf("degraded projection=%#v", seen)
 	}
-	if len(statuses) != 1 || statuses[0].Status != "degraded" || statuses[0].ErrorCode != "protocol" || statuses[0].LastSuccessAt == nil || !statuses[0].LastSuccessAt.Equal(beforeSuccess) {
+	if len(statuses) != 1 || statuses[0].Status != "degraded" || statuses[0].ErrorCode != "protocol" || statuses[0].LastSuccessAt == nil || !statuses[0].LastSuccessAt.Equal(degradedAt) {
 		t.Fatalf("degraded source status=%#v", statuses)
 	}
 
@@ -169,7 +183,7 @@ func TestPostgresEventReadModelMalformedObjectParityFixture(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, store.query("SELECT cursor, status, generation, last_success_at, last_error_code, lease_owner, lease_until FROM calendar_sync_state WHERE calendar_id=?"), calendarID).Scan(&cursor, &status, &generation, &success, &code, &leaseOwner, &leaseUntil); err != nil {
 		t.Fatal(err)
 	}
-	if cursor != beforeCursor || generation != degraded.Generation || !success.Equal(beforeSuccess) || status != "degraded" || !code.Valid || code.String != "protocol" || leaseOwner.Valid || leaseUntil.Valid {
+	if cursor != beforeCursor || generation != degraded.Generation || !success.Equal(degradedAt) || status != "degraded" || !code.Valid || code.String != "protocol" || leaseOwner.Valid || leaseUntil.Valid {
 		t.Fatalf("degraded state cursor=%q generation=%d success=%s status=%q code=%q lease=%q/%v", cursor, generation, success, status, code.String, leaseOwner.String, leaseUntil)
 	}
 	var afterObjectGeneration int64
@@ -345,5 +359,73 @@ func testPostgresFinishAndRecoveryUseConsistentLockOrder(t *testing.T, databaseU
 		if _, err := first.db.ExecContext(ctx, first.query(`DELETE FROM sync_jobs WHERE id=?`), jobID); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestPostgresGooglePrimarySelection(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	a, b := "primary-a-"+suffix, "primary-b-"+suffix
+	now := time.Now().UTC()
+	for _, id := range []string{a, b} {
+		if err := store.CreateConnection(ctx, Connection{ID: id, Provider: "google", AccountFingerprint: id, DisplayName: id, Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM calendars WHERE connection_id=?"), id); err != nil {
+				t.Errorf("delete test calendars: %v", err)
+			}
+			if _, err := store.db.ExecContext(context.Background(), store.query("DELETE FROM connections WHERE id=?"), id); err != nil {
+				t.Errorf("delete test connection: %v", err)
+			}
+		})
+		for _, providerID := range []string{"owner", "shared"} {
+			if err := store.UpsertCalendar(ctx, Calendar{ID: id + ":" + providerID, ConnectionID: id, ProviderCalendarID: providerID, Name: providerID, CanRead: true, DiscoveredAt: now}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := store.SetGooglePrimaryCalendar(ctx, a, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGooglePrimaryCalendar(ctx, b, "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGooglePrimaryCalendar(ctx, a, ""); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := store.ListCalendars(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range ca {
+		if c.GooglePrimary {
+			t.Fatalf("unexpected primary: %#v", ca)
+		}
+	}
+	cb, err := store.ListCalendars(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range cb {
+		if c.ProviderCalendarID == "shared" && c.GooglePrimary {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("other connection changed: %#v", cb)
 	}
 }

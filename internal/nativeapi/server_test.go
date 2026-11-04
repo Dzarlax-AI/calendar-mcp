@@ -537,3 +537,143 @@ func TestNativeCachedCoverageUnknownUntilChangedWindowFinishes(t *testing.T) {
 		t.Fatalf("read-only diagnostics invoked provider %d times", provider.listCalls)
 	}
 }
+
+func TestCachedSelfResponseStatus(t *testing.T) {
+	self := func(status string) calendar.AttendeeV2 {
+		return calendar.AttendeeV2{PersonV2: calendar.PersonV2{Self: true}, Status: status}
+	}
+	for _, tt := range []struct {
+		name, id, provider, want string
+		attendees                []calendar.AttendeeV2
+	}{
+		{"accepted", "google:primary", "google", "accepted", []calendar.AttendeeV2{self("accepted")}},
+		{"declined", "google:primary", "google", "declined", []calendar.AttendeeV2{self("declined")}},
+		{"tentative", "google:primary", "", "tentative", []calendar.AttendeeV2{self("tentative")}},
+		{"needs action", "google:primary", "google", "needsAction", []calendar.AttendeeV2{self("needsAction")}},
+		{"no self", "google:primary", "google", "", []calendar.AttendeeV2{{Status: "declined"}}},
+		{"duplicate self", "google:primary", "google", "", []calendar.AttendeeV2{self("declined"), self("accepted")}},
+		{"unknown", "google:primary", "google", "", []calendar.AttendeeV2{self("other")}},
+		{"empty", "google:primary", "google", "", []calendar.AttendeeV2{self("")}},
+		{"microsoft", "microsoft:primary", "microsoft", "", []calendar.AttendeeV2{self("declined")}},
+		{"apple", "apple:primary", "apple", "", []calendar.AttendeeV2{self("declined")}},
+		{"mismatch", "google:primary", "apple", "", []calendar.AttendeeV2{self("declined")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cachedSelfResponseStatus(calendar.EventV2{CalendarID: tt.id, Provider: tt.provider, Attendees: tt.attendees}, true); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCachedEventsSelfResponseProjection(t *testing.T) {
+	handler, provider, store := testHandler(t, false)
+	prepareCachedCalendar(t, store, "google:primary")
+	event := calendar.EventV2{ID: "instance", CalendarID: "google:primary", Provider: "google", Title: "Instance", Status: "confirmed", RecurringEventID: "series", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}, Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true, Email: "secret@example.com"}, Status: "declined"}}}
+	path := "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:primary"
+	if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(handler, http.MethodGet, path, "read-only-token"); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("unverified primary: %d %s", w.Code, w.Body.String())
+	}
+	if err := store.SetGooglePrimaryCalendar(t.Context(), "account", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"declined", "accepted", ""} {
+		if status == "" {
+			event.Attendees = nil
+		} else {
+			event.Attendees = []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true, Email: "secret@example.com"}, Status: status}}
+		}
+		if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		w := request(handler, http.MethodGet, path, "read-only-token")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", w.Code, w.Body.String())
+		}
+		var raw struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		if len(raw.Items) != 1 {
+			t.Fatalf("items = %#v", raw.Items)
+		}
+		got, present := raw.Items[0]["self_response_status"]
+		if status == "" && present || status != "" && got != status {
+			t.Fatalf("status %q: %s", status, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "attendees") || strings.Contains(w.Body.String(), "secret@example.com") {
+			t.Fatalf("private data: %s", w.Body.String())
+		}
+	}
+	if err := store.ClearGooglePrimaryCalendars(t.Context(), "account"); err != nil {
+		t.Fatal(err)
+	}
+	event.Attendees = []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true}, Status: "declined"}}
+	if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(handler, http.MethodGet, path, "read-only-token"); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("cleared primary: %d %s", w.Code, w.Body.String())
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("provider called %d times", provider.listCalls)
+	}
+}
+
+func TestCachedEventsOmitsSharedCalendarResponse(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	now := time.Now().UTC()
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:account:shared", ConnectionID: "account", ProviderCalendarID: "shared@example.com", Name: "Shared", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	prepareCachedCalendar(t, store, "google:account:shared")
+	event := calendar.EventV2{ID: "shared-event", CalendarID: "google:account:shared", Provider: "google", Start: calendar.EventTime{Date: "2026-08-28"}, End: calendar.EventTime{Date: "2026-08-29"}, Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true}, Status: "declined"}}}
+	if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+		t.Fatal(err)
+	}
+	w := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id=google:account:shared", "read-only-token")
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || len(response.Items) != 1 || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("response = %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCachedEventsDiscoveredGooglePrimary(t *testing.T) {
+	handler, _, store := testHandler(t, false)
+	now := time.Now().UTC()
+	for _, c := range []storage.Calendar{
+		{ID: "google:account:owner@example.test", ConnectionID: "account", ProviderCalendarID: "owner@example.test", GooglePrimary: true, Name: "Owner", CanRead: true, DiscoveredAt: now},
+		{ID: "google:account:shared@example.test", ConnectionID: "account", ProviderCalendarID: "shared@example.test", Name: "Shared", CanRead: true, DiscoveredAt: now},
+	} {
+		if err := store.UpsertCalendar(t.Context(), c); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.EnsureCalendarSyncStates(t.Context(), now, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}); err != nil {
+			t.Fatal(err)
+		}
+		event := calendar.EventV2{ID: "event", CalendarID: c.ID, Provider: "google", Start: calendar.EventTime{Date: "2026-08-28"}, End: calendar.EventTime{Date: "2026-08-29"}, Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true}, Status: "declined"}}}
+		if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z", "read-only-token")
+	var result cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, item := range result.Items {
+		got[item.CalendarID] = item.SelfResponseStatus
+	}
+	if w.Code != http.StatusOK || len(got) != 2 || got["google:account:owner@example.test"] != "declined" || got["google:account:shared@example.test"] != "" {
+		t.Fatalf("response: %s", w.Body.String())
+	}
+}

@@ -211,6 +211,8 @@ Health endpoints:
 | `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; modern requires `ENABLE_V2=true` |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
+Schema version 7 records Google primary-calendar discovery. An older binary rejects this newer schema, so rollback requires a separately planned database recovery as well as a compatible binary.
+
 The API fails closed when `API_KEY`, `NATIVE_APP_TOKEN`, and `READ_ONLY_TOKEN` are all empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
 
 ### Platform mode
@@ -239,6 +241,8 @@ NATIVE_APP_TRUSTED_PROXY=true \
 Persist both generated values in deployment secrets before starting the service: changing `CALENDAR_ENCRYPTION_KEY` makes existing provider credentials unreadable, and changing `NATIVE_APP_TOKEN` disconnects configured app clients. Requests must send `Authorization: Bearer <NATIVE_APP_TOKEN>`. The available routes are `GET /api/native/v1/bootstrap` and `GET /api/native/v1/events`. With the default `NATIVE_APP_WRITES_ENABLED=false`, no event-mutation routes are exposed. When the explicit opt-in is enabled, `POST /api/native/v1/events` and `PATCH /api/native/v1/events/{calendar_id}/{event_id}` are available for ordinary events; provider notifications remain forced off. The token is never returned by the Settings page or any API response.
 
 `READ_ONLY_TOKEN` is independent from `NATIVE_APP_TOKEN` and enables only `GET /api/native/v1/cached-events` and `GET /api/native/v1/calendars`. Cached events read the local projection exclusively and return `503` when the event read model is unavailable. The calendar catalog reads stored readable calendars, sorted by name, and always reports them as read-only; it returns `503` with `catalog_too_large` if more than 2000 are readable. Neither route discovers providers. The token never authorizes `/bootstrap`, `/events`, or any write route.
+
+Cached events may include `self_response_status` for the connected account’s Google primary calendar, confirmed by provider discovery, when exactly one attendee is marked as self and has a recognized response: `accepted`, `declined`, `tentative`, or `needsAction`. This identifies the connected account, which is not necessarily the owner of a shared calendar. Other Google calendars, Microsoft, Apple, missing, and ambiguous responses omit the field. Existing calendar records default to unknown until the Google connection is verified again; discovery does not automatically run as part of the schema migration. Consumers can hide only `declined` and keep unknown responses visible. No attendee list or attendee identity is exposed. The response is as current as the cached source; consult the existing source freshness indicators. Older cached entries without the necessary attendee data remain unknown until refreshed.
 
 Examples:
 
