@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -52,6 +52,24 @@ type Run struct {
 	WarningCount                        int
 	ErrorCode, ErrorSummary             string
 	DryRun                              bool
+	Preview                             *SyncRunPreview
+}
+
+// SyncRunPreview contains bounded private details for a completed dry run.
+type SyncRunPreview struct {
+	Entries   []SyncRunPreviewEntry `json:"entries"`
+	Total     int                   `json:"total"`
+	Truncated bool                  `json:"truncated"`
+}
+
+// SyncRunPreviewEntry describes a single estimated sync action.
+type SyncRunPreviewEntry struct {
+	Action       string             `json:"action"`
+	Title        string             `json:"title"`
+	Start        calendar.EventTime `json:"start"`
+	Kind         string             `json:"kind"`
+	Reason       string             `json:"reason"`
+	TargetStatus string             `json:"target_status"`
 }
 
 type Mapping struct {

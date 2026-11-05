@@ -35,7 +35,30 @@ func (e *Failure) Is(target error) bool { return target == errJobLeaseStage && e
 // ErrMissingSeriesMapping identifies an exception whose source series has no target mapping.
 var ErrMissingSeriesMapping = errors.New("source series has no target mapping")
 
-type Result struct{ Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int }
+type Result struct {
+	Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int
+	Preview                                                      *storage.SyncRunPreview
+}
+
+func previewAction(preview *storage.SyncRunPreview, event calendar.EventV2, action, reason, targetStatus string) {
+	if preview == nil {
+		return
+	}
+	preview.Total++
+	if len(preview.Entries) >= 1000 {
+		preview.Truncated = true
+		return
+	}
+	title := []rune(event.Title)
+	if len(title) > 512 {
+		title = title[:512]
+	}
+	start := event.Start
+	if start.Date == "" && start.DateTime == "" && event.OriginalStart != nil {
+		start = *event.OriginalStart
+	}
+	preview.Entries = append(preview.Entries, storage.SyncRunPreviewEntry{Action: action, Title: string(title), Start: start, Kind: objectKind(event), Reason: reason, TargetStatus: targetStatus})
+}
 
 type RecurrenceCompatibilityError struct{ Cause error }
 
@@ -136,9 +159,13 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 	}
 	events = deduplicateAndOrder(events)
 	availableSeries := make(map[string]bool)
+	seriesTitles := make(map[string]string)
 	for _, event := range events {
-		if objectKind(event) == "series" && event.Status != "cancelled" {
-			availableSeries[event.ID] = true
+		if objectKind(event) == "series" {
+			seriesTitles[event.ID] = event.Title
+			if event.Status != "cancelled" {
+				availableSeries[event.ID] = true
+			}
 		}
 	}
 	// Once a rule mirrors a series as individual instances, keep that mode even
@@ -213,9 +240,17 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 	occurrences := indexOccurrences(events)
 	seen := map[string]bool{}
 	result := Result{Warnings: len(activeDetached), DetachedSeries: len(activeDetached)}
+	if dryRun {
+		result.Preview = &storage.SyncRunPreview{Entries: []storage.SyncRunPreviewEntry{}}
+	}
 	for _, event := range events {
+		previewEvent := event
+		if previewEvent.Title == "" && seriesTitles[previewEvent.RecurringEventID] != "" {
+			previewEvent.Title = "Series: " + seriesTitles[previewEvent.RecurringEventID]
+		}
 		if isPlainOccurrence(event) {
 			result.Skipped++
+			previewAction(result.Preview, previewEvent, "skip", "part_of_series", "not_checked")
 			continue
 		}
 		originalStart := eventOriginalStart(event)
@@ -234,6 +269,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 				}
 				if copy != nil {
 					result.Deleted++
+					previewAction(result.Preview, previewEvent, "delete", "cancelled_recovered_copy", "found")
 					if !dryRun {
 						if _, err := target.DeleteEventV2(ctx, calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: copy.ID}, Scope: scopeFor(event), Notifications: calendar.NotificationsNone}); err != nil {
 							return result, err
@@ -241,6 +277,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 					}
 				} else {
 					result.Skipped++
+					previewAction(result.Preview, previewEvent, "skip", "cancelled_copy_not_found", "not_found")
 				}
 				if !dryRun {
 					if err := e.mappings.DeleteMapping(ctx, mapping.ID); err != nil {
@@ -262,8 +299,10 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 			if dryRun {
 				if event.Status == "cancelled" {
 					result.Deleted++
+					previewAction(result.Preview, previewEvent, "delete", "cancelled_series_instance", "not_checked")
 				} else {
 					result.Updated++
+					previewAction(result.Preview, previewEvent, "update", "series_exception", "not_checked")
 				}
 				continue
 			}
@@ -320,6 +359,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		if event.Status == "cancelled" {
 			if mapped {
 				result.Deleted++
+				previewAction(result.Preview, previewEvent, "delete", "cancelled_mapped_event", "not_checked")
 				if !dryRun {
 					if _, err := target.DeleteEventV2(ctx, calendar.DeleteEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Scope: scopeFor(event), Notifications: calendar.NotificationsNone}); err != nil {
 						return result, fmt.Errorf("delete cancelled target event: %w", err)
@@ -330,12 +370,14 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 				}
 			} else {
 				result.Skipped++
+				previewAction(result.Preview, previewEvent, "skip", "cancelled_without_mapping", "not_checked")
 			}
 			continue
 		}
 		if !mapped {
 			if dryRun {
 				result.Created++
+				previewAction(result.Preview, previewEvent, "create", "no_mapping", "not_checked")
 				if objectKind(event) == "series" {
 					byKey[key] = storage.Mapping{ObjectKind: "series", SourceEventID: event.ID}
 				}
@@ -384,6 +426,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		}
 		if mapping.ContentHash == hash {
 			result.Skipped++
+			previewAction(result.Preview, previewEvent, "skip", "unchanged_mapping", "not_checked")
 			if !dryRun {
 				mapping.LastSeenAt = now
 				if err := e.mappings.UpsertMapping(ctx, mapping); err != nil {
@@ -394,6 +437,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		}
 		result.Updated++
 		if dryRun {
+			previewAction(result.Preview, previewEvent, "update", "changed_mapping", "not_checked")
 			continue
 		}
 		_, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorPatch(event), Scope: scopeFor(event), Notifications: calendar.NotificationsNone})
@@ -412,6 +456,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		if mapping.ObjectKind == "exception" {
 			if occurrence, ok := occurrences[seriesOccurrenceKey(mapping.SourceSeriesID, mapping.OriginalStart)]; ok {
 				result.Updated++
+				previewAction(result.Preview, occurrence, "update", "restore_series_occurrence", "not_checked")
 				if !dryRun {
 					if _, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorPatch(occurrence), Scope: calendar.ScopeSingle, Notifications: calendar.NotificationsNone}); err != nil {
 						return result, fmt.Errorf("restore target occurrence after removed exception: %w", err)

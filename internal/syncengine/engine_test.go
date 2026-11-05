@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -691,6 +692,14 @@ func TestMissingSeriesCopiesInstancesAndKeepsDetachedMode(t *testing.T) {
 	if err != nil || result.Created != 2 || result.Skipped != 1 || target.created != 0 || len(mappings.values) != 0 {
 		t.Fatalf("dry run: %#v %v", result, err)
 	}
+	if result.Preview == nil || result.Preview.Total != result.Created+result.Updated+result.Deleted+result.Skipped || len(result.Preview.Entries) != 3 {
+		t.Fatalf("preview does not match counters: %#v", result.Preview)
+	}
+	for _, item := range result.Preview.Entries {
+		if item.TargetStatus != "not_checked" {
+			t.Fatalf("unverified target reported as %q", item.TargetStatus)
+		}
+	}
 	result, err = engine.Run(t.Context(), rule, false)
 	if err != nil || result.Created != 2 || target.created != 2 || len(mappings.values) != 2 {
 		t.Fatalf("run: %#v %v", result, err)
@@ -705,6 +714,37 @@ func TestMissingSeriesCopiesInstancesAndKeepsDetachedMode(t *testing.T) {
 	result, err = engine.Run(t.Context(), rule, false)
 	if err != nil || result.Created != 0 || target.created != 2 || target.deleted != 0 {
 		t.Fatalf("repeat with master: %#v %v", result, err)
+	}
+}
+
+func TestPreviewIsBoundedAndUsesOriginalTimeForCancellation(t *testing.T) {
+	preview := &storage.SyncRunPreview{}
+	day := calendar.EventTime{Date: "2026-11-05"}
+	event := calendar.EventV2{Title: strings.Repeat("x", 600), OriginalStart: &day}
+	for i := 0; i < 1001; i++ {
+		previewAction(preview, event, "delete", "cancelled_series_instance", "not_checked")
+	}
+	if preview.Total != 1001 || len(preview.Entries) != 1000 || !preview.Truncated || len(preview.Entries[0].Title) != 512 || preview.Entries[0].Start.Date != day.Date {
+		t.Fatalf("unexpected bounded preview: total=%d entries=%d truncated=%v", preview.Total, len(preview.Entries), preview.Truncated)
+	}
+}
+
+func TestPreviewLabelsNewSeriesExceptionAsUnverified(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-11-05"}
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Start: day, End: calendar.EventTime{Date: "2026-11-06"}, Recurrence: []string{"RRULE:FREQ=DAILY"}}
+	cancelled := calendar.EventV2{ID: "cancelled", InstanceKind: "cancelled", Status: "cancelled", RecurringEventID: "master", OriginalStart: &day}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{master, cancelled}}
+	target := &fakeV2Provider{name: "apple"}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 1 || result.Deleted != 1 || result.Preview.Total != 2 {
+		t.Fatalf("result %#v %v", result, err)
+	}
+	entry := result.Preview.Entries[1]
+	if entry.Action != "delete" || entry.TargetStatus != "not_checked" || entry.Start.Date != day.Date || target.created != 0 || target.deleted != 0 || len(mappings.values) != 0 {
+		t.Fatalf("unsafe preview %#v", entry)
 	}
 }
 

@@ -1,4 +1,5 @@
 import type { Bootstrap, CalendarRecord, EventCreateRequest, EventListResponse, EventRecord, EventSourceStatus, EventTime, EventUpdateRequest, RawCalendarCapabilities, RunRecord, SyncArtifact, SyncDiagnosticCalendar, SyncDiagnostics, SyncProviderCorrection, SyncRule } from "./types";
+import type { SyncPreview } from "./types";
 
 const API_ROOT = "/api/ui";
 const MAX_BROWSER_WARNINGS = 3;
@@ -61,6 +62,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function getBootstrap(): Promise<Bootstrap> {
   return request<RawBootstrap>("/bootstrap").then(normalizeBootstrap);
+}
+
+export function getSyncRunPreview(id: string): Promise<SyncPreview> {
+  return request<SyncPreview>(`/runs/${encodeURIComponent(id)}/preview`);
 }
 
 type RawSyncDiagnosticItem = { calendar_id: string; object_id: string; etag?: string; error_code?: string; calendar_name?: string; provider?: string; sync_status?: string; last_error_code?: string; first_seen_at?: string; last_seen_at?: string; next_repair_at?: string; repair_attempts?: number; last_success_at?: string | null; artifact?: { etag?: string } | null };

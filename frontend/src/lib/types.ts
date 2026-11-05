@@ -59,6 +59,9 @@ export type RunRecord = {
   deletedCount?: number;
 };
 
+export type SyncPreviewEntry = { action: string; title: string; start: { date?: string; date_time?: string }; kind: string; reason: string; target_status: string };
+export type SyncPreview = { status: "available" | "unavailable" | "expired"; preview?: { entries: SyncPreviewEntry[]; total: number; truncated: boolean } };
+
 export type Settings = {
   email?: string;
   publicURL?: string;

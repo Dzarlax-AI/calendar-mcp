@@ -74,6 +74,36 @@ describe("calendar display setting", () => {
 });
 
 describe("sync activity", () => {
+  it("shows an error when preview loading fails", async () => {
+    bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "View dry run details");
+    await act(async () => { button?.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load dry run details");
+  });
+  it.each([["unavailable", "Run a new dry run"], ["expired", "expired after seven days"]])("explains %s preview details", async (status, message) => {
+    bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ status }), { status: 200 })));
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "View dry run details");
+    await act(async () => { button?.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain(message);
+  });
+  it("shows estimated actions and warns when the target was not checked", async () => {
+    bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "available", preview: { total: 1, truncated: false, entries: [{ action: "delete", title: "Synthetic meeting", start: { date: "2026-11-05" }, kind: "exception", reason: "cancelled_series_instance", target_status: "not_checked" }] } }), { status: 200 })));
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "View dry run details");
+    expect(button).toBeDefined();
+    await act(async () => { button?.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("Synthetic meeting");
+    expect(container.textContent).toContain("Target not checked");
+    expect(container.textContent).toContain("estimates, not a guarantee");
+    const action = container.querySelector<HTMLSelectElement>("select");
+    await act(async () => { if (action) { action.value = "create"; action.dispatchEvent(new Event("change", { bubbles: true })); } });
+    expect(container.textContent).not.toContain("Synthetic meeting");
+  });
   it("shows the server explanation for a successful standalone fallback", () => {
     bootstrap.runs = [{ id: "run", status: "succeeded", outcome: "succeeded", message: "Some recurring events are mirrored as individual events because their source series was unavailable." }];
     act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
