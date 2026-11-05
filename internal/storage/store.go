@@ -160,6 +160,8 @@ func migrationName(version int) string {
 		return "google_primary_calendar"
 	case 8:
 		return "calendar_enabled"
+	case 9:
+		return "calendar_display_settings"
 	default:
 		return ""
 	}
@@ -779,4 +781,26 @@ func nullString(v string) any {
 		return nil
 	}
 	return v
+}
+
+// HideDeclinedEvents returns the service-wide calendar display preference.
+func (s *Store) HideDeclinedEvents(ctx context.Context) (bool, error) {
+	var hidden bool
+	err := s.db.QueryRowContext(ctx, "SELECT hide_declined FROM calendar_display_settings WHERE id=1").Scan(&hidden)
+	return hidden, err
+}
+
+func (s *Store) SetHideDeclinedEvents(ctx context.Context, hidden bool) error {
+	result, err := s.db.ExecContext(ctx, s.query("UPDATE calendar_display_settings SET hide_declined=? WHERE id=1"), hidden)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	return nil
 }

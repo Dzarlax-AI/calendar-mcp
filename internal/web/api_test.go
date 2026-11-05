@@ -30,6 +30,8 @@ func TestSafeRunSummaryShowsOnlyBoundedStandaloneWarning(t *testing.T) {
 		{"standalone", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.DetachedSeriesWarning}, syncengine.DetachedSeriesWarning},
 		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run failed; inspect server logs for details."},
 		{"failed run", storage.Run{Outcome: "failed", ErrorSummary: syncengine.DetachedSeriesWarning}, "Run failed; inspect server logs for details."},
+		{"known failure", storage.Run{Outcome: "failed", ErrorCode: "sync_missing_series_mapping", ErrorSummary: "private-title token=secret"}, "A recurring event exception has no matching series in the sync mapping."},
+		{"unknown failure", storage.Run{Outcome: "failed", ErrorCode: "private-token", ErrorSummary: "private-title"}, "Run failed; inspect server logs for details."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := safeRunSummary(tt.run); got != tt.want {
@@ -968,5 +970,74 @@ func TestCalendarSelectionRequiresCSRFAndUpdatesControlPlane(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
 		t.Fatalf("control plane %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCalendarDisplaySettingRequiresCSRFAndPersists(t *testing.T) {
+	handler, store := newUIAPIHandlerWithStore(t, Config{AllowUnauthenticated: true}, uiProvider())
+	call := func(token, value string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "https://calendar.example/settings/calendar-display", strings.NewReader("hide_declined_events="+value+"&csrf_token="+token))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "https://calendar.example")
+		req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: "expected"})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if got := call("wrong", "true").Code; got != http.StatusForbidden {
+		t.Fatalf("CSRF=%d", got)
+	}
+	if got := call("expected", "invalid").Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid=%d", got)
+	}
+	if got := call("expected", "true").Code; got != http.StatusSeeOther {
+		t.Fatalf("save=%d", got)
+	}
+	if hidden, err := store.HideDeclinedEvents(t.Context()); err != nil || !hidden {
+		t.Fatalf("hidden=%v err=%v", hidden, err)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://calendar.example/api/ui/bootstrap", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"hide_declined_events":true`) {
+		t.Fatalf("bootstrap=%d %s", rec.Code, rec.Body.String())
+	}
+	if got := call("expected", "false").Code; got != http.StatusSeeOther {
+		t.Fatalf("disable=%d", got)
+	}
+	if hidden, err := store.HideDeclinedEvents(t.Context()); err != nil || hidden {
+		t.Fatalf("hidden=%v err=%v", hidden, err)
+	}
+}
+
+func TestUIEventsExposeOnlyVerifiedSelfResponse(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "live", true: "cached"}[cached], func(t *testing.T) {
+			provider := uiProvider()
+			cfg := Config{TrustForwardAuth: true, EventReadModelEnabled: &cached, EventReadModelWindow: testEventReadModelWindow()}
+			handler, store := newUIAPIHandlerWithStore(t, cfg, provider)
+			if err := store.SetGooglePrimaryCalendar(t.Context(), "account", "primary"); err != nil {
+				t.Fatal(err)
+			}
+			event := calendar.EventV2{ID: "event", CalendarID: "google:primary", Provider: "google", Title: "example", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}, Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Email: "secret@example.com", Self: true}, Status: "declined"}}}
+			if cached {
+				prepareCachedCalendar(t, store, "google:primary")
+				if err := store.UpsertCachedEvent(t.Context(), event, time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				provider.events = []calendar.EventV2{event}
+			}
+			body := listUIEventsResponse(t, handler, "calendar_id=google:primary")
+			if !strings.Contains(body, `"self_response_status":"declined"`) || strings.Contains(body, "secret@example.com") || strings.Contains(body, `"attendees"`) {
+				t.Fatalf("response=%s", body)
+			}
+			if err := store.ClearGooglePrimaryCalendars(t.Context(), "account"); err != nil {
+				t.Fatal(err)
+			}
+			body = listUIEventsResponse(t, handler, "calendar_id=google:primary")
+			if strings.Contains(body, "self_response_status") {
+				t.Fatalf("unverified response=%s", body)
+			}
+		})
 	}
 }

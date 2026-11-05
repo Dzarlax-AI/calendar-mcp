@@ -21,6 +21,20 @@ type MappingStore interface {
 
 const DetachedSeriesWarning = "Some recurring events are mirrored as individual events because their source series was unavailable."
 
+type Failure struct {
+	Stage string
+	Cause error
+}
+
+var errJobLeaseStage = errors.New("sync job lease stage")
+
+func (e *Failure) Error() string        { return e.Stage + ": " + e.Cause.Error() }
+func (e *Failure) Unwrap() error        { return e.Cause }
+func (e *Failure) Is(target error) bool { return target == errJobLeaseStage && e.Stage == "job_lease" }
+
+// ErrMissingSeriesMapping identifies an exception whose source series has no target mapping.
+var ErrMissingSeriesMapping = errors.New("source series has no target mapping")
+
 type Result struct{ Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int }
 
 type RecurrenceCompatibilityError struct{ Cause error }
@@ -74,18 +88,27 @@ func New(registry *calendar.Registry, mappings MappingStore) *Engine {
 	return &Engine{registry: registry, mappings: mappings, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Result, error) {
+func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runResult Result, runErr error) {
+	stage := "rule_validation"
+	defer func() {
+		if runErr != nil {
+			runErr = &Failure{Stage: stage, Cause: runErr}
+		}
+	}()
 	if err := storage.ValidateRule(rule); err != nil {
 		return Result{}, err
 	}
+	stage = "source_selection"
 	sourceProvider, sourceCalendarID, err := e.registry.ResolveEnabled(ctx, rule.SourceCalendarID)
 	if err != nil {
 		return Result{}, err
 	}
+	stage = "target_selection"
 	targetProvider, targetCalendarID, err := e.registry.ResolveEnabled(ctx, rule.TargetCalendarID)
 	if err != nil {
 		return Result{}, err
 	}
+	stage = "capabilities"
 	source, ok := sourceProvider.(calendar.EventProviderV2)
 	if !ok {
 		return Result{}, errors.New("source provider does not support typed event listing")
@@ -97,10 +120,12 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 	target = selectionGuardedTarget{EventProviderV2: target, registry: e.registry, sourceID: rule.SourceCalendarID, targetID: rule.TargetCalendarID}
 	now := e.now()
 	start, end := now.AddDate(0, 0, -rule.LookbackDays), now.AddDate(0, 0, rule.LookaheadDays)
+	stage = "source_read"
 	events, err := listAll(ctx, source, calendar.ListEventsRequestV2{CalendarID: sourceCalendarID, Start: start, End: end, View: calendar.RecurrenceBoth, ShowDeleted: true})
 	if err != nil {
 		return Result{}, fmt.Errorf("list source events: %w", err)
 	}
+	stage = "mappings"
 	existing, err := e.mappings.ListMappings(ctx, rule.ID)
 	if err != nil {
 		return Result{}, err
@@ -145,6 +170,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 		filtered = append(filtered, event)
 	}
 	events = filtered
+	stage = "recurrence"
 	if validator, ok := targetProvider.(calendar.RecurrenceWriteValidator); ok {
 		for _, event := range events {
 			if objectKind(event) != "series" {
@@ -161,6 +187,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 			}
 		}
 	}
+	stage = "reconciliation"
 	occurrences := indexOccurrences(events)
 	seen := map[string]bool{}
 	result := Result{Warnings: len(activeDetached), DetachedSeries: len(activeDetached)}
@@ -208,7 +235,7 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (Resul
 		if isSeriesException(event) {
 			seriesMapping, seriesMapped := findSeriesMapping(byKey, event.RecurringEventID)
 			if !seriesMapped {
-				return result, fmt.Errorf("source series %q has no target mapping for instance %q", event.RecurringEventID, event.ID)
+				return result, fmt.Errorf("%w: source series %q, instance %q", ErrMissingSeriesMapping, event.RecurringEventID, event.ID)
 			}
 			if dryRun {
 				if event.Status == "cancelled" {

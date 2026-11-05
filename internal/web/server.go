@@ -164,6 +164,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /runs", s.protected(s.spaPage("runs")))
 	mux.Handle("GET /settings", s.protected(s.spaPage("settings")))
 	mux.Handle("GET /diagnostics", s.protected(s.spaPage("diagnostics")))
+	mux.Handle("POST /settings/calendar-display", noStore(s.protected(s.mutating(http.HandlerFunc(s.setCalendarDisplay)))))
 	mux.Handle("POST /settings/mcp-key/reveal", noStore(s.protected(s.mutating(http.HandlerFunc(s.revealMCPKey)))))
 	mux.Handle("GET /oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
 	mux.Handle("GET /connections/{id}/oauth/{provider}/start", s.protected(http.HandlerFunc(s.oauthStart)))
@@ -494,6 +495,20 @@ func (s *Server) connectApple(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/connections?status=connected", http.StatusSeeOther)
+}
+
+func (s *Server) setCalendarDisplay(w http.ResponseWriter, r *http.Request) {
+	value := r.FormValue("hide_declined_events")
+	if value != "true" && value != "false" {
+		http.Error(w, "Invalid display setting", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetHideDeclinedEvents(r.Context(), value == "true"); err != nil {
+		log.Printf("save calendar display setting: %v", err)
+		http.Redirect(w, r, "/settings?status=display_settings_failed", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/settings?status=display_settings_saved", http.StatusSeeOther)
 }
 
 func (s *Server) setCalendarSelection(w http.ResponseWriter, r *http.Request) {

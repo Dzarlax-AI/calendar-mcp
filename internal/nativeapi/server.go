@@ -522,26 +522,7 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 
 // cachedSelfResponseStatus trusts self only for the connected account's primary calendar.
 func cachedSelfResponseStatus(event calendar.EventV2, primary bool) string {
-	if !primary || !strings.HasPrefix(event.CalendarID, "google:") || (event.Provider != "" && event.Provider != "google") {
-		return ""
-	}
-	var status string
-	count := 0
-	for _, attendee := range event.Attendees {
-		if attendee.Self {
-			count++
-			status = attendee.Status
-		}
-	}
-	if count != 1 {
-		return ""
-	}
-	switch status {
-	case "accepted", "declined", "tentative", "needsAction":
-		return status
-	default:
-		return ""
-	}
+	return calendar.SelfResponseStatus(event, primary)
 }
 
 func parseNativeEventRange(w http.ResponseWriter, r *http.Request) (time.Time, time.Time, bool) {

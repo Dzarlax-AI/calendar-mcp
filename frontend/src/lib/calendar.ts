@@ -244,3 +244,7 @@ export function formatEventDate(event: EventRecord, locale?: Intl.LocalesArgumen
   }
   return new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(value);
 }
+
+export function filterDeclinedEvents(events: EventRecord[], hideDeclined: boolean): EventRecord[] {
+  return hideDeclined ? events.filter((event) => event.selfResponseStatus !== "declined") : events;
+}

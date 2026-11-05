@@ -427,3 +427,28 @@ func TestDisabledCalendarsBlockRuleJobsUntilReenabled(t *testing.T) {
 		t.Fatalf("reenabled claim=%#v err=%v", got, err)
 	}
 }
+
+func TestCalendarDisplaySettingSQLite(t *testing.T) {
+	store := newSQLiteStore(t)
+	assertCalendarDisplaySetting(t, store)
+}
+
+func assertCalendarDisplaySetting(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := t.Context()
+	if hidden, err := store.HideDeclinedEvents(ctx); err != nil || hidden {
+		t.Fatalf("default hidden=%v err=%v", hidden, err)
+	}
+	if err := store.SetHideDeclinedEvents(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if hidden, err := store.HideDeclinedEvents(ctx); err != nil || !hidden {
+		t.Fatalf("stored hidden=%v err=%v", hidden, err)
+	}
+	if err := store.SetHideDeclinedEvents(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if hidden, err := store.HideDeclinedEvents(ctx); err != nil || hidden {
+		t.Fatalf("reset hidden=%v err=%v", hidden, err)
+	}
+}

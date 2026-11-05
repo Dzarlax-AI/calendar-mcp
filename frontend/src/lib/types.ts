@@ -66,6 +66,7 @@ export type Settings = {
   timezone?: string;
   mcpEndpoint?: string;
   legacyApiKeyConfigured?: boolean;
+  hideDeclinedEvents?: boolean;
 };
 
 export type Bootstrap = {
@@ -162,6 +163,7 @@ export type EventRecord = {
   htmlLink?: string;
   conference?: { solution?: string; entry_points?: Array<{ type: string; uri: string; label?: string }> };
   readOnly?: boolean;
+  selfResponseStatus?: "accepted" | "declined" | "tentative" | "needsAction";
   source?: string;
   recurrence?: RecurrenceInfo;
   originalStart?: EventTime;

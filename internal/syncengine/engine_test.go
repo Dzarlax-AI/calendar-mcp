@@ -618,3 +618,17 @@ func TestFindTargetInstanceIncludesOriginalStartOutsideSyncWindow(t *testing.T) 
 		})
 	}
 }
+
+func TestDryRunReportsMissingSeriesWithoutExposingEventIDs(t *testing.T) {
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "private-event", RecurringEventID: "private-series", InstanceKind: "exception", Start: calendar.EventTime{Date: "2026-10-01"}, End: calendar.EventTime{Date: "2026-10-02"}}}}
+	target := &fakeV2Provider{name: "apple"}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), &fakeMappings{values: map[string]storage.Mapping{}})
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	_, err := engine.Run(t.Context(), rule, true)
+	if !errors.Is(err, ErrMissingSeriesMapping) || FailureCode(err) != "sync_missing_series_mapping" {
+		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+	if target.created != 0 || target.updated != 0 || target.deleted != 0 {
+		t.Fatal("dry run mutated target")
+	}
+}

@@ -18,6 +18,16 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("normalizes the shared display preference and only known participation statuses", async () => {
+    const raw = { csrf_token: "csrf", calendars: [], connections: [], rules: [], runs: [], settings: { hide_declined_events: true } };
+    const response = { items: ["declined", "unexpected"].map((status) => ({ id: status, calendar_id: "c1", self_response_status: status, start: { date: "2026-09-15" }, end: { date: "2026-09-16" } })), complete: true };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(raw), { status: 200 })).mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 })));
+    expect((await getBootstrap()).settings.hideDeclinedEvents).toBe(true);
+    const events = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
+    expect(events.items.map((item) => item.selfResponseStatus)).toEqual(["declined", undefined]);
+    vi.unstubAllGlobals();
+  });
+
   it("sends same-origin credentials and the CSRF header on creates", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "e1", calendar_id: "c1", title: "Test", start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }), { status: 201, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);

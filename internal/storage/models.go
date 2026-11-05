@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string

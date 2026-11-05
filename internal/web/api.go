@@ -43,30 +43,31 @@ type uiError struct {
 const uiErrorOriginApplication = "application"
 
 type uiEvent struct {
-	ID                string                   `json:"id"`
-	CalendarID        string                   `json:"calendar_id"`
-	Provider          string                   `json:"provider"`
-	ETag              string                   `json:"etag,omitempty"`
-	HTMLLink          string                   `json:"html_link,omitempty"`
-	Title             string                   `json:"title,omitempty"`
-	Description       string                   `json:"description,omitempty"`
-	DescriptionFormat string                   `json:"description_format,omitempty"`
-	Location          string                   `json:"location,omitempty"`
-	Status            string                   `json:"status,omitempty"`
-	Start             calendar.EventTime       `json:"start"`
-	End               calendar.EventTime       `json:"end"`
-	OriginalStart     *calendar.EventTime      `json:"original_start,omitempty"`
-	RecurringEventID  string                   `json:"recurring_event_id,omitempty"`
-	InstanceKind      string                   `json:"instance_kind,omitempty"`
-	Recurrence        []string                 `json:"recurrence,omitempty"`
-	Visibility        string                   `json:"visibility,omitempty"`
-	Transparency      string                   `json:"transparency,omitempty"`
-	ColorID           string                   `json:"color_id,omitempty"`
-	Conference        *calendar.ConferenceData `json:"conference,omitempty"`
-	Created           *time.Time               `json:"created,omitempty"`
-	Updated           *time.Time               `json:"updated,omitempty"`
-	ReadOnly          bool                     `json:"read_only,omitempty"`
-	Warnings          []string                 `json:"warnings,omitempty"`
+	ID                 string                   `json:"id"`
+	CalendarID         string                   `json:"calendar_id"`
+	Provider           string                   `json:"provider"`
+	ETag               string                   `json:"etag,omitempty"`
+	HTMLLink           string                   `json:"html_link,omitempty"`
+	Title              string                   `json:"title,omitempty"`
+	Description        string                   `json:"description,omitempty"`
+	DescriptionFormat  string                   `json:"description_format,omitempty"`
+	Location           string                   `json:"location,omitempty"`
+	Status             string                   `json:"status,omitempty"`
+	SelfResponseStatus string                   `json:"self_response_status,omitempty"`
+	Start              calendar.EventTime       `json:"start"`
+	End                calendar.EventTime       `json:"end"`
+	OriginalStart      *calendar.EventTime      `json:"original_start,omitempty"`
+	RecurringEventID   string                   `json:"recurring_event_id,omitempty"`
+	InstanceKind       string                   `json:"instance_kind,omitempty"`
+	Recurrence         []string                 `json:"recurrence,omitempty"`
+	Visibility         string                   `json:"visibility,omitempty"`
+	Transparency       string                   `json:"transparency,omitempty"`
+	ColorID            string                   `json:"color_id,omitempty"`
+	Conference         *calendar.ConferenceData `json:"conference,omitempty"`
+	Created            *time.Time               `json:"created,omitempty"`
+	Updated            *time.Time               `json:"updated,omitempty"`
+	ReadOnly           bool                     `json:"read_only,omitempty"`
+	Warnings           []string                 `json:"warnings,omitempty"`
 }
 
 type uiSourceStatus struct {
@@ -183,6 +184,7 @@ type uiCalendar struct {
 	CanWrite           bool   `json:"can_write"`
 	SupportsRecurrence bool   `json:"supports_recurrence"`
 	Enabled            bool   `json:"enabled"`
+	googlePrimary      bool
 }
 
 type uiConnection struct {
@@ -233,6 +235,7 @@ type uiSettings struct {
 	LegacyAPIKeyConfigured bool   `json:"legacy_api_key_configured"`
 	GoogleConfigured       bool   `json:"google_configured"`
 	MicrosoftConfigured    bool   `json:"microsoft_configured"`
+	HideDeclinedEvents     bool   `json:"hide_declined_events"`
 }
 
 type uiControlPlane struct {
@@ -514,10 +517,14 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 	if err != nil {
 		return uiControlPlane{}, fmt.Errorf("list runs: %w", err)
 	}
+	hideDeclined, err := s.store.HideDeclinedEvents(ctx)
+	if err != nil {
+		return uiControlPlane{}, fmt.Errorf("read calendar display settings: %w", err)
+	}
 	result := uiControlPlane{
 		Connections: make([]uiConnection, 0, len(connectionsList)), Calendars: make([]uiCalendar, 0, len(calendars)),
 		Rules: make([]uiRule, 0, len(rules)), Runs: make([]uiRun, 0, len(runs)),
-		Settings: uiSettings{MCPEndpoint: strings.TrimSuffix(s.config.PublicURL, "/") + "/mcp", LegacyAPIKeyConfigured: s.config.LegacyAPIKeyConfigured, GoogleConfigured: s.config.GoogleConfigured, MicrosoftConfigured: s.config.MicrosoftConfigured},
+		Settings: uiSettings{MCPEndpoint: strings.TrimSuffix(s.config.PublicURL, "/") + "/mcp", LegacyAPIKeyConfigured: s.config.LegacyAPIKeyConfigured, GoogleConfigured: s.config.GoogleConfigured, MicrosoftConfigured: s.config.MicrosoftConfigured, HideDeclinedEvents: hideDeclined},
 	}
 	connectionProviders := make(map[string]string, len(connectionsList))
 	connectionNames := make(map[string]string, len(connectionsList))
@@ -532,7 +539,7 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 		if !connected[item.ConnectionID] {
 			continue
 		}
-		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence, Enabled: item.Enabled})
+		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence, Enabled: item.Enabled, googlePrimary: item.GooglePrimary && item.CanRead && item.Enabled && connectionProviders[item.ConnectionID] == "google"})
 	}
 	for _, item := range rules {
 		result.Rules = append(result.Rules, uiRule{ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
@@ -546,6 +553,9 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 func safeRunSummary(run storage.Run) string {
 	if run.Outcome == "succeeded" && run.WarningCount > 0 && run.ErrorSummary == syncengine.DetachedSeriesWarning {
 		return syncengine.DetachedSeriesWarning
+	}
+	if run.Outcome == "failed" && run.ErrorCode != "" {
+		return syncengine.FailureMessage(run.ErrorCode)
 	}
 	if run.ErrorSummary == "" {
 		return ""
@@ -574,10 +584,20 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 		writeUIJSON(w, http.StatusOK, response)
 		return
 	}
+	primaries := map[string]bool{}
+	if s.store != nil {
+		if control, err := s.uiControlPlane(r.Context()); err == nil {
+			for _, item := range control.Calendars {
+				if item.googlePrimary {
+					primaries[item.ID] = true
+				}
+			}
+		}
+	}
 	response := uiEventsResponse{Items: []uiEvent{}, Complete: true, Sources: []uiSourceStatus{}}
 	if len(calendarIDs) == 0 {
 		page, err := s.listUIDrainedEvents(r, "", start, end)
-		response.appendPage(page)
+		response.appendPage(page, primaries)
 		if err != nil {
 			response.Complete = false
 			response.Sources = append(response.Sources, failedUISource("", "", err))
@@ -585,7 +605,7 @@ func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
 	} else {
 		for _, calendarID := range calendarIDs {
 			page, err := s.listUIDrainedEvents(r, calendarID, start, end)
-			response.appendPage(page)
+			response.appendPage(page, primaries)
 			if err != nil {
 				response.Complete = false
 				response.Sources = append(response.Sources, failedUISource("", calendarID, err))
@@ -603,7 +623,11 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 		return uiEventsResponse{}, err
 	}
 	disabled := make(map[string]bool)
+	primaries := make(map[string]bool)
 	for _, item := range control.Calendars {
+		if item.googlePrimary {
+			primaries[item.ID] = true
+		}
 		if item.CanRead && !item.Enabled {
 			disabled[item.ID] = true
 		}
@@ -625,7 +649,9 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 		if disabled[event.CalendarID] {
 			continue
 		}
-		response.Items = append(response.Items, toUIEvent(normalizeCachedUIEvent(event)))
+		converted := toUIEvent(normalizeCachedUIEvent(event))
+		converted.SelfResponseStatus = calendar.SelfResponseStatus(event, primaries[event.CalendarID])
+		response.Items = append(response.Items, converted)
 	}
 	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
@@ -1061,9 +1087,11 @@ func (s *Server) requireApplication() error {
 	return nil
 }
 
-func (response *uiEventsResponse) appendPage(page calendar.Page[calendar.EventV2]) {
+func (response *uiEventsResponse) appendPage(page calendar.Page[calendar.EventV2], primaries map[string]bool) {
 	for _, event := range page.Items {
-		response.Items = append(response.Items, toUIEvent(event))
+		converted := toUIEvent(event)
+		converted.SelfResponseStatus = calendar.SelfResponseStatus(event, primaries[event.CalendarID])
+		response.Items = append(response.Items, converted)
 	}
 	for _, source := range page.Sources {
 		response.Sources = append(response.Sources, toUISource(source))
