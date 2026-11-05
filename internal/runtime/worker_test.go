@@ -299,3 +299,51 @@ func TestMaintainCalendarSyncLeaseIgnoresRenewalRaceAfterStop(t *testing.T) {
 		t.Fatalf("error=%v workCancelled=%v", err, workCancelled)
 	}
 }
+
+type failingProviderBuilder struct{}
+
+func (failingProviderBuilder) Build(context.Context) ([]calendar.Provider, error) {
+	return nil, errors.New("private-event token=synthetic-secret")
+}
+
+func TestDryRunPersistsOnlySafeProviderSetupDiagnostic(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.CreateConnection(ctx, storage.Connection{ID: "account", Provider: "google", AccountFingerprint: "account", DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("fake"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"source", "target"} {
+		if err := store.UpsertCalendar(ctx, storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "source", TargetCalendarID: "target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnqueueJob(ctx, storage.Job{ID: "job", RuleID: "rule", Kind: "dry_run", State: "pending", AvailableAt: now, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.ClaimJob(ctx, "worker", now)
+	if err != nil || job == nil {
+		t.Fatalf("claim=%+v err=%v", job, err)
+	}
+	if err := executeJob(ctx, store, failingProviderBuilder{}, *job, now); err == nil {
+		t.Fatal("expected failure")
+	}
+	runs, err := store.ListRuns(ctx, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs=%+v err=%v", runs, err)
+	}
+	if runs[0].ErrorCode != "sync_provider_setup" || runs[0].ErrorSummary != "The calendar provider connection could not be initialized." || runs[0].Outcome != "failed" || !runs[0].DryRun {
+		t.Fatalf("run=%+v", runs[0])
+	}
+}

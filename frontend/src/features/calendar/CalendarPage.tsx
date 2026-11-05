@@ -12,7 +12,7 @@ import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, ListFilter,
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
 import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
-import { type EventStatusSummary, EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
+import { type EventStatusSummary, EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, filterDeclinedEvents, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 import { HtmlDescription } from "../../components/HtmlDescription";
@@ -105,7 +105,7 @@ const VIEW_OPTIONS: Array<{ value: ViewName; label: string }> = [
 ];
 
 export default function CalendarPage() {
-  const { csrf_token: csrfToken, calendars: allCalendars } = useBootstrapData();
+  const { csrf_token: csrfToken, calendars: allCalendars, settings } = useBootstrapData();
   const calendars = useMemo(() => allCalendars.filter((calendar) => calendar.enabled !== false), [allCalendars]);
   const calendarRef = useRef<FullCalendar>(null);
   const initialScrollTime = useMemo(() => currentTimeScrollTime(), []);
@@ -156,7 +156,7 @@ export default function CalendarPage() {
     },
     refetchIntervalInBackground: false,
   });
-  const events = eventsQuery.data?.items ?? [];
+  const events = useMemo(() => filterDeclinedEvents(eventsQuery.data?.items ?? [], settings.hideDeclinedEvents === true), [eventsQuery.data?.items, settings.hideDeclinedEvents]);
   const baseEventStatus = eventsQuery.data ? summarizeEventSources(eventsQuery.data) : null;
   const eventStatus = baseEventStatus?.kind === "syncing" && pollingCapped ? { ...baseEventStatus, kind: "stale" as const, label: "Sync paused; refresh to try again" } : baseEventStatus;
   const visibleEventStatus = eventStatus?.kind === "updated" && !showUpdatedStatus ? null : eventStatus;

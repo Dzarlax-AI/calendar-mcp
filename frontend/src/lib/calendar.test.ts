@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_AUTH_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, formatEventDate, formatRelativeTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
+import { EVENT_AUTH_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_INTERVAL_MS, EVENT_STATUS_POLL_MAX_ATTEMPTS, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, filterDeclinedEvents, formatEventDate, formatRelativeTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "./calendar";
 import type { CalendarRecord, EventDraft, EventRecord } from "./types";
 
 const calendar: CalendarRecord = { id: "google:primary", name: "Personal", provider: "google", color: "#4762ee", capability: { read: true, create: true, write: true, delete: true, recurring: true } };
@@ -82,6 +82,15 @@ describe("calendar mapping", () => {
     const allDay = toggleAllDayDraft(draft, true);
     expect(allDay).toMatchObject({ allDay: true, start: "2026-09-15", end: "2026-09-16" });
     expect(toggleAllDayDraft(allDay, false)).toMatchObject({ allDay: false, start: "2026-09-15T00:00", end: "2026-09-16T00:00" });
+  });
+
+  it("hides only confirmed declined responses when enabled", () => {
+    const declined = { ...event, id: "declined", selfResponseStatus: "declined" as const };
+    const accepted = { ...event, id: "accepted", selfResponseStatus: "accepted" as const };
+    const unknown = { ...event, id: "unknown" };
+    const values = [declined, accepted, unknown];
+    expect(filterDeclinedEvents(values, true).map((item) => item.id)).toEqual(["accepted", "unknown"]);
+    expect(filterDeclinedEvents(values, false)).toEqual(values);
   });
 
   it("filters persisted selections to readable calendars", () => {

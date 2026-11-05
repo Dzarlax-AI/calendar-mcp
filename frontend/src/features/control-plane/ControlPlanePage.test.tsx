@@ -31,6 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   bootstrap.runs = [];
   bootstrap.calendars = [];
+  bootstrap.settings = {};
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
@@ -53,6 +54,22 @@ describe("calendar selection", () => {
     expect(forms[1].textContent).toContain("Enable");
     expect(container.textContent).toContain("Disabled · Last reported: read only");
     expect(container.textContent).toContain("Disabled · Last reported: no access");
+  });
+});
+
+describe("calendar display setting", () => {
+  it("offers a service-wide CSRF-protected setting in both states", () => {
+    bootstrap.settings = { hideDeclinedEvents: false };
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="settings" /></MemoryRouter>));
+    let form = container.querySelector<HTMLFormElement>('form[action="/settings/calendar-display"]');
+    expect(form?.textContent).toContain("Hide declined events");
+    expect(form?.querySelector('[name="csrf_token"]')?.getAttribute("value")).toBe("test-csrf");
+    expect(form?.querySelector('[name="hide_declined_events"]')?.getAttribute("value")).toBe("true");
+    bootstrap.settings = { hideDeclinedEvents: true };
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="settings" /></MemoryRouter>));
+    form = container.querySelector<HTMLFormElement>('form[action="/settings/calendar-display"]');
+    expect(form?.textContent).toContain("Show declined events");
+    expect(form?.querySelector('[name="hide_declined_events"]')?.getAttribute("value")).toBe("false");
   });
 });
 

@@ -266,19 +266,18 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	var result syncengine.Result
 	if err == nil {
 		result, err = syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).Run(syncCtx, rule, run.DryRun)
+	} else {
+		err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
 	}
 	stopHeartbeat()
 	ticker.Stop()
 	if heartbeatErr := <-heartbeatDone; heartbeatErr != nil {
-		err = errors.Join(err, heartbeatErr)
+		err = errors.Join(err, &syncengine.Failure{Stage: "job_lease", Cause: heartbeatErr})
 	}
 	finished := time.Now().UTC()
 	if err != nil {
-		code, summary := "sync_failed", "Provider synchronization failed"
-		var recurrenceErr *syncengine.RecurrenceCompatibilityError
-		if errors.As(err, &recurrenceErr) {
-			code, summary = "recurrence_unsupported", "Target calendar cannot preserve this recurrence pattern; the rule remains paused."
-		}
+		code := syncengine.FailureCode(err)
+		summary := syncengine.FailureMessage(code)
 		finishErr := store.FinishRun(ctx, run.ID, job, "failed", finished, storage.Run{ErrorCode: code, ErrorSummary: summary})
 		if finishErr != nil {
 			return errors.Join(err, finishErr)
