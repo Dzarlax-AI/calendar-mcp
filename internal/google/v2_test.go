@@ -192,17 +192,14 @@ func TestCreateEventV2SerializesFalseUseDefaultWithReminderOverrides(t *testing.
 	}
 }
 
-func TestFindEventBySyncMarkerV2UsesBothPrivateProperties(t *testing.T) {
+func TestFindEventBySyncMarkerV2UsesSourceProperty(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		properties := r.URL.Query()["privateExtendedProperty"]
-		joined := strings.Join(properties, "|")
-		for _, want := range []string{"calendar_sync_rule=rule", "calendar_source_event=source"} {
-			if !strings.Contains(joined, want) {
-				t.Errorf("privateExtendedProperty = %v, missing %q", properties, want)
-			}
+		if len(properties) != 1 || properties[0] != "calendar_source_event=source" {
+			t.Errorf("privateExtendedProperty = %v", properties)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"items":[{"id":"recovered","summary":"Recovered","start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
+		_, _ = io.WriteString(w, `{"items":[{"id":"recovered","summary":"Recovered","extendedProperties":{"private":{"calendar_sync_rule":"rule","calendar_source_event":"source"}},"start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
 	})
 	defer closeServer()
 
@@ -219,7 +216,7 @@ func TestFindEventBySyncMarkerV2FollowsEmptyPage(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("pageToken") == "next" {
-			_, _ = io.WriteString(w, `{"items":[{"id":"recovered","start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
+			_, _ = io.WriteString(w, `{"items":[{"id":"recovered","extendedProperties":{"private":{"calendar_sync_rule":"rule","calendar_source_event":"source"}},"start":{"dateTime":"2026-08-10T09:00:00Z"},"end":{"dateTime":"2026-08-10T10:00:00Z"}}]}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"items":[],"nextPageToken":"next"}`)

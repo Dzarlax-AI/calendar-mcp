@@ -82,6 +82,19 @@ type CapabilityProvider interface {
 	Capabilities(ctx context.Context, calendarID string) (CalendarCapabilities, error)
 }
 
+// SafeNoAttendeeMutationProvider explicitly promises that flagged mutations
+// fail closed unless provider-side recipients are proven absent.
+type SafeNoAttendeeMutationProvider interface {
+	SupportsNoAttendeeMutations() bool
+}
+
+// SafeNoAttendeeRecurringMutationProvider is a separate, stronger promise:
+// every affected series and exception is proven recipient-free and atomically
+// fenced before any recurring mutation. No current real provider supports it.
+type SafeNoAttendeeRecurringMutationProvider interface {
+	SupportsNoAttendeeRecurringMutations() bool
+}
+
 type EventProviderV2 interface {
 	CapabilityProvider
 	ListEventsV2(ctx context.Context, request ListEventsRequestV2) (Page[EventV2], error)

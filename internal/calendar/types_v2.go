@@ -143,36 +143,40 @@ type GoogleEventExtension struct {
 const OrphanOccurrence = "orphanOccurrence"
 
 type EventV2 struct {
-	ID                string                `json:"id"`
-	CalendarID        string                `json:"calendar_id"`
-	Provider          string                `json:"provider"`
-	ICalUID           string                `json:"ical_uid,omitempty"`
-	ETag              string                `json:"etag,omitempty"`
-	HTMLLink          string                `json:"html_link,omitempty"`
-	Title             string                `json:"title,omitempty"`
-	Description       string                `json:"description,omitempty"`
-	DescriptionFormat string                `json:"description_format,omitempty"` // text or html
-	Location          string                `json:"location,omitempty"`
-	Status            string                `json:"status,omitempty"`
-	Start             EventTime             `json:"start"`
-	End               EventTime             `json:"end"`
-	OriginalStart     *EventTime            `json:"original_start,omitempty"`
-	RecurringEventID  string                `json:"recurring_event_id,omitempty"`
-	InstanceKind      string                `json:"instance_kind,omitempty"`
-	Recurrence        []string              `json:"recurrence,omitempty"`
-	Organizer         *PersonV2             `json:"organizer,omitempty"`
-	Attendees         []AttendeeV2          `json:"attendees,omitempty"`
-	Reminders         *ReminderSettings     `json:"reminders,omitempty"`
-	Visibility        string                `json:"visibility,omitempty"`
-	Transparency      string                `json:"transparency,omitempty"`
-	ColorID           string                `json:"color_id,omitempty"`
-	Attachments       []Attachment          `json:"attachments,omitempty"`
-	Conference        *ConferenceData       `json:"conference,omitempty"`
-	GuestPermissions  *GuestPermissions     `json:"guest_permissions,omitempty"`
-	Google            *GoogleEventExtension `json:"google,omitempty"`
-	Created           *time.Time            `json:"created,omitempty"`
-	Updated           *time.Time            `json:"updated,omitempty"`
-	ReadOnly          bool                  `json:"read_only,omitempty"`
+	ID                string       `json:"id"`
+	CalendarID        string       `json:"calendar_id"`
+	Provider          string       `json:"provider"`
+	ICalUID           string       `json:"ical_uid,omitempty"`
+	ETag              string       `json:"etag,omitempty"`
+	HTMLLink          string       `json:"html_link,omitempty"`
+	Title             string       `json:"title,omitempty"`
+	Description       string       `json:"description,omitempty"`
+	DescriptionFormat string       `json:"description_format,omitempty"` // text or html
+	Location          string       `json:"location,omitempty"`
+	Status            string       `json:"status,omitempty"`
+	Start             EventTime    `json:"start"`
+	End               EventTime    `json:"end"`
+	OriginalStart     *EventTime   `json:"original_start,omitempty"`
+	RecurringEventID  string       `json:"recurring_event_id,omitempty"`
+	InstanceKind      string       `json:"instance_kind,omitempty"`
+	Recurrence        []string     `json:"recurrence,omitempty"`
+	Organizer         *PersonV2    `json:"organizer,omitempty"`
+	Attendees         []AttendeeV2 `json:"attendees,omitempty"`
+	AttendeesKnown    bool         `json:"-"`
+	// SourceAttendeesComplete is not target safety evidence and does not
+	// survive cache JSON without an explicit durable provenance contract.
+	SourceAttendeesComplete bool                  `json:"-"`
+	Reminders               *ReminderSettings     `json:"reminders,omitempty"`
+	Visibility              string                `json:"visibility,omitempty"`
+	Transparency            string                `json:"transparency,omitempty"`
+	ColorID                 string                `json:"color_id,omitempty"`
+	Attachments             []Attachment          `json:"attachments,omitempty"`
+	Conference              *ConferenceData       `json:"conference,omitempty"`
+	GuestPermissions        *GuestPermissions     `json:"guest_permissions,omitempty"`
+	Google                  *GoogleEventExtension `json:"google,omitempty"`
+	Created                 *time.Time            `json:"created,omitempty"`
+	Updated                 *time.Time            `json:"updated,omitempty"`
+	ReadOnly                bool                  `json:"read_only,omitempty"`
 }
 
 type EventCreateV2 struct {
@@ -240,30 +244,35 @@ type ListEventsRequestV2 struct {
 }
 
 type CreateEventRequestV2 struct {
-	CalendarID    string             `json:"calendar_id"`
-	Event         EventCreateV2      `json:"event"`
-	Notifications NotificationPolicy `json:"notification_policy,omitempty"`
+	RequireNoAttendees bool               `json:"-"`
+	CalendarID         string             `json:"calendar_id"`
+	Event              EventCreateV2      `json:"event"`
+	Notifications      NotificationPolicy `json:"notification_policy,omitempty"`
 }
 
 type UpdateEventRequestV2 struct {
-	Ref           EventRef           `json:"ref"`
-	Patch         EventPatchV2       `json:"patch"`
-	Scope         MutationScope      `json:"scope"`
-	EffectiveFrom *EventTime         `json:"effective_from,omitempty"`
-	ExpectedETag  string             `json:"expected_etag,omitempty"`
-	OperationID   string             `json:"operation_id,omitempty"`
-	PreviewOnly   bool               `json:"preview_only,omitempty"`
-	Notifications NotificationPolicy `json:"notification_policy,omitempty"`
+	RequireNoAttendees bool               `json:"-"`
+	ExpectedSyncMarker *SyncMarker        `json:"-"`
+	Ref                EventRef           `json:"ref"`
+	Patch              EventPatchV2       `json:"patch"`
+	Scope              MutationScope      `json:"scope"`
+	EffectiveFrom      *EventTime         `json:"effective_from,omitempty"`
+	ExpectedETag       string             `json:"expected_etag,omitempty"`
+	OperationID        string             `json:"operation_id,omitempty"`
+	PreviewOnly        bool               `json:"preview_only,omitempty"`
+	Notifications      NotificationPolicy `json:"notification_policy,omitempty"`
 }
 
 type DeleteEventRequestV2 struct {
-	Ref           EventRef           `json:"ref"`
-	Scope         MutationScope      `json:"scope"`
-	EffectiveFrom *EventTime         `json:"effective_from,omitempty"`
-	ExpectedETag  string             `json:"expected_etag,omitempty"`
-	OperationID   string             `json:"operation_id,omitempty"`
-	PreviewOnly   bool               `json:"preview_only,omitempty"`
-	Notifications NotificationPolicy `json:"notification_policy,omitempty"`
+	RequireNoAttendees bool               `json:"-"`
+	ExpectedSyncMarker *SyncMarker        `json:"-"`
+	Ref                EventRef           `json:"ref"`
+	Scope              MutationScope      `json:"scope"`
+	EffectiveFrom      *EventTime         `json:"effective_from,omitempty"`
+	ExpectedETag       string             `json:"expected_etag,omitempty"`
+	OperationID        string             `json:"operation_id,omitempty"`
+	PreviewOnly        bool               `json:"preview_only,omitempty"`
+	Notifications      NotificationPolicy `json:"notification_policy,omitempty"`
 }
 
 type InstancesRequestV2 struct {

@@ -348,6 +348,7 @@ type graphEvent struct {
 	Location             graphLocation    `json:"location"`
 	IsAllDay             bool             `json:"isAllDay"`
 	IsCancelled          bool             `json:"isCancelled"`
+	IsOrganizer          *bool            `json:"isOrganizer"`
 	ShowAs               string           `json:"showAs"`
 	Sensitivity          string           `json:"sensitivity"`
 	SeriesMasterID       string           `json:"seriesMasterId"`

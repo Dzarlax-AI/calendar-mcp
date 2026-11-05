@@ -59,6 +59,16 @@ func TestSyncPreviewEndpointRequiresAuthenticationAndIsNotCached(t *testing.T) {
 	}
 }
 
+func TestUnimplementedSyncModeCannotSilentlyCreateDirectRule(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/rules", strings.NewReader("sync_mode=cached_instances"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	(&Server{}).createRule(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/rules/new?status=invalid_rule" {
+		t.Fatalf("unsupported mode was not rejected: %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
 func TestSettingsSPAAndBootstrapExposeStatusWithoutRenderingKeys(t *testing.T) {
 	handler := newTestHandlerWithConfig(t, Config{
 		PublicURL:              "https://calendar.example",

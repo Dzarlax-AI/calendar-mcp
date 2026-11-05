@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -122,52 +121,31 @@ func TestModernAndCompatV2WritesPreservePolicyPatchAndPreview(t *testing.T) {
 		t.Fatalf("create notification defaults/explicit none differ: %#v", provider.createRequests)
 	}
 
-	patchArgs := map[string]any{
-		"calendar_id": "google:primary", "event_id": "google:event-1",
-		"patch": map[string]any{"title": "", "location": "Room 4"},
-		"scope": "single", "expected_etag": "etag-42", "operation_id": "op-preview-7",
-		"preview_only": true, "notification_policy": "none",
-	}
+	// Single-scope preview must fail closed until a provider offers a real
+	// read-only preview implementation. No update/delete dispatch is allowed.
+	patchArgs := map[string]any{"calendar_id": "google:primary", "event_id": "event-1", "scope": "single", "preview_only": true, "patch": map[string]any{"title": "preview"}}
 	updated := callHTTPTool(t, mux, endpoint+"/mcp/modern", "key", modernSession, "update_event", patchArgs)
-	if updated["isError"] == true {
-		t.Fatalf("preview update returned error: %#v", updated)
-	}
 	updatedCompat := callHTTPTool(t, mux, endpoint+"/mcp/compat", "key", compatSession, "update_event_v2", patchArgs)
-	if !reflect.DeepEqual(updated, updatedCompat) {
-		t.Fatalf("update result differs across catalogs: modern=%#v compat=%#v", updated, updatedCompat)
+	if updated["isError"] != true || !reflect.DeepEqual(updated, updatedCompat) || len(provider.updateRequests) != 0 {
+		t.Fatal("unsupported update preview dispatched")
 	}
-	if len(provider.updateRequests) != 2 || !reflect.DeepEqual(provider.updateRequests[0], provider.updateRequests[1]) {
-		t.Fatalf("update provider requests differ across catalogs: %#v", provider.updateRequests)
-	}
-	request := provider.updateRequests[0]
-	if request.Ref.CalendarID != "primary" || request.Ref.EventID != "event-1" || request.Scope != calendar.ScopeSingle || request.ExpectedETag != "etag-42" || request.OperationID != "op-preview-7" || !request.PreviewOnly || request.Notifications != calendar.NotificationsNone {
-		t.Fatalf("update request fields were not forwarded: %#v", request)
-	}
-	if !request.Patch.Title.Present || request.Patch.Title.Null || request.Patch.Title.Value != "" {
-		t.Fatalf("explicit empty title was not preserved: %#v", request.Patch.Title)
-	}
-	if !request.Patch.Location.Present || request.Patch.Location.Value != "Room 4" {
-		t.Fatalf("location patch was not preserved: %#v", request.Patch.Location)
-	}
-	if got := resultText(t, updated); !strings.Contains(got, "preview") {
-		t.Fatalf("preview response text = %q", got)
-	}
-
-	deleteArgs := map[string]any{
-		"calendar_id": "google:primary", "event_id": "google:event-1", "scope": "single",
-		"expected_etag": "etag-delete", "operation_id": "op-delete", "preview_only": true, "notification_policy": "none",
-	}
-	deletedModern := callHTTPTool(t, mux, endpoint+"/mcp/modern", "key", modernSession, "delete_event", deleteArgs)
+	deleteArgs := map[string]any{"calendar_id": "google:primary", "event_id": "event-1", "scope": "single", "preview_only": true}
+	deleted := callHTTPTool(t, mux, endpoint+"/mcp/modern", "key", modernSession, "delete_event", deleteArgs)
 	deletedCompat := callHTTPTool(t, mux, endpoint+"/mcp/compat", "key", compatSession, "delete_event_v2", deleteArgs)
-	if deletedModern["isError"] == true || !reflect.DeepEqual(deletedModern, deletedCompat) {
-		t.Fatalf("delete result differs across catalogs: modern=%#v compat=%#v", deletedModern, deletedCompat)
+	if deleted["isError"] != true || !reflect.DeepEqual(deleted, deletedCompat) || len(provider.deleteRequests) != 0 {
+		t.Fatal("unsupported delete preview dispatched")
 	}
-	if len(provider.deleteRequests) != 2 || !reflect.DeepEqual(provider.deleteRequests[0], provider.deleteRequests[1]) {
-		t.Fatalf("delete provider requests differ across catalogs: %#v", provider.deleteRequests)
+	// Keep the cross-catalog patch/ETag contract covered on an actual synthetic write.
+	provider.updated = &calendar.OperationResult{Status: "completed"}
+	writeArgs := map[string]any{"calendar_id": "google:primary", "event_id": "event-1", "scope": "single", "expected_etag": "etag-42", "operation_id": "op-42", "notification_policy": "none", "patch": map[string]any{"title": "", "location": "Room 4"}}
+	writeModern := callHTTPTool(t, mux, endpoint+"/mcp/modern", "key", modernSession, "update_event", writeArgs)
+	writeCompat := callHTTPTool(t, mux, endpoint+"/mcp/compat", "key", compatSession, "update_event_v2", writeArgs)
+	if writeModern["isError"] == true || !reflect.DeepEqual(writeModern, writeCompat) || len(provider.updateRequests) != 2 || !reflect.DeepEqual(provider.updateRequests[0], provider.updateRequests[1]) {
+		t.Fatal("cross-catalog update diverged")
 	}
-	deleteRequest := provider.deleteRequests[0]
-	if deleteRequest.Ref.EventID != "event-1" || deleteRequest.ExpectedETag != "etag-delete" || deleteRequest.OperationID != "op-delete" || !deleteRequest.PreviewOnly || deleteRequest.Notifications != calendar.NotificationsNone {
-		t.Fatalf("delete request fields were not forwarded: %#v", deleteRequest)
+	gotWrite := provider.updateRequests[0]
+	if gotWrite.PreviewOnly || gotWrite.ExpectedETag != "etag-42" || gotWrite.OperationID != "op-42" || !gotWrite.Patch.Title.Present || gotWrite.Patch.Title.Value != "" || !gotWrite.Patch.Location.Present || gotWrite.Patch.Location.Value != "Room 4" {
+		t.Fatal("update fields not forwarded")
 	}
 	beforeCreates, beforeUpdates := len(provider.createRequests), len(provider.updateRequests)
 	unsupportedCreate := callHTTPTool(t, mux, endpoint+"/mcp/modern", "key", modernSession, "create_event", map[string]any{

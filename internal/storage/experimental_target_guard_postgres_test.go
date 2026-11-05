@@ -1,0 +1,25 @@
+//go:build integration
+
+package storage
+
+import (
+	"os"
+	"testing"
+)
+
+func TestPostgresExperimentalTargetGuardAtomic(t *testing.T) {
+	url := os.Getenv("TEST_POSTGRES_URL")
+	if url == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	s, err := Open(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err = s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ensureTargetGuardLinks(t, s)
+	runExperimentalTargetGuardAtomic(t, s)
+}

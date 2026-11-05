@@ -167,10 +167,10 @@ func TestMaintainJobLeaseRenewsUntilStopped(t *testing.T) {
 			return true, nil
 		}, func() {})
 	}()
-	want := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	ticks <- want
-	if got := <-renewed; !got.Equal(want) {
-		t.Fatalf("renewed at %v, want %v", got, want)
+	before := time.Now().UTC()
+	ticks <- before.Add(-time.Hour)
+	if got := <-renewed; got.Before(before) || got.After(time.Now().UTC()) {
+		t.Fatalf("renewed at stale tick time: %v", got)
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -275,10 +275,10 @@ func TestMaintainCalendarSyncLeaseRenewsUntilStopped(t *testing.T) {
 			return nil
 		}, func() {})
 	}()
-	want := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
-	ticks <- want
-	if got := <-renewed; !got.Equal(want) {
-		t.Fatalf("renewed at %v, want %v", got, want)
+	before := time.Now().UTC()
+	ticks <- before.Add(-time.Hour)
+	if got := <-renewed; got.Before(before) || got.After(time.Now().UTC()) {
+		t.Fatalf("renewed at stale tick time: %v", got)
 	}
 	cancel()
 	if err := <-done; err != nil {

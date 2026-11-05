@@ -303,6 +303,15 @@ func parseMaxResults(r *http.Request) (int64, error) {
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": calendar.NewAPIError(calendar.ErrorProviderUnavailable, protected.Error())})
+		return
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": calendar.ErrorMutationOutcomeUnknown, "message": calendar.MutationOutcomeUnknownMessage, "retryable": false}})
+		return
+	}
 	apiErr := &calendar.APIError{}
 	if !errors.As(err, &apiErr) {
 		apiErr = &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: err.Error(), Retryable: true, Cause: err}

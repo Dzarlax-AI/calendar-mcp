@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// JobLeaseDuration is the server-controlled job claim and heartbeat policy.
+// A worker from an older binary must not run concurrently with schema 25:
+// it does not maintain the persisted deadline.
+const JobLeaseDuration = 15 * time.Minute
 
 func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -82,11 +88,18 @@ func (s *Store) EnqueueJob(ctx context.Context, j Job) error {
 }
 
 func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*Job, error) {
+	started := time.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.dialect == DialectSQLite {
+		// Acquire the writer lock before selecting or sampling the claim time.
+		if _, err = tx.ExecContext(ctx, `UPDATE sync_jobs SET state=state WHERE 0`); err != nil {
+			return nil, err
+		}
+	}
 	q := `SELECT candidate.id, candidate.rule_id, candidate.kind, candidate.state, candidate.available_at,
 		candidate.claimed_at, candidate.claimed_by, candidate.attempt, candidate.created_at, candidate.finished_at
 		FROM sync_jobs AS candidate WHERE candidate.state = ? AND candidate.available_at <= ?
@@ -121,8 +134,9 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 			return nil, nil
 		}
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state = ?, claimed_at = ?, claimed_by = ?, attempt = attempt + 1
-		WHERE id = ? AND state = ?`), "running", now, workerID, j.ID, "pending")
+	claimedAt := now.Add(time.Since(started))
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state = ?, claimed_at = ?, claimed_by = ?, lease_until = ?, attempt = attempt + 1
+		WHERE id = ? AND state = ?`), "running", claimedAt, workerID, claimedAt.Add(JobLeaseDuration), j.ID, "pending")
 	if err != nil {
 		return nil, fmt.Errorf("claim job: %w", err)
 	}
@@ -130,10 +144,18 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 	if changed != 1 {
 		return nil, nil
 	}
+	if !claimedAt.Add(JobLeaseDuration).After(now.Add(time.Since(started))) {
+		return nil, ErrJobLeaseLost
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit claim: %w", err)
 	}
-	j.State, j.ClaimedAt, j.ClaimedBy, j.Attempt = "running", &now, workerID, j.Attempt+1
+	// A slow commit can consume the entire claim. Leave the committed job for
+	// ordinary recovery; never return it as an executable claim after expiry.
+	if !claimedAt.Add(JobLeaseDuration).After(now.Add(time.Since(started))) {
+		return nil, ErrJobLeaseLost
+	}
+	j.State, j.ClaimedAt, j.ClaimedBy, j.Attempt = "running", &claimedAt, workerID, j.Attempt+1
 	return &j, nil
 }
 
@@ -145,11 +167,11 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	selectStale := `SELECT id FROM sync_jobs WHERE state=? AND claimed_at<? ORDER BY id`
+	selectStale := `SELECT id FROM sync_jobs WHERE state=? AND claimed_at<? AND (lease_until IS NULL OR lease_until<=?) ORDER BY id`
 	if s.dialect == DialectPostgres {
 		selectStale += " FOR UPDATE"
 	}
-	rows, err := tx.QueryContext(ctx, s.query(selectStale), "running", staleBefore)
+	rows, err := tx.QueryContext(ctx, s.query(selectStale), "running", staleBefore, now)
 	if err != nil {
 		return 0, fmt.Errorf("select stale jobs: %w", err)
 	}
@@ -171,8 +193,8 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 	}
 	recovered := make([]string, 0, len(candidates))
 	for _, jobID := range candidates {
-		res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, available_at=?, claimed_at=NULL, claimed_by=NULL, finished_at=NULL
-			WHERE id=? AND state=? AND claimed_at<?`), "pending", now, jobID, "running", staleBefore)
+		res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, available_at=?, claimed_at=NULL, claimed_by=NULL, lease_until=NULL, finished_at=NULL
+			WHERE id=? AND state=? AND claimed_at<? AND (lease_until IS NULL OR lease_until<=?)`), "pending", now, jobID, "running", staleBefore, now)
 		if err != nil {
 			return 0, fmt.Errorf("recover stale job %q: %w", jobID, err)
 		}
@@ -198,8 +220,27 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 }
 
 func (s *Store) RenewJobLease(ctx context.Context, job Job, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_jobs SET claimed_at=?
-		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), now, job.ID, "running", job.ClaimedBy, job.Attempt)
+	return s.renewJobLease(ctx, job, now, nil)
+}
+
+// beforeCommit is a private fault-injection seam for transaction timing tests.
+func (s *Store) renewJobLease(ctx context.Context, job Job, now time.Time, beforeCommit func()) (bool, error) {
+	started := time.Now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	claimed, deadline, found, err := s.lockJobLeaseForUpdate(ctx, tx, job)
+	if err != nil || !found {
+		return false, err
+	}
+	lockedAt := now.Add(time.Since(started))
+	if !claimed.Valid || claimed.Time.After(lockedAt) || deadline.Valid && !deadline.Time.After(lockedAt) {
+		return false, nil
+	}
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET claimed_at=?,lease_until=CASE WHEN lease_until IS NULL THEN lease_until ELSE ? END
+		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), lockedAt, lockedAt.Add(JobLeaseDuration), job.ID, "running", job.ClaimedBy, job.Attempt)
 	if err != nil {
 		return false, fmt.Errorf("renew job lease: %w", err)
 	}
@@ -207,7 +248,45 @@ func (s *Store) RenewJobLease(ctx context.Context, job Job, now time.Time) (bool
 	if err != nil {
 		return false, err
 	}
-	return count == 1, nil
+	if count != 1 {
+		return false, nil
+	}
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	if deadline.Valid && !deadline.Time.After(now.Add(time.Since(started))) {
+		return false, nil
+	}
+	if err = tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit job lease renewal: %w", err)
+	}
+	if deadline.Valid && !lockedAt.Add(JobLeaseDuration).After(now.Add(time.Since(started))) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// lockJobLeaseForUpdate must precede a fresh clock check. SQLite takes its
+// write lock with a no-op update; PostgreSQL locks the matching job row.
+func (s *Store) lockJobLeaseForUpdate(ctx context.Context, tx *sql.Tx, job Job) (sql.NullTime, sql.NullTime, bool, error) {
+	var claimed, deadline sql.NullTime
+	if s.dialect == DialectSQLite {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=state WHERE id=?`), job.ID); err != nil {
+			return claimed, deadline, false, err
+		}
+	}
+	q := `SELECT claimed_at,lease_until FROM sync_jobs WHERE id=? AND state=? AND claimed_by=? AND attempt=?`
+	if s.dialect == DialectPostgres {
+		q += ` FOR UPDATE`
+	}
+	err := tx.QueryRowContext(ctx, s.query(q), job.ID, "running", job.ClaimedBy, job.Attempt).Scan(&claimed, &deadline)
+	if errors.Is(err, sql.ErrNoRows) {
+		return claimed, deadline, false, nil
+	}
+	if err != nil {
+		return claimed, deadline, false, err
+	}
+	return claimed, deadline, true, nil
 }
 
 func (s *Store) StartRun(ctx context.Context, r Run) error {
@@ -223,6 +302,12 @@ func (s *Store) StartRun(ctx context.Context, r Run) error {
 }
 
 func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome string, finished time.Time, counters Run) error {
+	return s.finishRun(ctx, runID, job, outcome, finished, counters, nil)
+}
+
+// beforeCommit is a private fault-injection seam for transaction timing tests.
+func (s *Store) finishRun(ctx context.Context, runID string, job Job, outcome string, finished time.Time, counters Run, beforeCommit func()) error {
+	started := time.Now()
 	var encrypted []byte
 	if counters.Preview != nil {
 		if job.Kind != "dry_run" || outcome != "succeeded" || len(counters.Preview.Entries) > 1000 {
@@ -248,7 +333,14 @@ func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome st
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, finished_at=?
+	_, deadline, found, err := s.lockJobLeaseForUpdate(ctx, tx, job)
+	if err != nil {
+		return err
+	}
+	if !found || deadline.Valid && !deadline.Time.After(finished.Add(time.Since(started))) {
+		return ErrJobLeaseLost
+	}
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, finished_at=?,lease_until=NULL
 		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), outcome, finished, job.ID, "running", job.ClaimedBy, job.Attempt)
 	if err != nil {
 		return fmt.Errorf("finish job: %w", err)
@@ -278,6 +370,12 @@ func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome st
 		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO sync_run_previews (run_id, expires_at, payload) VALUES (?, ?, ?)`), runID, finished.Add(7*24*time.Hour), encrypted); err != nil {
 			return fmt.Errorf("save sync preview: %w", err)
 		}
+	}
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	if deadline.Valid && !deadline.Time.After(finished.Add(time.Since(started))) {
+		return ErrJobLeaseLost
 	}
 	return tx.Commit()
 }
@@ -353,24 +451,61 @@ func (s *Store) HasSuccessfulDryRun(ctx context.Context, ruleID string) (bool, e
 	return count > 0, nil
 }
 
+// InsertPendingCreateMapping inserts an intent only when neither its identity
+// nor target is already mapped. A false result never authorizes dispatch.
+// This protects the mapping row, not a job lease or an in-flight HTTP request.
+func (s *Store) InsertPendingCreateMapping(ctx context.Context, m Mapping) (string, error) {
+	if m.ID == "" || m.RuleID == "" || m.SourceEventID == "" || m.ReconciliationState != "pending_create" || m.TargetEventID != "pending:"+m.ID || m.LastSeenAt.IsZero() {
+		return "", errors.New("invalid pending creation intent")
+	}
+	token, err := uuid.NewRandom()
+	if err != nil {
+		return "", err
+	}
+	incarnation := "new:" + token.String()
+	res, err := s.db.ExecContext(ctx, s.query(`INSERT INTO event_mappings(id,rule_id,object_kind,source_event_id,source_series_id,original_start,target_event_id,target_series_id,content_hash,last_seen_at,reconciliation_state,incarnation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), m.ID, m.RuleID, m.ObjectKind, m.SourceEventID, m.SourceSeriesID, m.OriginalStart, m.TargetEventID, m.TargetSeriesID, m.ContentHash, m.LastSeenAt, m.ReconciliationState, incarnation)
+	if err != nil {
+		return "", fmt.Errorf("insert pending creation intent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n != 1 {
+		return "", err
+	}
+	return incarnation, nil
+}
+
 func (s *Store) UpsertMapping(ctx context.Context, m Mapping) error {
+	if strings.HasPrefix(m.ReconciliationState, "pending_") {
+		return ErrMappingConflict
+	}
+	if m.Version > 0 {
+		return s.updateMappingCAS(ctx, m, m.Version, true)
+	}
+	token, err := uuid.NewRandom()
+	if err != nil {
+		return err
+	}
 	q := `INSERT INTO event_mappings(id, rule_id, object_kind, source_event_id, source_series_id, original_start,
-		target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(rule_id, source_event_id, original_start) DO UPDATE SET object_kind=excluded.object_kind,
-		source_series_id=excluded.source_series_id, target_event_id=excluded.target_event_id,
-		target_series_id=excluded.target_series_id, content_hash=excluded.content_hash,
-		last_seen_at=excluded.last_seen_at, reconciliation_state=excluded.reconciliation_state`
-	_, err := s.db.ExecContext(ctx, s.query(q), m.ID, m.RuleID, m.ObjectKind, m.SourceEventID, m.SourceSeriesID,
-		m.OriginalStart, m.TargetEventID, m.TargetSeriesID, m.ContentHash, m.LastSeenAt, m.ReconciliationState)
+		target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state,incarnation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING`
+	res, err := s.db.ExecContext(ctx, s.query(q), m.ID, m.RuleID, m.ObjectKind, m.SourceEventID, m.SourceSeriesID,
+		m.OriginalStart, m.TargetEventID, m.TargetSeriesID, m.ContentHash, m.LastSeenAt, m.ReconciliationState, "new:"+token.String())
 	if err != nil {
 		return fmt.Errorf("upsert mapping: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrMappingConflict
 	}
 	return nil
 }
 
 func (s *Store) ListMappings(ctx context.Context, ruleID string) ([]Mapping, error) {
 	rows, err := s.db.QueryContext(ctx, s.query(`SELECT id, rule_id, object_kind, source_event_id, source_series_id,
-		original_start, target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state
+		original_start, target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state, version,incarnation,target_etag
 		FROM event_mappings WHERE rule_id=? ORDER BY source_event_id, original_start`), ruleID)
 	if err != nil {
 		return nil, fmt.Errorf("list mappings: %w", err)
@@ -380,7 +515,7 @@ func (s *Store) ListMappings(ctx context.Context, ruleID string) ([]Mapping, err
 	for rows.Next() {
 		var m Mapping
 		if err := rows.Scan(&m.ID, &m.RuleID, &m.ObjectKind, &m.SourceEventID, &m.SourceSeriesID, &m.OriginalStart,
-			&m.TargetEventID, &m.TargetSeriesID, &m.ContentHash, &m.LastSeenAt, &m.ReconciliationState); err != nil {
+			&m.TargetEventID, &m.TargetSeriesID, &m.ContentHash, &m.LastSeenAt, &m.ReconciliationState, &m.Version, &m.Incarnation, &m.TargetETag); err != nil {
 			return nil, err
 		}
 		result = append(result, m)
@@ -389,15 +524,8 @@ func (s *Store) ListMappings(ctx context.Context, ruleID string) ([]Mapping, err
 }
 
 func (s *Store) DeleteMapping(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, s.query(`DELETE FROM event_mappings WHERE id=?`), id)
-	if err != nil {
-		return fmt.Errorf("delete mapping: %w", err)
-	}
-	changed, _ := res.RowsAffected()
-	if changed != 1 {
-		return ErrNotFound
-	}
-	return nil
+	// Deleting without an incarnation can remove a later replacement row.
+	return ErrMappingConflict
 }
 
 func (s *Store) PutOAuthAttempt(ctx context.Context, a OAuthAttempt) error {

@@ -68,17 +68,18 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		return calendar.EventSyncPage{}, classifyGoogleSyncError(err)
 	}
 
-	page := calendar.EventSyncPage{}
+	page := calendar.EventSyncPage{SourceTimeZone: response.TimeZone}
 	for _, item := range response.Items {
 		if item == nil || item.Id == "" {
 			return calendar.EventSyncPage{}, syncProtocolError(nil)
 		}
 		if item.Status == "cancelled" {
 			page.DeletedEventIDs = append(page.DeletedEventIDs, item.Id)
+			page.Removals = append(page.Removals, googleSyncRemoval(item, calendar.EventSyncProviderCancellation))
 			continue
 		}
 		event := fromGoogleEventV2(item, request.CalendarID, response.TimeZone)
-		inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
+		inWindow, windowErr := googleEventInSyncWindowInZone(event, request.Window, response.TimeZone)
 		if windowErr != nil {
 			// A single malformed/special Google event must not discard the
 			// otherwise valid page or park the entire calendar. Keep the page
@@ -96,6 +97,7 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 			// Incremental changes may move a cached item outside it; tombstone it.
 			if request.Mode == calendar.EventSyncIncremental {
 				page.DeletedEventIDs = append(page.DeletedEventIDs, item.Id)
+				page.Removals = append(page.Removals, googleSyncRemoval(item, calendar.EventSyncWindowEviction))
 			}
 			continue
 		}
@@ -113,6 +115,17 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 	// Google only emits the durable sync token on the final page.
 	page.NextCursor = calendar.EventSyncCursor(response.NextSyncToken)
 	return page, nil
+}
+
+// Keep the provider's original representation: sparse cancellations do not
+// establish whether the object was a standalone event, instance, or master.
+func googleSyncRemoval(item *gcal.Event, reason calendar.EventSyncRemovalReason) calendar.EventSyncRemoval {
+	removal := calendar.EventSyncRemoval{ObjectID: item.Id, Reason: reason, SeriesID: item.RecurringEventId, RecurrencePresent: len(item.Recurrence) > 0}
+	if item.OriginalStartTime != nil {
+		original := item.OriginalStartTime
+		removal.OriginalStart = &calendar.EventTime{Date: original.Date, DateTime: original.DateTime, TimeZone: original.TimeZone}
+	}
+	return removal
 }
 
 // RepairEventSyncObject refetches one malformed event without replaying the
@@ -138,11 +151,24 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 	if item.Status == "cancelled" {
 		return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
 	}
+	if needsAllDayZone(item) && !p.repairZoneMatches(ctx, request.CalendarID, request.CalendarTimeZone) {
+		if err := ctx.Err(); err != nil {
+			return calendar.EventSyncObjectRepairResult{}, err
+		}
+		return quarantinedRepair(item, object, "invalid_source_calendar_time_zone"), nil
+	}
 	event := fromGoogleEventV2(item, request.CalendarID, "")
-	inWindow, windowErr := googleEventInSyncWindow(event, request.Window)
+	inWindow, windowErr := googleEventInSyncWindowInZone(event, request.Window, request.CalendarTimeZone)
 	providerCorrected := false
 	if windowErr != nil {
-		if correctedEndDate, eligible := googleAllDayRepairEndDate(item); eligible && request.AllowProviderMutation && request.Object.ETag == item.Etag {
+		if correctedEndDate, eligible := googleAllDayRepairEndDate(item); eligible && request.AllowProviderMutation && request.Object.ETag == item.Etag && validRepairTimeZone(request.CalendarTimeZone) {
+			// Validate the corrected civil dates in the calendar's zone before
+			// issuing a provider write (some jurisdictions skipped a day).
+			corrected := event
+			corrected.End.Date = correctedEndDate
+			if _, err := googleEventInSyncWindowInZone(corrected, request.Window, request.CalendarTimeZone); err != nil {
+				return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item, googleEventWindowErrorCode(err))}}, nil
+			}
 			// Patch only the malformed field and bind it to the representation we
 			// just read. A concurrent edit therefore fails rather than overwriting
 			// any user change. Suppress notifications for this operator repair.
@@ -169,8 +195,14 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 			if item.Status == "cancelled" {
 				return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
 			}
+			if needsAllDayZone(item) && !p.repairZoneMatches(ctx, request.CalendarID, request.CalendarTimeZone) {
+				if err := ctx.Err(); err != nil {
+					return calendar.EventSyncObjectRepairResult{}, err
+				}
+				return quarantinedRepair(item, object, "invalid_source_calendar_time_zone"), nil
+			}
 			event = fromGoogleEventV2(item, request.CalendarID, "")
-			inWindow, windowErr = googleEventInSyncWindow(event, request.Window)
+			inWindow, windowErr = googleEventInSyncWindowInZone(event, request.Window, request.CalendarTimeZone)
 			providerCorrected = true
 		}
 	}
@@ -185,6 +217,24 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 		outcome = calendar.EventSyncObjectProviderCorrected
 	}
 	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: outcome, Upserts: []calendar.EventSyncUpsert{{Object: object, Event: event}}}, nil
+}
+
+// Google Events.Get does not include the calendar's time zone. Confirm the
+// discovery value against the provider before interpreting a civil date.
+func (p *Provider) repairZoneMatches(ctx context.Context, calendarID, zone string) bool {
+	if !validRepairTimeZone(zone) {
+		return false
+	}
+	cal, err := p.svc.Calendars.Get(calendarID).Context(ctx).Do()
+	return err == nil && cal != nil && validRepairTimeZone(cal.TimeZone) && cal.TimeZone == zone
+}
+
+func needsAllDayZone(item *gcal.Event) bool {
+	return item != nil && ((item.Start != nil && item.Start.Date != "") || (item.End != nil && item.End.Date != ""))
+}
+
+func quarantinedRepair(item *gcal.Event, object calendar.SyncObject, reason string) calendar.EventSyncObjectRepairResult {
+	return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectStillQuarantined, Warning: &calendar.EventSyncWarning{Code: calendar.EventSyncProtocol, ObjectID: item.Id, ETag: item.Etag, Diagnostic: googleEventDiagnostic(item, reason)}}
 }
 
 // googleAllDayRepairEndDate accepts only the malformed shape that an operator
@@ -253,7 +303,49 @@ func googleEventInSyncWindow(event calendar.EventV2, window calendar.EventSyncWi
 	if !end.After(start) {
 		return false, errors.New("invalid event time range")
 	}
+	if event.Start.IsAllDay() || event.End.IsAllDay() {
+		return false, errors.New("all-day projection requires an explicit calendar time zone")
+	}
 	return start.Before(window.End) && end.After(window.Start), nil
+}
+
+// The list response carries the source calendar zone. A date-only event is a
+// civil-day interval in that zone, including daylight-saving transitions.
+// Without a valid zone it cannot safely be projected against an instant window.
+func googleEventInSyncWindowInZone(event calendar.EventV2, window calendar.EventSyncWindow, zone string) (bool, error) {
+	if !event.Start.IsAllDay() && !event.End.IsAllDay() {
+		return googleEventInSyncWindow(event, window)
+	}
+	if err := calendar.ValidateEventTimeRangeV2(event.Start, event.End); err != nil {
+		return false, fmt.Errorf("invalid event time range: %w", err)
+	}
+	if !validRepairTimeZone(zone) {
+		return false, errors.New("invalid source calendar time zone")
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return false, errors.New("invalid source calendar time zone")
+	}
+	start, err := time.ParseInLocation("2006-01-02", event.Start.Date, loc)
+	if err != nil || start.Format("2006-01-02") != event.Start.Date {
+		return false, errors.New("invalid local all-day start")
+	}
+	end, err := time.ParseInLocation("2006-01-02", event.End.Date, loc)
+	if err != nil || end.Format("2006-01-02") != event.End.Date || !end.After(start) {
+		return false, errors.New("invalid local all-day end")
+	}
+	if !validSyncWindow(window) {
+		return false, errors.New("invalid sync window")
+	}
+	return start.Before(window.End) && end.After(window.Start), nil
+}
+
+func validRepairTimeZone(zone string) bool {
+	if zone == "" || zone == "Local" {
+		return false
+	}
+	_, err := time.LoadLocation(zone)
+	return err == nil
 }
 
 func googleEventWindowErrorCode(err error) string {

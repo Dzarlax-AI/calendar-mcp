@@ -16,6 +16,11 @@ import (
 
 const microsoftSyncMarkerProperty = "String {8ECCC264-6887-4EBE-992F-8888D0AB112E} Name CalendarMcpSyncMarker"
 
+// Graph event update/delete documentation does not establish conditional
+// write semantics strong enough for the no-invite fence. Until independently
+// verified, the combined sync capability remains unavailable.
+func (p *Provider) SupportsNoAttendeeMutations() bool { return false }
+
 func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
 	var metadata struct {
 		CanEdit bool `json:"canEdit"`
@@ -190,6 +195,9 @@ func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*cale
 	if err != nil {
 		return nil, err
 	}
+	// Only an explicit attendee array on a full GET and a confirmed
+	// organizer can attest participant visibility.
+	result.AttendeesKnown = event.Attendees != nil && event.IsOrganizer != nil && *event.IsOrganizer
 	return &result, nil
 }
 
@@ -230,6 +238,9 @@ func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.Ins
 }
 
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	if request.RequireNoAttendees {
+		return nil, unsupportedMicrosoft("safe sync create is unavailable until notification semantics are verified")
+	}
 	if err := validateMicrosoftCreate(request.Event, request.Notifications); err != nil {
 		return nil, err
 	}
@@ -250,6 +261,12 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 }
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	if request.PreviewOnly {
+		return nil, unsupportedMicrosoft("preview is not available for this provider mutation")
+	}
+	if request.RequireNoAttendees {
+		return nil, unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified")
+	}
 	if request.Scope == calendar.ScopeFollowing {
 		return nil, unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter")
 	}
@@ -355,6 +372,12 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 }
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	if request.PreviewOnly {
+		return nil, unsupportedMicrosoft("preview is not available for this provider mutation")
+	}
+	if request.RequireNoAttendees {
+		return nil, unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified")
+	}
 	if request.Scope == calendar.ScopeFollowing {
 		return nil, unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter")
 	}
@@ -435,6 +458,12 @@ func toGraphAttendeesV2(values []calendar.AttendeeV2) []graphAttendee {
 
 func (e *graphEvent) toEventV2(calendarID string) (calendar.EventV2, error) {
 	result := calendar.EventV2{ID: e.ID, CalendarID: calendarID, ICalUID: e.ICalUID, ETag: e.ETag, HTMLLink: e.WebLink, Title: e.Subject, Description: e.Body.Content, DescriptionFormat: e.Body.ContentType, Location: e.Location.DisplayName, RecurringEventID: e.SeriesMasterID, InstanceKind: e.Type, Transparency: graphTransparency(e.ShowAs), Visibility: e.Sensitivity}
+	result.SourceAttendeesComplete = e.Attendees != nil && e.IsOrganizer != nil && *e.IsOrganizer
+	for _, attendee := range e.Attendees {
+		if attendee.EmailAddress.Address == "" {
+			result.SourceAttendeesComplete = false
+		}
+	}
 	if e.IsCancelled {
 		result.Status = "cancelled"
 	}

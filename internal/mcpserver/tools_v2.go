@@ -398,6 +398,17 @@ func v2Result(value any) *mcp.CallToolResult {
 }
 
 func v2Error(err error) *mcp.CallToolResult {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		result := mcp.NewToolResultStructured(calendar.NewAPIError(calendar.ErrorProviderUnavailable, protected.Error()), protected.Error())
+		result.IsError = true
+		return result
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		result := mcp.NewToolResultStructured(map[string]any{"code": calendar.ErrorMutationOutcomeUnknown, "message": calendar.MutationOutcomeUnknownMessage, "retryable": false}, calendar.MutationOutcomeUnknownMessage)
+		result.IsError = true
+		return result
+	}
 	var structured any = calendar.NewAPIError(calendar.ErrorProviderUnavailable, err.Error())
 	var apiErr *calendar.APIError
 	if errors.As(err, &apiErr) {

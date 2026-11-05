@@ -2,6 +2,7 @@ package restapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -119,7 +120,7 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		VideoCall:   req.VideoCall,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeLegacyMutationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, ev)
@@ -193,7 +194,7 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 
 	ev, err := s.reg.UpdateEvent(r.Context(), calID, eventID, upd)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeLegacyMutationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ev)
@@ -210,7 +211,7 @@ func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.reg.DeleteEvent(r.Context(), calID, eventID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeLegacyMutationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -224,4 +225,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func writeLegacyMutationError(w http.ResponseWriter, err error) {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		writeError(w, http.StatusInternalServerError, protected.Error())
+		return
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": calendar.MutationOutcomeUnknownMessage, "code": calendar.ErrorMutationOutcomeUnknown, "retryable": false})
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }

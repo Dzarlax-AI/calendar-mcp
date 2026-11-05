@@ -220,21 +220,24 @@ func runStorageContract(t *testing.T, store *Store) {
 	if count, err := store.RecoverStaleJobs(ctx, now.Add(4*time.Minute), now.Add(20*time.Minute)); err != nil || count != 0 {
 		t.Fatalf("premature recovery=%d err=%v", count, err)
 	}
-	if count, err := store.RecoverStaleJobs(ctx, now.Add(11*time.Minute), now.Add(20*time.Minute)); err != nil || count != 1 {
+	if count, err := store.RecoverStaleJobs(ctx, now.Add(11*time.Minute), now.Add(20*time.Minute)); err != nil || count != 0 {
+		t.Fatalf("deadline recovery=%d err=%v", count, err)
+	}
+	if count, err := store.RecoverStaleJobs(ctx, now.Add(11*time.Minute), now.Add(26*time.Minute)); err != nil || count != 1 {
 		t.Fatalf("recovered=%d err=%v", count, err)
 	}
-	if err := store.FinishRun(ctx, "stale-run", *claimedStale, "succeeded", now.Add(20*time.Minute), Run{}); !errors.Is(err, ErrJobLeaseLost) {
+	if err := store.FinishRun(ctx, "stale-run", *claimedStale, "succeeded", now.Add(26*time.Minute), Run{}); !errors.Is(err, ErrJobLeaseLost) {
 		t.Fatalf("stale worker finish error = %v", err)
 	}
-	reclaimed, err := store.ClaimJob(ctx, "worker-3", now.Add(20*time.Minute))
+	reclaimed, err := store.ClaimJob(ctx, "worker-3", now.Add(26*time.Minute))
 	if err != nil || reclaimed == nil || reclaimed.ID != "stale" || reclaimed.Attempt != 2 {
 		t.Fatalf("reclaimed = %#v, err = %v", reclaimed, err)
 	}
-	reclaimedRun := Run{ID: "reclaimed-run", JobID: "stale", RuleID: "rule", Trigger: "manual", Outcome: "running", StartedAt: now.Add(20 * time.Minute)}
+	reclaimedRun := Run{ID: "reclaimed-run", JobID: "stale", RuleID: "rule", Trigger: "manual", Outcome: "running", StartedAt: now.Add(26 * time.Minute)}
 	if err := store.StartRun(ctx, reclaimedRun); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishRun(ctx, "reclaimed-run", *reclaimed, "succeeded", now.Add(21*time.Minute), Run{}); err != nil {
+	if err := store.FinishRun(ctx, "reclaimed-run", *reclaimed, "succeeded", now.Add(27*time.Minute), Run{}); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := store.ListRuns(ctx, 10)
@@ -265,6 +268,11 @@ func runStorageContract(t *testing.T, store *Store) {
 	if err := store.UpsertMapping(ctx, conflict); err == nil {
 		t.Fatal("duplicate target event mapping succeeded")
 	}
+	mappingsBefore, err := store.ListMappings(ctx, "rule")
+	if err != nil || len(mappingsBefore) != 1 {
+		t.Fatalf("mappings before: %v", err)
+	}
+	mapping = mappingsBefore[0]
 	mapping.ContentHash = "two"
 	if err := store.UpsertMapping(ctx, mapping); err != nil {
 		t.Fatal(err)

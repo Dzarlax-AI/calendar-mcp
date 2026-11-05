@@ -4,6 +4,9 @@ package eventsync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -49,6 +52,19 @@ type CalendarSyncStore interface {
 	ResetCalendarSync(context.Context, storage.CalendarSyncState, time.Time) (*storage.CalendarSyncState, error)
 }
 
+// sourceProjectionStore is optional so providers and tests that do not use
+// cache-backed copy continue through the existing sync path.
+type sourceProjectionStore interface {
+	PlanSourceProjectionCapture(context.Context, storage.CalendarSyncState) (storage.SourceProjectionCapturePlan, error)
+	StartProjectionPageAttempt(context.Context, storage.CalendarSyncState, storage.ProjectionPageAttemptInput, time.Time) error
+	ApplyProjectionStagedPage(context.Context, storage.CalendarSyncState, string, int, string, string, calendar.EventSyncPage, time.Time) error
+	FinalizeSourceProjectionPage(context.Context, storage.CalendarSyncState, string, int, string, string, calendar.EventSyncPage, time.Time, time.Time) (int64, error)
+}
+
+type reservationDeferrer interface {
+	DeferCalendarSyncForReservation(context.Context, storage.CalendarSyncState, time.Time, time.Time) error
+}
+
 // Service drains provider pages for an already-claimed calendar sync state.
 // PolicyFor receives the resolved provider and can override an adapter's
 // provider-specific polling/backoff policy. Without an override, optional
@@ -58,6 +74,9 @@ type Service struct {
 	Resolver  CalendarResolver
 	PolicyFor func(calendar.Provider) calendar.EventSyncPolicy
 	Now       func() time.Time
+	// CaptureRemovalProvenance is an experimental unpublished staging path.
+	// It does not make a cache revision ready for copying.
+	CaptureRemovalProvenance bool
 }
 
 func NewService(store CalendarSyncStore, resolver CalendarResolver, policyFor func(calendar.Provider) calendar.EventSyncPolicy) *Service {
@@ -86,8 +105,70 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		return s.fail(ctx, state, s.policy(provider), calendar.EventSyncUnsupported, 0, ErrCapabilityUnavailable)
 	}
 	policy := s.policy(provider)
+	deferReservationConflict := func(err error) (bool, error) {
+		if !errors.Is(err, storage.ErrExclusiveDispatchConflict) {
+			return false, nil
+		}
+		deferrer, ok := s.Store.(reservationDeferrer)
+		if !ok {
+			return true, err
+		}
+		now := s.now()
+		if deferErr := deferrer.DeferCalendarSyncForReservation(ctx, state, now, now.Add(policy.PollInterval)); deferErr != nil {
+			return true, deferErr
+		}
+		return true, nil
+	}
 	if err := s.repairOne(ctx, state, provider, providerCalendarID, policy); err != nil {
 		return err
+	}
+	projectionStore, projectionCapable := s.Store.(sourceProjectionStore)
+	var capture storage.SourceProjectionCapturePlan
+	beginCapture := func() error {
+		if !projectionCapable {
+			return nil
+		}
+		var planErr error
+		capture, planErr = projectionStore.PlanSourceProjectionCapture(ctx, state)
+		if planErr != nil || !capture.Enabled {
+			return planErr
+		}
+		if capture.Reset {
+			var reset *storage.CalendarSyncState
+			reset, planErr = s.Store.ResetCalendarSync(ctx, state, s.now())
+			if planErr != nil {
+				return planErr
+			}
+			if reset == nil {
+				return ErrStorageFailure
+			}
+			state = *reset
+			capture, planErr = projectionStore.PlanSourceProjectionCapture(ctx, state)
+			if planErr != nil {
+				return planErr
+			}
+			if !capture.Enabled || capture.Reset {
+				return ErrStorageFailure
+			}
+		}
+		if err := projectionStore.StartProjectionPageAttempt(ctx, state, capture.Input, s.now()); err != nil {
+			if errors.Is(err, storage.ErrCalendarSyncLeaseLost) || errors.Is(err, storage.ErrExclusiveDispatchConflict) || ctx.Err() != nil {
+				return err
+			}
+			// Replica capture is optional. Its failure must not stop the normal
+			// calendar cache from advancing; the replica remains unavailable.
+			capture.Enabled = false
+		}
+		return nil
+	}
+	if err := beginCapture(); err != nil {
+		if handled, deferErr := deferReservationConflict(err); handled {
+			return deferErr
+		}
+		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+			return err
+		}
+		return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
 	}
 	mode := calendar.EventSyncIncremental
 	if state.Cursor == "" {
@@ -98,6 +179,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 	seenTokens := make(map[calendar.EventSyncPageToken]struct{})
 	resets := 0
 	degraded := false
+	stageOrdinal := 0
 	for pages := 0; ; pages++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -138,6 +220,9 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			if errors.Is(resetErr, storage.ErrCalendarSyncLeaseLost) {
 				return resetErr
 			}
+			if handled, deferErr := deferReservationConflict(resetErr); handled {
+				return deferErr
+			}
 			if resetErr != nil || reset == nil {
 				return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
 			}
@@ -146,6 +231,16 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			pageToken = ""
 			clear(seenTokens)
 			degraded = false
+			stageOrdinal = 0
+			if err := beginCapture(); err != nil {
+				if handled, deferErr := deferReservationConflict(err); handled {
+					return deferErr
+				}
+				if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+					return err
+				}
+				return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+			}
 			continue
 		}
 		if !page.Complete {
@@ -156,6 +251,16 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 
 		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement, degraded)
+		if s.CaptureRemovalProvenance {
+			if err := validateRemovalProvenance(page); err != nil {
+				return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
+			}
+			encoded, err := json.Marshal(page)
+			if err != nil {
+				return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
+			}
+			batch.RemovalStage = &storage.RemovalStagePage{Ordinal: stageOrdinal, PageHash: stageHash(encoded), PreviousTokenHash: stageHash([]byte(pageToken)), NextTokenHash: stageHash([]byte(page.NextPageToken)), Removals: page.Removals}
+		}
 		if page.Complete {
 			next := s.now().Add(policy.PollInterval)
 			if !degraded {
@@ -163,12 +268,43 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			}
 			batch.NextSyncAt = &next
 		}
-		applyErr := s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
+		// A malformed source page still follows the ordinary degraded cache
+		// path; it must never publish a copy-safe source revision.
+		if degraded {
+			capture.Enabled = false
+		}
+		var applyErr error
+		if capture.Enabled {
+			// Provider pages carry local calendar IDs. The private staged
+			// projection uses the canonical ID, just like the legacy batch.
+			staged := page
+			staged.Upserts = append([]calendar.EventSyncUpsert(nil), page.Upserts...)
+			for i := range staged.Upserts {
+				staged.Upserts[i].Event.CalendarID = state.CalendarID
+			}
+			if page.Complete {
+				_, applyErr = projectionStore.FinalizeSourceProjectionPage(ctx, state, capture.Input.AttemptID, stageOrdinal, string(pageToken), capture.Input.Timezone, staged, s.now(), *batch.NextSyncAt)
+			} else {
+				applyErr = projectionStore.ApplyProjectionStagedPage(ctx, state, capture.Input.AttemptID, stageOrdinal, string(pageToken), capture.Input.Timezone, staged, s.now())
+			}
+			if applyErr != nil && !errors.Is(applyErr, storage.ErrCalendarSyncLeaseLost) && !errors.Is(applyErr, storage.ErrExclusiveDispatchConflict) && ctx.Err() == nil {
+				// The projection transaction rolled back. Earlier pages were
+				// already applied to the legacy cache, so resume that path with
+				// this page and leave the incomplete replica unpublished.
+				capture.Enabled = false
+				applyErr = s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
+			}
+		} else {
+			applyErr = s.Store.ApplyEventSyncPage(ctx, state, batch, page.Complete, s.now())
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if errors.Is(applyErr, storage.ErrCalendarSyncLeaseLost) {
 			return applyErr
+		}
+		if handled, deferErr := deferReservationConflict(applyErr); handled {
+			return deferErr
 		}
 		if applyErr != nil {
 			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
@@ -177,6 +313,7 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			return nil
 		}
 		pageToken = page.NextPageToken
+		stageOrdinal++
 	}
 }
 
@@ -249,16 +386,31 @@ func (s *Service) repairOne(ctx context.Context, state storage.CalendarSyncState
 		return nil
 	}
 	for _, item := range due {
-		if err := s.repairObject(ctx, state, providerCalendarID, policy, repairer, item); err != nil {
+		if err := s.repairObject(ctx, state, providerCalendarID, provider.Name() == "google", policy, repairer, item); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncState, providerCalendarID string, policy calendar.EventSyncPolicy, repairer calendar.EventSyncObjectRepairProvider, item storage.CalendarSyncQuarantine) error {
+func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncState, providerCalendarID string, requiresZone bool, policy calendar.EventSyncPolicy, repairer calendar.EventSyncObjectRepairProvider, item storage.CalendarSyncQuarantine) error {
+	zone := ""
+	if reader, ok := s.Store.(interface {
+		RepairCalendarTimeZone(context.Context, string) (string, error)
+	}); requiresZone && ok {
+		var err error
+		zone, err = reader.RepairCalendarTimeZone(ctx, state.CalendarID)
+		if err != nil {
+			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+		}
+	}
+	validZone := !requiresZone || (zone != "" && zone != "Local")
+	if requiresZone && validZone {
+		_, err := time.LoadLocation(zone)
+		validZone = err == nil
+	}
 	allowProviderMutation := false
-	if item.ProviderMutationAuthorizedETag != "" && item.ProviderMutationAuthorizedETag == item.ETag {
+	if validZone && item.ProviderMutationAuthorizedETag != "" && item.ProviderMutationAuthorizedETag == item.ETag {
 		consumed, err := s.Store.ConsumeEventSyncProviderMutationAuthorization(ctx, state, item.CalendarID, item.ObjectID, item.ETag, s.now())
 		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
 			return err
@@ -269,9 +421,9 @@ func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncSt
 		allowProviderMutation = consumed
 	}
 	result, repairErr := repairer.RepairEventSyncObject(ctx, calendar.EventSyncObjectRepairRequest{
-		CalendarID: providerCalendarID,
-		Window:     calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
-		Object:     calendar.SyncObject{ObjectID: item.ObjectID, ETag: item.ETag}, Generation: state.Generation,
+		CalendarID: providerCalendarID, CalendarTimeZone: zone,
+		Window: calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
+		Object: calendar.SyncObject{ObjectID: item.ObjectID, ETag: item.ETag}, Generation: state.Generation,
 		AllowProviderMutation: allowProviderMutation,
 	})
 	if err := ctx.Err(); err != nil {
@@ -463,7 +615,7 @@ func validatePage(mode calendar.EventSyncMode, page calendar.EventSyncPage) erro
 		}
 	}
 	if page.ResetRequired {
-		if page.Complete || page.NextPageToken != "" || page.NextCursor != "" || len(page.Upserts) != 0 || len(page.DeletedEventIDs) != 0 || len(page.DeletedObjectIDs) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.Inventory) != 0 {
+		if page.Complete || page.NextPageToken != "" || page.NextCursor != "" || len(page.Upserts) != 0 || len(page.DeletedEventIDs) != 0 || len(page.Removals) != 0 || len(page.DeletedObjectIDs) != 0 || len(page.ReplacedObjectIDs) != 0 || len(page.Inventory) != 0 {
 			return ErrInvalidPage
 		}
 		return nil
@@ -548,4 +700,46 @@ func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, ful
 		batch.Objects = append(batch.Objects, object)
 	}
 	return batch
+}
+
+func stageHash(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+// validateRemovalProvenance requires explicit provenance for each deletion.
+// Unknown removals must stop capture rather than disappear from staging.
+func validateRemovalProvenance(page calendar.EventSyncPage) error {
+	deleted := make(map[string]struct{}, len(page.DeletedEventIDs))
+	for _, id := range page.DeletedEventIDs {
+		if id == "" {
+			return ErrInvalidPage
+		}
+		if _, exists := deleted[id]; exists {
+			return ErrInvalidPage
+		}
+		deleted[id] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(page.Removals))
+	for _, rem := range page.Removals {
+		if rem.ObjectID == "" || (rem.Reason != calendar.EventSyncProviderCancellation && rem.Reason != calendar.EventSyncWindowEviction) {
+			return ErrInvalidPage
+		}
+		if _, ok := deleted[rem.ObjectID]; !ok {
+			return ErrInvalidPage
+		}
+		if _, ok := seen[rem.ObjectID]; ok {
+			return ErrInvalidPage
+		}
+		seen[rem.ObjectID] = struct{}{}
+	}
+	if len(deleted) != len(seen) {
+		return ErrInvalidPage
+	}
+	for _, upsert := range page.Upserts {
+		if _, ok := seen[upsert.Event.ID]; ok {
+			return ErrInvalidPage
+		}
+	}
+	return nil
 }

@@ -11,6 +11,13 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("accepts legacy rules and preserves known and unknown sync modes", async () => {
+    const rules = [{ id: "legacy" }, { id: "direct", sync_mode: "direct" }, { id: "cached", sync_mode: "cached_instances" }, { id: "future", sync_mode: "future_mode" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ csrf_token: "csrf", calendars: [], connections: [], rules, runs: [], settings: {} }), { status: 200 })));
+    expect((await getBootstrap()).rules.map((rule) => rule.syncMode)).toEqual([undefined, "direct", "cached_instances", "future_mode"]);
+    vi.unstubAllGlobals();
+  });
+
   it("preserves last reported provider access while gating disabled calendars", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ csrf_token: "csrf", calendars: [{ id: "c1", name: "Disabled", enabled: false, can_read: true, can_write: false }], connections: [], rules: [], runs: [], settings: {}, capabilities: {} }), { status: 200 })));
     const bootstrap = await getBootstrap();

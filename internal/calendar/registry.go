@@ -10,12 +10,14 @@ import (
 )
 
 type Registry struct {
-	mu              sync.RWMutex
-	providers       []Provider
-	byName          map[string]Provider
-	excludeIDs      map[string]struct{} // prefixed IDs to skip in fan-out
-	includeImported bool                // if false, skip google:*@import.calendar.google.com in fan-out
-	selection       CalendarSelection
+	mu                          sync.RWMutex
+	providers                   []Provider
+	byName                      map[string]Provider
+	excludeIDs                  map[string]struct{} // prefixed IDs to skip in fan-out
+	includeImported             bool                // if false, skip google:*@import.calendar.google.com in fan-out
+	selection                   CalendarSelection
+	mutationGuard               ProviderMutationGuard
+	mutationGuardResolveFailure func()
 }
 
 type CalendarSelection interface {
@@ -31,9 +33,11 @@ type CalendarDiscovery interface {
 }
 
 type RegistryOptions struct {
-	ExcludeIDs               []string
-	IncludeImportedCalendars bool
-	Selection                CalendarSelection
+	ExcludeIDs                  []string
+	IncludeImportedCalendars    bool
+	Selection                   CalendarSelection
+	MutationGuard               ProviderMutationGuard
+	MutationGuardResolveFailure func()
 }
 
 func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
@@ -48,6 +52,8 @@ func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
 		}
 		r.includeImported = opts[0].IncludeImportedCalendars
 		r.selection = opts[0].Selection
+		r.mutationGuard = opts[0].MutationGuard
+		r.mutationGuardResolveFailure = opts[0].MutationGuardResolveFailure
 	}
 	return r
 }
@@ -237,10 +243,18 @@ func (r *Registry) CreateEvent(ctx context.Context, calendarID string, event Eve
 	if err != nil {
 		return nil, err
 	}
-	ev, err := provider.CreateEvent(ctx, rawID, event)
+	intent, err := beginProviderMutation(ctx, r.mutationGuard, CanonicalCalendarID(provider, rawID))
 	if err != nil {
 		return nil, err
 	}
+	ev, err := provider.CreateEvent(ctx, rawID, event)
+	if err != nil {
+		return nil, providerMutationDispatchError(intent, err)
+	}
+	if ev == nil || (intent != nil && ev.ID == "") {
+		return nil, ErrProviderMutationOutcomeUnknown
+	}
+	r.resolveProviderMutation(ctx, intent)
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
 	ev.ID = provider.Name() + ":" + ev.ID
@@ -256,10 +270,18 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if err != nil {
 		return nil, err
 	}
-	ev, err := provider.UpdateEvent(ctx, rawCalID, rawEventID, event)
+	intent, err := beginProviderMutation(ctx, r.mutationGuard, CanonicalCalendarID(provider, rawCalID))
 	if err != nil {
 		return nil, err
 	}
+	ev, err := provider.UpdateEvent(ctx, rawCalID, rawEventID, event)
+	if err != nil {
+		return nil, providerMutationDispatchError(intent, err)
+	}
+	if ev == nil || (intent != nil && ev.ID == "") {
+		return nil, ErrProviderMutationOutcomeUnknown
+	}
+	r.resolveProviderMutation(ctx, intent)
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
 	ev.ID = provider.Name() + ":" + ev.ID
@@ -275,7 +297,15 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	if err != nil {
 		return err
 	}
-	return provider.DeleteEvent(ctx, rawCalID, rawEventID)
+	intent, err := beginProviderMutation(ctx, r.mutationGuard, CanonicalCalendarID(provider, rawCalID))
+	if err != nil {
+		return err
+	}
+	if err := provider.DeleteEvent(ctx, rawCalID, rawEventID); err != nil {
+		return providerMutationDispatchError(intent, err)
+	}
+	r.resolveProviderMutation(ctx, intent)
+	return nil
 }
 
 func validateEventProvider(routeName, providerName, eventID string) (string, error) {

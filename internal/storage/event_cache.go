@@ -154,6 +154,20 @@ func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, o
 		return false, fmt.Errorf("begin schedule event sync object repair: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Match the worker's state -> quarantine order. An expired lease can
+	// otherwise let a scheduler hold quarantine while waiting on the worker.
+	// A missing sync state is allowed, preserving authorization semantics.
+	if s.dialect == DialectSQLite {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET updated_at=updated_at WHERE calendar_id=?`), calendarID); err != nil {
+			return false, fmt.Errorf("lock event sync repair schedule: %w", err)
+		}
+	} else {
+		var locked string
+		err := tx.QueryRowContext(ctx, s.query(`SELECT calendar_id FROM calendar_sync_state WHERE calendar_id=? FOR NO KEY UPDATE`), calendarID).Scan(&locked)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("lock event sync repair schedule: %w", err)
+		}
+	}
 	// The diagnostics handler is the authenticated operator boundary. Bind the
 	// grant to the current ETag so a later provider version needs a new click.
 	authorization, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_quarantine
@@ -351,17 +365,24 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 		return fmt.Errorf("begin ensure calendar sync states: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider
+	fenceID, fenced, err := s.acquireSourceStateFenceTx(ctx, tx, now)
+	if err != nil {
+		return fmt.Errorf("fence calendar window update: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider, EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=?)
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`), true, true, "connected")
+		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`), "cached_instances", true, true, "connected")
 	if err != nil {
 		return fmt.Errorf("list readable calendars: %w", err)
 	}
-	type calendarSource struct{ id, provider string }
+	type calendarSource struct {
+		id, provider string
+		copySource   bool
+	}
 	var calendars []calendarSource
 	for rows.Next() {
 		var value calendarSource
-		if err := rows.Scan(&value.id, &value.provider); err != nil {
+		if err := rows.Scan(&value.id, &value.provider, &value.copySource); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan readable calendar: %w", err)
 		}
@@ -375,6 +396,9 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 		return err
 	}
 	for _, value := range calendars {
+		if value.copySource && !fenced {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_state(calendar_id, strategy, cursor, window_start, window_end, generation, status, next_sync_at, updated_at)
 			VALUES (?, ?, '', ?, ?, 0, 'pending', ?, ?) ON CONFLICT(calendar_id) DO NOTHING`), value.id, value.provider, window.Start, window.End, now, now); err != nil {
 			return fmt.Errorf("create calendar sync state: %w", err)
@@ -407,6 +431,11 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 			continue
 		}
 	}
+	if fenced {
+		if err = s.releaseSourceStateFenceTx(ctx, tx, fenceID); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit ensure calendar sync states: %w", err)
 	}
@@ -426,6 +455,10 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		return nil, fmt.Errorf("begin calendar sync claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	fenceID, fenced, err := s.acquireSourceStateFenceTx(ctx, tx, now)
+	if err != nil {
+		return nil, fmt.Errorf("fence calendar claim: %w", err)
+	}
 	q := `SELECT ss.calendar_id, ss.strategy, ss.cursor, ss.window_start, ss.window_end, ss.generation, ss.status, ss.next_sync_at,
 		ss.last_started_at, ss.last_success_at, ss.last_error_code, ss.lease_owner, ss.lease_until
 		FROM calendar_sync_state ss
@@ -433,11 +466,12 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		JOIN connections conn ON conn.id=c.connection_id
 		WHERE (ss.status IN (?, ?, ?, ?, ?) OR (ss.status='parked' AND ss.last_error_code='auth' AND conn.provider='apple'))
 			AND conn.status=? AND c.can_read=? AND c.enabled=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
+			AND (? OR NOT EXISTS (SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=ss.calendar_id AND r.sync_mode='cached_instances'))
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"
 	}
-	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, true, now, now))
+	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, true, now, now, fenced))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
@@ -456,6 +490,11 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 	}
 	if changed != 1 {
 		return nil, nil
+	}
+	if fenced {
+		if err = s.releaseSourceStateFenceTx(ctx, tx, fenceID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit calendar sync claim: %w", err)
@@ -511,6 +550,24 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 	defer func() { _ = tx.Rollback() }()
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
+	}
+	if err := s.applyEventSyncPageTx(ctx, tx, state, batch, final, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit event sync page: %w", err)
+	}
+	return nil
+}
+
+// applyEventSyncPageTx applies a page in an existing transaction. The caller
+// must hold the current calendar sync lease and commits or rolls back all
+// related projection and cursor updates together.
+func (s *Store) applyEventSyncPageTx(ctx context.Context, tx *sql.Tx, state CalendarSyncState, batch EventSyncBatch, final bool, now time.Time) error {
+	if batch.RemovalStage != nil {
+		if err := s.stageRemovals(ctx, tx, state, *batch.RemovalStage, final); err != nil {
+			return err
+		}
 	}
 	degradedCode := ""
 	if batch.Degraded {
@@ -689,9 +746,6 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 				return ErrCalendarSyncLeaseLost
 			}
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit event sync page: %w", err)
 	}
 	return nil
 }

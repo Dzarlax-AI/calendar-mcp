@@ -6,12 +6,16 @@ import (
 	"net/http"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/storage"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 )
 
 // FailureCode returns a finite code. Provider text and identifiers are never persisted.
 func FailureCode(err error) string {
+	if errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
+		return "sync_cache_unavailable"
+	}
 	if errors.Is(err, errJobLeaseStage) {
 		return "sync_job_lease"
 	}
@@ -106,6 +110,8 @@ func FailureCode(err error) string {
 // FailureMessage accepts only known codes; it never renders stored provider text.
 func FailureMessage(code string) string {
 	switch code {
+	case "sync_cache_unavailable":
+		return "The source cache is unavailable, stale, incomplete, or does not cover the requested window."
 	case "recurrence_unsupported":
 		return "Target calendar cannot preserve this recurrence pattern; the rule remains paused."
 	case "sync_missing_series_mapping":

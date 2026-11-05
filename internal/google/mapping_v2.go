@@ -46,6 +46,25 @@ func fromGoogleEventV2(event *gcal.Event, calendarID, fallbackTimeZone string) c
 			WorkingLocation: structMap(event.WorkingLocationProperties),
 		},
 	}
+	// Trust the source list only when Google provides an explicit list and
+	// confirms visibility. In-progress group expansion, extra unnamed guests,
+	// nil entries and participants without an address remain incomplete.
+	visible := event.Organizer != nil && event.Organizer.Self
+	if !visible && event.GuestsCanSeeOtherGuests != nil && *event.GuestsCanSeeOtherGuests {
+		for _, attendee := range event.Attendees {
+			if attendee != nil && attendee.Self {
+				visible = true
+				break
+			}
+		}
+	}
+	result.SourceAttendeesComplete = event.Attendees != nil && !event.AttendeesOmitted && visible
+	for _, attendee := range event.Attendees {
+		if attendee == nil || attendee.AsyncOperation != "" || attendee.AdditionalGuests != 0 || attendee.Email == "" {
+			result.SourceAttendeesComplete = false
+			break
+		}
+	}
 	if event.ExtendedProperties != nil {
 		result.Google.PrivateProperties = cloneMap(event.ExtendedProperties.Private)
 		result.Google.SharedProperties = cloneMap(event.ExtendedProperties.Shared)
@@ -175,6 +194,9 @@ func toGoogleEventV2(input calendar.EventCreateV2) (*gcal.Event, error) {
 func fromGoogleAttendeesV2(values []*gcal.EventAttendee) []calendar.AttendeeV2 {
 	result := make([]calendar.AttendeeV2, 0, len(values))
 	for _, value := range values {
+		if value == nil {
+			continue
+		}
 		result = append(result, calendar.AttendeeV2{
 			PersonV2: calendar.PersonV2{ID: value.Id, Email: value.Email, Name: value.DisplayName, Self: value.Self, Comment: value.Comment},
 			Status:   value.ResponseStatus, Optional: value.Optional, Organizer: value.Organizer,

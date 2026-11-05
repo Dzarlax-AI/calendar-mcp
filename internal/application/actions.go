@@ -77,11 +77,24 @@ func (s *Service) RespondToEvent(ctx context.Context, request calendar.RespondTo
 		return nil, err
 	}
 	request.Ref = rawRef
+	ticket, err := s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawRef.CalendarID))
+	if err != nil {
+		return nil, err
+	}
 	result, err := responder.RespondToEventV2(ctx, request)
 	if err != nil {
+		if ticket != nil {
+			return nil, unknownProviderMutation()
+		}
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
+	if result == nil {
+		return nil, unknownProviderMutation()
+	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
+	if result != nil && !finishProviderMutation(ctx, ticket, result.Status == "completed") {
+		result.Warnings = append(result.Warnings, mutationPendingWarning)
+	}
 	return result, nil
 }
 
@@ -94,8 +107,8 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	if err != nil {
 		return nil, selectionResolveFailure(request.DestinationCalendarID, err)
 	}
-	if destinationProvider.Name() != provider.Name() {
-		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "cross-provider event moves are not supported")
+	if calendar.ProviderRouteName(destinationProvider) != calendar.ProviderRouteName(provider) {
+		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "cross-account or cross-provider event moves are not supported")
 	}
 	mover, ok := provider.(calendar.MoveProviderV2)
 	if !ok {
@@ -107,11 +120,24 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	}
 	request.Ref = rawRef
 	request.DestinationCalendarID = rawDestination
+	ticket, err := s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawRef.CalendarID), calendar.CanonicalCalendarID(destinationProvider, rawDestination))
+	if err != nil {
+		return nil, err
+	}
 	result, err := mover.MoveEventV2(ctx, request)
 	if err != nil {
+		if ticket != nil {
+			return nil, unknownProviderMutation()
+		}
 		return nil, providerFailure(provider.Name(), prefixedDestination, err)
 	}
+	if result == nil {
+		return nil, unknownProviderMutation()
+	}
 	normalizeOperation(result, provider.Name(), prefixedDestination)
+	if result != nil && !finishProviderMutation(ctx, ticket, result.Status == "completed") {
+		result.Warnings = append(result.Warnings, mutationPendingWarning)
+	}
 	return result, nil
 }
 
@@ -135,11 +161,22 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 	}
 	prefixedCalendarID := request.CalendarID
 	request.CalendarID = rawCalendarID
+	ticket, err := s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawCalendarID))
+	if err != nil {
+		return nil, err
+	}
 	event, err := importer.ImportEventV2(ctx, request)
 	if err != nil {
+		if ticket != nil {
+			return nil, unknownProviderMutation()
+		}
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
+	if event == nil || event.ID == "" {
+		return nil, unknownProviderMutation()
+	}
 	normalizeEvent(event, provider.Name(), prefixedCalendarID)
+	_ = finishProviderMutation(ctx, ticket, event.ID != "")
 	return event, nil
 }
 

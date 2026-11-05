@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,7 +89,7 @@ func TestImportWritesRuleAndMappingsAtomically(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plan, err := Load(writeState(t, `{"mappings":{"source-event":{"google_id":"target-event","hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}`), "microsoft:source", "google:target", now)
+	plan, err := Load(writeState(t, `{"mappings":{"source-event":{"google_id":"target-event","hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"source-event-2":{"google_id":"target-event-2","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}`), "microsoft:source", "google:target", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,15 +101,27 @@ func TestImportWritesRuleAndMappingsAtomically(t *testing.T) {
 		t.Fatalf("rules = %#v, err = %v", rules, err)
 	}
 	mappings, err := store.ListMappings(ctx, plan.Rule.ID)
-	if err != nil || len(mappings) != 1 || mappings[0].ReconciliationState != "legacy" {
+	if err != nil || len(mappings) != 2 || mappings[0].ReconciliationState != "legacy" || mappings[0].Version != 1 || mappings[0].Incarnation == "" || mappings[0].Incarnation == mappings[1].Incarnation {
 		t.Fatalf("mappings = %#v, err = %v", mappings, err)
+	}
+	// Imported rows participate in the same version fence as new mappings.
+	updated := mappings[0]
+	updated.ReconciliationState = "pending_update"
+	if err := store.UpdateMappingCAS(ctx, updated, updated.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMapping(ctx, mappings[0]); !errors.Is(err, storage.ErrMappingConflict) {
+		t.Fatalf("stale legacy update overwrote pending mapping: %v", err)
+	}
+	if err := store.DeleteMapping(ctx, mappings[0].ID); err == nil {
+		t.Fatal("legacy delete removed pending mapping")
 	}
 	if err := Import(ctx, store, plan); err == nil {
 		t.Fatal("second import unexpectedly succeeded")
 	}
 	rules, _ = store.ListRules(ctx)
 	mappings, _ = store.ListMappings(ctx, plan.Rule.ID)
-	if len(rules) != 1 || len(mappings) != 1 {
+	if len(rules) != 1 || len(mappings) != 2 {
 		t.Fatalf("repeat import was not atomic: rules=%d mappings=%d", len(rules), len(mappings))
 	}
 }
