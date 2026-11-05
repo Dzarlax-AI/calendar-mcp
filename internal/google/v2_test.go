@@ -56,6 +56,30 @@ func TestListBothViewsMissingMaster(t *testing.T) {
 	}
 }
 
+func TestListBothViewsLoadsMasterOutsideSeriesResults(t *testing.T) {
+	for _, status := range []string{"confirmed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/events/master") {
+					_, _ = io.WriteString(w, `{"id":"master","status":"`+status+`","summary":"Series","recurrence":["RRULE:FREQ=DAILY"],"start":{"date":"2026-09-01"},"end":{"date":"2026-09-02"}}`)
+					return
+				}
+				if r.URL.Query().Get("singleEvents") == "true" {
+					_, _ = io.WriteString(w, `{"items":[{"id":"instance","summary":"Changed","recurringEventId":"master","originalStartTime":{"date":"2026-10-01"},"start":{"date":"2026-10-01"},"end":{"date":"2026-10-02"}}]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"items":[]}`)
+			})
+			defer closeServer()
+			page, err := provider.ListEventsV2(t.Context(), calendar.ListEventsRequestV2{CalendarID: "primary", Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth})
+			if err != nil || len(page.Items) != 1 || page.Items[0].InstanceKind != "exception" || page.Items[0].RecurringEventID != "master" {
+				t.Fatalf("page = %#v, err = %v", page, err)
+			}
+		})
+	}
+}
+
 func TestListBothViewsMissingMasterAcrossPagesKeepsAllDayInstance(t *testing.T) {
 	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

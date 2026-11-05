@@ -40,6 +40,7 @@ func (m *fakeMappings) DeleteMapping(_ context.Context, id string) error {
 type fakeV2Provider struct {
 	name                      string
 	events                    []calendar.EventV2
+	pages                     map[string]calendar.Page[calendar.EventV2]
 	instances                 []calendar.EventV2
 	lastRequest               calendar.ListEventsRequestV2
 	lastUpdate                calendar.UpdateEventRequestV2
@@ -77,6 +78,9 @@ func (p *fakeV2Provider) ListEventsV2(_ context.Context, request calendar.ListEv
 		p.onList()
 	}
 	p.lastRequest = request
+	if p.pages != nil {
+		return p.pages[request.PageToken], nil
+	}
 	return calendar.Page[calendar.EventV2]{Items: p.events, Complete: true}, nil
 }
 
@@ -619,16 +623,115 @@ func TestFindTargetInstanceIncludesOriginalStartOutsideSyncWindow(t *testing.T) 
 	}
 }
 
-func TestDryRunReportsMissingSeriesWithoutExposingEventIDs(t *testing.T) {
-	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "private-event", RecurringEventID: "private-series", InstanceKind: "exception", Start: calendar.EventTime{Date: "2026-10-01"}, End: calendar.EventTime{Date: "2026-10-02"}}}}
+func TestDryRunDetachesMissingSeriesWithoutWriting(t *testing.T) {
+	original := calendar.EventTime{Date: "2026-10-01"}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "private-event", RecurringEventID: "private-series", InstanceKind: "exception", OriginalStart: &original, Start: original, End: calendar.EventTime{Date: "2026-10-02"}}}}
 	target := &fakeV2Provider{name: "apple"}
 	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), &fakeMappings{values: map[string]storage.Mapping{}})
 	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
-	_, err := engine.Run(t.Context(), rule, true)
-	if !errors.Is(err, ErrMissingSeriesMapping) || FailureCode(err) != "sync_missing_series_mapping" {
-		t.Fatalf("unexpected diagnostic: %v", err)
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 1 || result.Warnings != 1 {
+		t.Fatalf("unexpected result: %#v, %v", result, err)
 	}
 	if target.created != 0 || target.updated != 0 || target.deleted != 0 {
 		t.Fatal("dry run mutated target")
+	}
+}
+
+func TestMissingSeriesRejectsIncompatibleMappingBeforeWrites(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-10-01"}
+	instance := calendar.EventV2{ID: "instance", InstanceKind: "cancelled", Status: "cancelled", RecurringEventID: "master", OriginalStart: &day}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "unrelated", Start: day}, instance}}
+	target := &fakeV2Provider{name: "apple"}
+	mapping := storage.Mapping{ID: "existing", RuleID: "rule", ObjectKind: "exception", SourceEventID: instance.ID, OriginalStart: eventOriginalStart(instance), TargetEventID: "target-instance"}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{mapping.ID: mapping}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	_, err := engine.Run(t.Context(), rule, false)
+	if !errors.Is(err, ErrMissingSeriesMapping) || target.created != 0 || target.deleted != 0 || len(mappings.values) != 1 {
+		t.Fatalf("unsafe reconciliation: %v, target %#v", err, target)
+	}
+}
+
+func TestIncompleteSourcePageStopsBeforeWrites(t *testing.T) {
+	source := &fakeV2Provider{name: "google", pages: map[string]calendar.Page[calendar.EventV2]{"": {Items: []calendar.EventV2{{ID: "event"}}, Complete: false}}}
+	target := &fakeV2Provider{name: "apple"}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	if _, err := engine.Run(t.Context(), rule, false); err == nil || target.created != 0 || len(mappings.values) != 0 {
+		t.Fatalf("incomplete source was processed: %v", err)
+	}
+}
+
+func TestMissingSeriesRejectsMissingOriginalStart(t *testing.T) {
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{{ID: "instance", RecurringEventID: "master", InstanceKind: "exception"}}}
+	target := &fakeV2Provider{name: "apple"}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	if _, err := engine.Run(t.Context(), rule, false); err == nil || target.created != 0 || len(mappings.values) != 0 {
+		t.Fatalf("unstable identity was processed: %v", err)
+	}
+}
+
+func TestMissingSeriesCopiesInstancesAndKeepsDetachedMode(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-10-01"}
+	instance := calendar.EventV2{ID: "exception", InstanceKind: "exception", RecurringEventID: "master", OriginalStart: &day, Title: "Exception", Start: day, End: calendar.EventTime{Date: "2026-10-02"}}
+	ordinary := instance
+	ordinary.ID, ordinary.InstanceKind = "ordinary", "occurrence"
+	cancelled := instance
+	cancelled.ID, cancelled.InstanceKind, cancelled.Status = "cancelled", "cancelled", "cancelled"
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{instance, ordinary, cancelled}}
+	target := &fakeV2Provider{name: "apple", uniqueCreatedIDs: true}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 2 || result.Skipped != 1 || target.created != 0 || len(mappings.values) != 0 {
+		t.Fatalf("dry run: %#v %v", result, err)
+	}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 2 || target.created != 2 || len(mappings.values) != 2 {
+		t.Fatalf("run: %#v %v", result, err)
+	}
+	for _, m := range mappings.values {
+		if m.ObjectKind != "detached_occurrence" || m.SourceSeriesID != "master" {
+			t.Fatalf("mapping: %#v", m)
+		}
+	}
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Start: day, End: instance.End, Recurrence: []string{"RRULE:FREQ=DAILY"}}
+	source.events = []calendar.EventV2{master, instance, ordinary, cancelled}
+	result, err = engine.Run(t.Context(), rule, false)
+	if err != nil || result.Created != 0 || target.created != 2 || target.deleted != 0 {
+		t.Fatalf("repeat with master: %#v %v", result, err)
+	}
+}
+
+func TestMissingSeriesDetectionWaitsForAllPages(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-10-01"}
+	instance := calendar.EventV2{ID: "exception", InstanceKind: "exception", RecurringEventID: "master", OriginalStart: &day, Start: day, End: calendar.EventTime{Date: "2026-10-02"}}
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Start: day, End: instance.End, Recurrence: []string{"RRULE:FREQ=DAILY"}}
+	source := &fakeV2Provider{name: "google", pages: map[string]calendar.Page[calendar.EventV2]{"": {Items: []calendar.EventV2{instance}, NextPageToken: "next", Complete: true}, "next": {Items: []calendar.EventV2{master}, Complete: true}}}
+	target := &fakeV2Provider{name: "apple"}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), &fakeMappings{values: map[string]storage.Mapping{}})
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 1 || result.Updated != 1 || result.Warnings != 0 {
+		t.Fatalf("run: %#v %v", result, err)
+	}
+}
+
+func TestCancelledSeriesDoesNotBlockAvailableException(t *testing.T) {
+	day := calendar.EventTime{Date: "2026-10-01"}
+	master := calendar.EventV2{ID: "master", InstanceKind: "seriesMaster", Status: "cancelled"}
+	instance := calendar.EventV2{ID: "instance", InstanceKind: "exception", RecurringEventID: "master", OriginalStart: &day, Start: day, End: calendar.EventTime{Date: "2026-10-02"}}
+	source := &fakeV2Provider{name: "google", events: []calendar.EventV2{master, instance}}
+	target := &fakeV2Provider{name: "apple"}
+	engine := New(calendar.NewRegistry([]calendar.Provider{source, target}), &fakeMappings{values: map[string]storage.Mapping{}})
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	result, err := engine.Run(t.Context(), rule, true)
+	if err != nil || result.Created != 1 || target.created != 0 {
+		t.Fatalf("run: %#v %v", result, err)
 	}
 }

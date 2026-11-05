@@ -135,6 +135,12 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		byKey[mappingKey(mapping.SourceEventID, mapping.OriginalStart)] = mapping
 	}
 	events = deduplicateAndOrder(events)
+	availableSeries := make(map[string]bool)
+	for _, event := range events {
+		if objectKind(event) == "series" && event.Status != "cancelled" {
+			availableSeries[event.ID] = true
+		}
+	}
 	// Once a rule mirrors a series as individual instances, keep that mode even
 	// if the source master reappears. Creating a target series would duplicate
 	// the existing standalone copies. SourceSeriesID persists the choice.
@@ -145,10 +151,26 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		}
 	}
 	for _, event := range events {
-		if event.InstanceKind == calendar.OrphanOccurrence {
+		if event.RecurringEventID != "" && (event.InstanceKind == calendar.OrphanOccurrence || !availableSeries[event.RecurringEventID]) {
 			if _, mirrored := findSeriesMapping(byKey, event.RecurringEventID); !mirrored {
 				detached[event.RecurringEventID] = true
 			}
+		}
+	}
+	// Never reinterpret an existing series instance mapping as a standalone
+	// target: the latter is updated/deleted with top-level scope.
+	for _, event := range events {
+		if !detached[event.RecurringEventID] || event.RecurringEventID == "" {
+			continue
+		}
+		if event.ID == "" || event.OriginalStart == nil {
+			return Result{}, errors.New("detached source occurrence lacks stable identity")
+		}
+		if mapping, ok := byKey[mappingKey(event.ID, eventOriginalStart(event))]; ok && mapping.ObjectKind != "detached_occurrence" {
+			return Result{}, fmt.Errorf("%w: incompatible occurrence mapping", ErrMissingSeriesMapping)
+		}
+		if _, mirrored := findSeriesMapping(byKey, event.RecurringEventID); mirrored {
+			return Result{}, fmt.Errorf("%w: conflicting series and detached mappings", ErrMissingSeriesMapping)
 		}
 	}
 	filtered := make([]calendar.EventV2, 0, len(events))
@@ -531,6 +553,9 @@ func listAll(ctx context.Context, provider calendar.EventProviderV2, request cal
 		page, err := provider.ListEventsV2(ctx, request)
 		if err != nil {
 			return nil, err
+		}
+		if !page.Complete {
+			return nil, errors.New("source event listing is incomplete")
 		}
 		result = append(result, page.Items...)
 		if page.NextPageToken == "" {
