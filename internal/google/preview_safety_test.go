@@ -1,7 +1,6 @@
 package google
 
 import (
-	"context"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -10,18 +9,11 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-type previewRejectGuard struct{ begins atomic.Int32 }
-
-func (g *previewRejectGuard) BeginProviderMutation(context.Context, []string) (calendar.ProviderMutationIntent, error) {
-	g.begins.Add(1)
-	return nil, nil
-}
 func TestNonFollowingPreviewNeverDispatchesGoogle(t *testing.T) {
 	var requests atomic.Int32
 	provider, closeServer := testProvider(t, func(http.ResponseWriter, *http.Request) { requests.Add(1) })
 	defer closeServer()
-	guard := &previewRejectGuard{}
-	s := application.New(calendar.NewRegistry([]calendar.Provider{provider}), application.WithProviderMutationGuard(guard))
+	s := application.New(calendar.NewRegistry([]calendar.Provider{provider}))
 	for _, scope := range []calendar.MutationScope{calendar.ScopeSingle, calendar.ScopeSeries} {
 		ref := calendar.EventRef{CalendarID: "google:primary", EventID: "event"}
 		if _, err := s.UpdateEvent(t.Context(), calendar.UpdateEventRequestV2{Ref: ref, Scope: scope, PreviewOnly: true}); err == nil {
@@ -37,7 +29,7 @@ func TestNonFollowingPreviewNeverDispatchesGoogle(t *testing.T) {
 			t.Fatal("direct delete preview accepted")
 		}
 	}
-	if requests.Load() != 0 || guard.begins.Load() != 0 {
-		t.Fatalf("provider requests=%d guard begins=%d", requests.Load(), guard.begins.Load())
+	if requests.Load() != 0 {
+		t.Fatalf("provider requests=%d", requests.Load())
 	}
 }

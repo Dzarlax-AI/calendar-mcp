@@ -564,11 +564,6 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 // must hold the current calendar sync lease and commits or rolls back all
 // related projection and cursor updates together.
 func (s *Store) applyEventSyncPageTx(ctx context.Context, tx *sql.Tx, state CalendarSyncState, batch EventSyncBatch, final bool, now time.Time) error {
-	if batch.RemovalStage != nil {
-		if err := s.stageRemovals(ctx, tx, state, *batch.RemovalStage, final); err != nil {
-			return err
-		}
-	}
 	degradedCode := ""
 	if batch.Degraded {
 		degradedCode = batch.ErrorCode

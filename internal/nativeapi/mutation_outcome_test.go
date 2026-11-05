@@ -20,7 +20,7 @@ func TestMutationOutcomeUnknownIsNotRetryable(t *testing.T) {
 	}
 }
 
-func TestGuardPredispatchErrorTakesPriorityOverUnknownOutcome(t *testing.T) {
+func TestProtectionErrorTakesPriorityOverUnknownOutcome(t *testing.T) {
 	guarded := calendar.NewProviderMutationProtectionError(fmt.Errorf("private-secret: %w", calendar.ErrProviderMutationOutcomeUnknown))
 	for _, value := range []error{guarded, fmt.Errorf("private-wrapper: %w", guarded)} {
 		w := httptest.NewRecorder()

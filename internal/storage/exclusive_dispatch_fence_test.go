@@ -53,7 +53,7 @@ func runExclusiveDispatchFenceContract(t *testing.T, first, second *Store, prefi
 	if err := first.EnsureCalendarSyncStates(ctx, now, SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	req := ExclusiveDispatchRequest{OperationID: prefix + "-first-operation", TargetKey: prefix + "-physical-target", RequestHash: stagingDigest("request"), Kind: "create", CalendarIDs: []string{a, b}, Now: now}
+	req := ExclusiveDispatchRequest{OperationID: prefix + "-first-operation", TargetKey: prefix + "-physical-target", RequestHash: projectionPageHash([]byte("request")), Kind: "create", CalendarIDs: []string{a, b}, Now: now}
 	bad := req
 	bad.OperationID = prefix + "-rollback-operation"
 	bad.CalendarIDs = []string{a, prefix + "-missing"}

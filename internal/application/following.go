@@ -123,9 +123,6 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 			CalendarID: request.Ref.CalendarID, Event: future, Notifications: calendar.NotificationsNone, RequireNoAttendees: true,
 		})
 		if err != nil {
-			if s.providerMutationGuard != nil {
-				return nil, unknownProviderMutation()
-			}
 			return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 		}
 		createdNow = true
@@ -211,9 +208,6 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 		Patch: calendar.EventPatchV2{Recurrence: calendar.PatchField[[]string]{Present: true, Value: oldRecurrence}},
 	})
 	if err != nil {
-		if s.providerMutationGuard != nil {
-			return nil, unknownProviderMutation()
-		}
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
 	if result == nil {

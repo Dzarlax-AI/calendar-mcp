@@ -131,8 +131,6 @@ type CachedEventUpsert struct {
 // declares that the page belongs to a replacement snapshot; only a successful
 // final page sweeps older generations.
 type EventSyncBatch struct {
-	// RemovalStage is internal, optional staging only; it is not a published journal.
-	RemovalStage     *RemovalStagePage
 	Upserts          []CachedEventUpsert
 	DeletedEventIDs  []string
 	DeletedObjectIDs []string

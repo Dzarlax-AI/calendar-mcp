@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,11 @@ import (
 )
 
 var ErrExclusiveDispatchConflict = errors.New("exclusive dispatch fence unavailable or already reserved")
+
+func targetDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32 && hex.EncodeToString(decoded) == value
+}
 
 // GlobalSyncDispatchKey serializes worker sync runs with verified source
 // publication. It is not a lock for external calendar writers.

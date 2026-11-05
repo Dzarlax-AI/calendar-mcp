@@ -14,10 +14,9 @@ import (
 )
 
 type Service struct {
-	registry              *calendar.Registry
-	providerMutationGuard calendar.ProviderMutationGuard
-	eventReadModel        EventReadModel
-	eventReadModelWindow  storage.SyncWindow
+	registry             *calendar.Registry
+	eventReadModel       EventReadModel
+	eventReadModelWindow storage.SyncWindow
 }
 
 // EventReadModel is the deliberately small projection surface used by the
@@ -54,7 +53,7 @@ func (s *Service) CloneWithEventReadModel(model EventReadModel, window storage.S
 	if s == nil {
 		return nil
 	}
-	return &Service{registry: s.registry, providerMutationGuard: s.providerMutationGuard, eventReadModel: model, eventReadModelWindow: window}
+	return &Service{registry: s.registry, eventReadModel: model, eventReadModelWindow: window}
 }
 
 func (s *Service) ListCachedEvents(ctx context.Context, calendarIDs []string, start, end time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
@@ -181,15 +180,8 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	}
 	providerRequest := request
 	providerRequest.CalendarID = rawCalendarID
-	ticket, err := s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawCalendarID))
-	if err != nil {
-		return nil, nil, err
-	}
 	event, err := v2.CreateEventV2(ctx, providerRequest)
 	if err != nil {
-		if ticket != nil {
-			return nil, nil, unknownProviderMutation()
-		}
 		return nil, nil, providerFailure(provider.Name(), request.CalendarID, err)
 	}
 	if event == nil || event.ID == "" {
@@ -197,9 +189,6 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	}
 	normalizeEvent(event, provider.Name(), request.CalendarID)
 	warnings := s.reconcileCreatedEvent(ctx, *event)
-	if !finishProviderMutation(ctx, ticket, event.ID != "" && len(warnings) == 0) {
-		warnings = append(warnings, mutationPendingWarning)
-	}
 	return event, warnings, nil
 }
 
@@ -223,21 +212,11 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 		return nil, err
 	}
 	request.Ref = rawRef
-	var ticket calendar.ProviderMutationIntent
-	if !request.PreviewOnly {
-		ticket, err = s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawRef.CalendarID))
-		if err != nil {
-			return nil, err
-		}
-	}
 	var result *calendar.OperationResult
 	if request.Scope == calendar.ScopeFollowing {
 		result, err = s.updateFollowing(ctx, provider, request, prefixedCalendarID)
 	} else {
 		result, err = v2.UpdateEventV2(ctx, request)
-		if err != nil && ticket != nil {
-			return nil, unknownProviderMutation()
-		}
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
@@ -247,9 +226,6 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, false)
-	if result != nil && !finishProviderMutation(ctx, ticket, result.Status == "completed" && !hasReconciliationWarning(result.Warnings)) {
-		result.Warnings = append(result.Warnings, mutationPendingWarning)
-	}
 	return result, nil
 }
 
@@ -273,21 +249,11 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		return nil, err
 	}
 	request.Ref = rawRef
-	var ticket calendar.ProviderMutationIntent
-	if !request.PreviewOnly {
-		ticket, err = s.beginProviderMutation(ctx, calendar.CanonicalCalendarID(provider, rawRef.CalendarID))
-		if err != nil {
-			return nil, err
-		}
-	}
 	var result *calendar.OperationResult
 	if request.Scope == calendar.ScopeFollowing {
 		result, err = s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
 	} else {
 		result, err = v2.DeleteEventV2(ctx, request)
-		if err != nil && ticket != nil {
-			return nil, unknownProviderMutation()
-		}
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
@@ -297,9 +263,6 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)
-	if result != nil && !finishProviderMutation(ctx, ticket, result.Status == "completed" && !hasReconciliationWarning(result.Warnings)) {
-		result.Warnings = append(result.Warnings, mutationPendingWarning)
-	}
 	return result, nil
 }
 

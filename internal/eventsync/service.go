@@ -4,9 +4,6 @@ package eventsync
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -74,9 +71,6 @@ type Service struct {
 	Resolver  CalendarResolver
 	PolicyFor func(calendar.Provider) calendar.EventSyncPolicy
 	Now       func() time.Time
-	// CaptureRemovalProvenance is an experimental unpublished staging path.
-	// It does not make a cache revision ready for copying.
-	CaptureRemovalProvenance bool
 }
 
 func NewService(store CalendarSyncStore, resolver CalendarResolver, policyFor func(calendar.Provider) calendar.EventSyncPolicy) *Service {
@@ -251,16 +245,6 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		}
 
 		batch := toStorageBatch(page, state.CalendarID, mode == calendar.EventSyncReplacement, degraded)
-		if s.CaptureRemovalProvenance {
-			if err := validateRemovalProvenance(page); err != nil {
-				return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
-			}
-			encoded, err := json.Marshal(page)
-			if err != nil {
-				return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
-			}
-			batch.RemovalStage = &storage.RemovalStagePage{Ordinal: stageOrdinal, PageHash: stageHash(encoded), PreviousTokenHash: stageHash([]byte(pageToken)), NextTokenHash: stageHash([]byte(page.NextPageToken)), Removals: page.Removals}
-		}
 		if page.Complete {
 			next := s.now().Add(policy.PollInterval)
 			if !degraded {
@@ -700,46 +684,4 @@ func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, ful
 		batch.Objects = append(batch.Objects, object)
 	}
 	return batch
-}
-
-func stageHash(value []byte) string {
-	digest := sha256.Sum256(value)
-	return hex.EncodeToString(digest[:])
-}
-
-// validateRemovalProvenance requires explicit provenance for each deletion.
-// Unknown removals must stop capture rather than disappear from staging.
-func validateRemovalProvenance(page calendar.EventSyncPage) error {
-	deleted := make(map[string]struct{}, len(page.DeletedEventIDs))
-	for _, id := range page.DeletedEventIDs {
-		if id == "" {
-			return ErrInvalidPage
-		}
-		if _, exists := deleted[id]; exists {
-			return ErrInvalidPage
-		}
-		deleted[id] = struct{}{}
-	}
-	seen := make(map[string]struct{}, len(page.Removals))
-	for _, rem := range page.Removals {
-		if rem.ObjectID == "" || (rem.Reason != calendar.EventSyncProviderCancellation && rem.Reason != calendar.EventSyncWindowEviction) {
-			return ErrInvalidPage
-		}
-		if _, ok := deleted[rem.ObjectID]; !ok {
-			return ErrInvalidPage
-		}
-		if _, ok := seen[rem.ObjectID]; ok {
-			return ErrInvalidPage
-		}
-		seen[rem.ObjectID] = struct{}{}
-	}
-	if len(deleted) != len(seen) {
-		return ErrInvalidPage
-	}
-	for _, upsert := range page.Upserts {
-		if _, ok := seen[upsert.Event.ID]; ok {
-			return ErrInvalidPage
-		}
-	}
-	return nil
 }
