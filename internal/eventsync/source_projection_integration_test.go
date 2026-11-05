@@ -109,3 +109,93 @@ func runBackgroundSyncPublishesCacheCopySource(t *testing.T, s *storage.Store) {
 		t.Fatalf("degraded page changed published revision: %v", err)
 	}
 }
+
+func TestBackgroundSyncLearnsMissingSourceTimezone(t *testing.T) {
+	ctx := context.Background()
+	s, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "timezone.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runBackgroundSyncLearnsMissingSourceTimezone(t, s)
+}
+
+func runBackgroundSyncLearnsMissingSourceTimezone(t *testing.T, s *storage.Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	if err := s.CreateConnection(ctx, storage.Connection{ID: "timezone-connection", Provider: "google", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"google:tz-source"} {
+		if err := s.UpsertCalendar(ctx, storage.Calendar{ID: id, ConnectionID: "timezone-connection", ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	window := storage.SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+	if err := s.EnsureCalendarSyncStates(ctx, now, window); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertCalendar(ctx, storage.Calendar{ID: "google:tz-target", ConnectionID: "timezone-connection", ProviderCalendarID: "target", Name: "target", CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.ClaimDueCalendarSync(ctx, "initial", now, now.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	// Only the source is due in this fixture.
+	sourceID := state.CalendarID
+	targetID := "google:tz-target"
+	if sourceID == targetID {
+		targetID = "google:tz-source"
+	}
+	next := now.Add(time.Second)
+	if err := s.ApplyEventSyncPage(ctx, *state, storage.EventSyncBatch{NextCursor: "legacy", NextSyncAt: &next}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRule(ctx, storage.Rule{ID: "timezone-rule", SourceCalendarID: sourceID, TargetCalendarID: targetID, SyncMode: "cached_instances", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{providerName: "google", pages: []calendar.EventSyncPage{
+		{Complete: true, NextCursor: "cursor-1"},
+		{SourceTimeZone: "Not/AZone", Complete: true, NextCursor: "cursor-2"},
+		{SourceTimeZone: "Europe/Belgrade", Complete: true, NextCursor: "cursor-3"},
+		{SourceTimeZone: "Europe/Belgrade", Complete: true, NextCursor: "bootstrap"},
+	}}
+	svc := NewService(s, fakeResolver{provider: provider, rawID: "source"}, nil)
+	clock := next
+	svc.Now = func() time.Time { return clock }
+	for i := 0; i < 4; i++ {
+		state, err = s.ClaimDueCalendarSync(ctx, "worker", clock, clock.Add(time.Hour))
+		if err != nil || state == nil || state.CalendarID != sourceID {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		if err = svc.RunOne(ctx, *state); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		zone, err := s.RepairCalendarTimeZone(ctx, sourceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 && zone != "" {
+			t.Fatalf("invalid zone stored: %q", zone)
+		}
+		if i >= 2 && zone != "Europe/Belgrade" {
+			t.Fatalf("zone not saved: %q", zone)
+		}
+		if i < 3 && (provider.requests[i].Mode != calendar.EventSyncIncremental || provider.requests[i].Cursor == "") {
+			t.Fatalf("premature reset at %d", i)
+		}
+		clock = clock.Add(5 * time.Minute)
+	}
+	if provider.requests[3].Mode != calendar.EventSyncReplacement || provider.requests[3].Cursor != "" {
+		t.Fatal("missing replacement bootstrap")
+	}
+	result, err := s.GetSourceProjectionForCopy(ctx, sourceID, window.Start, window.End, clock, time.Hour)
+	if err != nil || result.Snapshot.Cursor != "bootstrap" {
+		t.Fatalf("snapshot: %v", err)
+	}
+}

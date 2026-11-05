@@ -26,6 +26,9 @@ func FailureCode(err error) string {
 	if errors.Is(err, ErrMissingSeriesMapping) {
 		return "sync_missing_series_mapping"
 	}
+	if errors.Is(err, ErrUnsafeRecurringSync) {
+		return "sync_unsafe_recurring"
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "sync_interrupted"
 	}
@@ -116,6 +119,8 @@ func FailureMessage(code string) string {
 		return "Target calendar cannot preserve this recurrence pattern; the rule remains paused."
 	case "sync_missing_series_mapping":
 		return "A recurring event exception has no matching series in the sync mapping."
+	case "sync_unsafe_recurring":
+		return "This direct rule cannot safely mirror recurring events. Cached individual-events mode may be available for supported calendars."
 	case "sync_interrupted":
 		return "The sync run was interrupted or timed out."
 	case "sync_source_auth":

@@ -131,6 +131,7 @@ type CachedEventUpsert struct {
 // declares that the page belongs to a replacement snapshot; only a successful
 // final page sweeps older generations.
 type EventSyncBatch struct {
+	SourceTimeZone   string
 	Upserts          []CachedEventUpsert
 	DeletedEventIDs  []string
 	DeletedObjectIDs []string
