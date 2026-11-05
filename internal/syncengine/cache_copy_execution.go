@@ -34,6 +34,17 @@ func (e *Engine) runCachedBatch(ctx context.Context, rule storage.Rule, batch ca
 	if err != nil {
 		return Result{}, err
 	}
+	// A restored occurrence can be outside this rule's narrower window while
+	// still present in the source snapshot. Its old cancellation must not
+	// become active again merely because it is no longer a candidate.
+	active := make(map[string]bool, len(batch.Events))
+	for _, event := range batch.Events {
+		identity, err := cacheCopyIdentity(rule.SourceCalendarID, event)
+		if err != nil {
+			return Result{}, err
+		}
+		active[cacheExecutionEventID(identity)] = true
+	}
 	events := make([]calendar.EventV2, 0, len(candidates)+len(batch.Removals))
 	seen := make(map[string]bool, len(candidates)+len(batch.Removals))
 	for _, candidate := range candidates {
@@ -75,7 +86,7 @@ func (e *Engine) runCachedBatch(ctx context.Context, rule storage.Rule, batch ca
 		if cancelled[id] {
 			continue
 		}
-		if seen[id] {
+		if active[id] {
 			// A later active instance supersedes an old cancellation for this
 			// run. The durable tombstone remains; e.run checks all pending
 			// target mutations before any write, and the global reservation

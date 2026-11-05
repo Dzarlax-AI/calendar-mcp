@@ -65,6 +65,18 @@ func TestSyntheticCachedBatchUsesStandaloneIdentityAndExplicitCancellation(t *te
 	if err != nil || result.Created != 1 || target.created != 2 || target.deleted != 1 {
 		t.Fatalf("restored event: %+v %v", result, err)
 	}
+	// The restored instance still exists in the wider source snapshot even
+	// after moving outside this rule's window. Its old tombstone must not
+	// delete the existing copy.
+	outside := event
+	outside.Start = calendar.EventTime{DateTime: now.Add(48 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
+	outside.End = calendar.EventTime{DateTime: now.Add(49 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
+	batch.Events = []calendar.EventV2{outside}
+	result, err = engine.runCachedBatch(t.Context(), rule, batch, false)
+	if err != nil || result.Deleted != 0 || target.deleted != 1 || len(mappings.values) != 1 {
+		t.Fatalf("restored event outside rule window: %+v %v", result, err)
+	}
+	batch.Events = []calendar.EventV2{event}
 	// A prior uncertain delete still blocks restoration before any write.
 	for id, m := range mappings.values {
 		m.ReconciliationState = "pending_delete"
