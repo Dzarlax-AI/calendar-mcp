@@ -119,6 +119,9 @@ func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory
 	if err := store.DeleteExpiredRawEventArtifacts(ctx, now); err != nil {
 		return err
 	}
+	if err := store.ExpireSyncRunPreviews(ctx, now); err != nil {
+		return err
+	}
 	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
 		// EventSyncError.Error exposes only bounded provider status/reason fields;
 		// it deliberately excludes response bodies, cursors, tokens, and payloads.
@@ -291,7 +294,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	return store.FinishRun(ctx, run.ID, job, "succeeded", finished, storage.Run{
 		CreatedCount: result.Created, UpdatedCount: result.Updated, DeletedCount: result.Deleted,
 		SkippedCount: result.Skipped, WarningCount: result.Warnings,
-		ErrorSummary: summary,
+		ErrorSummary: summary, Preview: result.Preview,
 	})
 }
 

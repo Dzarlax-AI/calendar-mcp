@@ -162,6 +162,8 @@ func migrationName(version int) string {
 		return "calendar_enabled"
 	case 9:
 		return "calendar_display_settings"
+	case 10:
+		return "sync_run_preview"
 	default:
 		return ""
 	}

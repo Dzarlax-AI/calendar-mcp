@@ -17,6 +17,27 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+func TestPostgresSyncPreviewStorageContract(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	s, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(context.Background(), "DELETE FROM sync_rules WHERE id='rule'")
+		_, _ = s.db.ExecContext(context.Background(), "DELETE FROM calendars WHERE id IN ('source','target')")
+		_, _ = s.db.ExecContext(context.Background(), "DELETE FROM connections WHERE id='account'")
+	})
+	runSyncPreviewStorageContract(t, s)
+}
+
 func TestPostgresRegisterDiscoveredCalendar(t *testing.T) {
 	databaseURL := os.Getenv("TEST_POSTGRES_URL")
 	if databaseURL == "" {

@@ -42,6 +42,23 @@ func newTestHandlerWithConfig(t *testing.T, cfg Config) http.Handler {
 	return server.Handler()
 }
 
+func TestSyncPreviewEndpointRequiresAuthenticationAndIsNotCached(t *testing.T) {
+	handler := newTestHandler(t, true, false)
+	request := httptest.NewRequest(http.MethodGet, "https://calendar.example/api/ui/runs/example/preview", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d", response.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "https://calendar.example/api/ui/runs/example/preview", nil)
+	request.Header.Set("X-authentik-username", "synthetic-user")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"unavailable"`) || !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestSettingsSPAAndBootstrapExposeStatusWithoutRenderingKeys(t *testing.T) {
 	handler := newTestHandlerWithConfig(t, Config{
 		PublicURL:              "https://calendar.example",

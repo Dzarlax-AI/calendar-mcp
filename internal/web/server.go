@@ -146,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /oauth/{provider}/callback", http.HandlerFunc(s.oauthCallback))
 	mux.Handle("GET /api/ui/bootstrap", noStore(s.uiProtected(http.HandlerFunc(s.bootstrap))))
 	mux.Handle("GET /api/ui/control-plane", noStore(s.uiProtected(http.HandlerFunc(s.controlPlane))))
+	mux.Handle("GET /api/ui/runs/{id}/preview", noStore(s.uiProtected(http.HandlerFunc(s.syncRunPreview))))
 	mux.Handle("POST /api/ui/sync-artifact", noStore(s.uiProtected(s.jsonMutating(http.HandlerFunc(s.rawSyncArtifact)))))
 	mux.Handle("GET /api/ui/diagnostics/quarantine", noStore(s.uiProtected(http.HandlerFunc(s.listDiagnosticsQuarantine))))
 	mux.Handle("GET /api/ui/diagnostics/corrections", noStore(s.uiProtected(http.HandlerFunc(s.listDiagnosticsProviderCorrections))))

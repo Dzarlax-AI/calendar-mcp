@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -222,6 +223,26 @@ func (s *Store) StartRun(ctx context.Context, r Run) error {
 }
 
 func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome string, finished time.Time, counters Run) error {
+	var encrypted []byte
+	if counters.Preview != nil {
+		if job.Kind != "dry_run" || outcome != "succeeded" || len(counters.Preview.Entries) > 1000 {
+			return errors.New("invalid sync preview")
+		}
+		if s.artifactCipher == nil {
+			return errors.New("sync preview encryption is unavailable")
+		}
+		data, err := json.Marshal(counters.Preview)
+		if err != nil {
+			return err
+		}
+		if len(data) > 4<<20 {
+			return errors.New("sync preview exceeds size limit")
+		}
+		encrypted, err = s.artifactCipher.Encrypt(data, []byte("calendar-sync-preview\x00"+runID))
+		if err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -253,7 +274,46 @@ func (s *Store) FinishRun(ctx context.Context, runID string, job Job, outcome st
 	if changed != 1 {
 		return fmt.Errorf("finish run %q: %w", runID, ErrNotFound)
 	}
+	if counters.Preview != nil && outcome == "succeeded" {
+		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO sync_run_previews (run_id, expires_at, payload) VALUES (?, ?, ?)`), runID, finished.Add(7*24*time.Hour), encrypted); err != nil {
+			return fmt.Errorf("save sync preview: %w", err)
+		}
+	}
 	return tx.Commit()
+}
+
+// GetSyncRunPreview returns a private preview and its availability state.
+func (s *Store) GetSyncRunPreview(ctx context.Context, runID string, now time.Time) (*SyncRunPreview, string, error) {
+	var expires time.Time
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT expires_at, payload FROM sync_run_previews WHERE run_id=?`), runID).Scan(&expires, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "unavailable", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if !now.Before(expires) || len(payload) == 0 {
+		return nil, "expired", nil
+	}
+	if s.artifactCipher == nil {
+		return nil, "", errors.New("sync preview encryption is unavailable")
+	}
+	data, err := s.artifactCipher.Decrypt(payload, []byte("calendar-sync-preview\x00"+runID))
+	if err != nil {
+		return nil, "", err
+	}
+	var preview SyncRunPreview
+	if err := json.Unmarshal(data, &preview); err != nil {
+		return nil, "", err
+	}
+	return &preview, "available", nil
+}
+
+// ExpireSyncRunPreviews removes encrypted private payloads after retention.
+func (s *Store) ExpireSyncRunPreviews(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_run_previews SET payload=NULL WHERE payload IS NOT NULL AND expires_at<=?`), now)
+	return err
 }
 
 func (s *Store) ListRuns(ctx context.Context, limit int) ([]Run, error) {

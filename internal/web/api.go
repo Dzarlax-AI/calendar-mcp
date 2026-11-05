@@ -301,6 +301,22 @@ func (s *Server) controlPlane(w http.ResponseWriter, r *http.Request) {
 	writeUIJSON(w, http.StatusOK, control)
 }
 
+func (s *Server) syncRunPreview(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeUIAPIError(w, errors.New("sync previews are unavailable"))
+		return
+	}
+	preview, status, err := s.store.GetSyncRunPreview(r.Context(), r.PathValue("id"), time.Now().UTC())
+	if err != nil {
+		writeUIAPIError(w, err)
+		return
+	}
+	writeUIJSON(w, http.StatusOK, struct {
+		Status  string                  `json:"status"`
+		Preview *storage.SyncRunPreview `json:"preview,omitempty"`
+	}{Status: status, Preview: preview})
+}
+
 func (s *Server) rawSyncArtifact(w http.ResponseWriter, r *http.Request) {
 	if err := s.requireApplication(); err != nil {
 		writeUIAPIError(w, err)
