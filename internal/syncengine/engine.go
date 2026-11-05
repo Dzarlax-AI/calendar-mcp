@@ -26,9 +26,13 @@ type Failure struct {
 	Cause error
 }
 
-func (e *Failure) Error() string { return e.Stage + ": " + e.Cause.Error() }
-func (e *Failure) Unwrap() error { return e.Cause }
+var errJobLeaseStage = errors.New("sync job lease stage")
 
+func (e *Failure) Error() string        { return e.Stage + ": " + e.Cause.Error() }
+func (e *Failure) Unwrap() error        { return e.Cause }
+func (e *Failure) Is(target error) bool { return target == errJobLeaseStage && e.Stage == "job_lease" }
+
+// ErrMissingSeriesMapping identifies an exception whose source series has no target mapping.
 var ErrMissingSeriesMapping = errors.New("source series has no target mapping")
 
 type Result struct{ Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int }

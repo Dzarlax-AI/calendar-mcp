@@ -12,6 +12,9 @@ import (
 
 // FailureCode returns a finite code. Provider text and identifiers are never persisted.
 func FailureCode(err error) string {
+	if errors.Is(err, errJobLeaseStage) {
+		return "sync_job_lease"
+	}
 	var recurrence *RecurrenceCompatibilityError
 	if errors.As(err, &recurrence) {
 		return "recurrence_unsupported"
@@ -32,8 +35,12 @@ func FailureCode(err error) string {
 	var status int
 	if errors.As(err, &api) {
 		status = api.Code
-	} else if errors.As(err, &oauth) && oauth.Response != nil {
-		status = oauth.Response.StatusCode
+	} else if errors.As(err, &oauth) {
+		if oauth.ErrorCode == "invalid_grant" {
+			status = http.StatusUnauthorized
+		} else if oauth.Response != nil {
+			status = oauth.Response.StatusCode
+		}
 	}
 	var typed *calendar.APIError
 	if errors.As(err, &typed) {

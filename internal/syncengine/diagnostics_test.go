@@ -24,6 +24,9 @@ func TestFailureDiagnosticsNeverExposeProviderContent(t *testing.T) {
 		{"google quota", "source_read", "sync_source_rate_limit", &googleapi.Error{Code: 429, Message: secret}},
 		{"google server", "source_read", "sync_source_unavailable", &googleapi.Error{Code: 503, Message: secret}},
 		{"oauth auth", "provider_setup", "sync_provider_auth", &oauth2.RetrieveError{Response: &http.Response{StatusCode: 401}, Body: []byte(secret)}},
+		{"oauth invalid grant", "source_read", "sync_source_auth", &oauth2.RetrieveError{Response: &http.Response{StatusCode: 400}, ErrorCode: "invalid_grant", ErrorDescription: secret}},
+		{"oauth other 400", "source_read", "sync_source_read", &oauth2.RetrieveError{Response: &http.Response{StatusCode: 400}, ErrorCode: "invalid_request", ErrorDescription: secret}},
+		{"oauth invalid grant without response", "provider_setup", "sync_provider_auth", &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: secret}},
 		{"missing series", "reconciliation", "sync_missing_series_mapping", fmt.Errorf("%w: %s", ErrMissingSeriesMapping, secret)},
 		{"unknown source", "source_read", "sync_source_read", errors.New(secret)},
 		{"unknown stage", secret, "sync_failed", errors.New(secret)},
@@ -47,5 +50,15 @@ func TestFailureDiagnosticsNeverExposeProviderContent(t *testing.T) {
 	}
 	if got := FailureMessage(secret); strings.Contains(got, secret) {
 		t.Fatal("unknown code was rendered")
+	}
+}
+
+func TestFailureCodePrioritizesJoinedLeaseFailureOverCancellation(t *testing.T) {
+	err := errors.Join(&Failure{Stage: "source_read", Cause: context.Canceled}, &Failure{Stage: "job_lease", Cause: errors.New("lease details")})
+	if got := FailureCode(err); got != "sync_job_lease" {
+		t.Fatalf("code=%q", got)
+	}
+	if got := FailureCode(&Failure{Stage: "source_read", Cause: context.Canceled}); got != "sync_interrupted" {
+		t.Fatalf("cancellation=%q", got)
 	}
 }
