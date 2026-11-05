@@ -88,6 +88,7 @@ func (p *Provider) listEventsV2(ctx context.Context, request calendar.ListEvents
 			return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Apple search could not read %d malformed calendar object(s)", skipped)
 		}
 		log.Printf("apple: calendar %s skipped %d malformed object(s) while listing events", request.CalendarID, skipped)
+		return calendar.Page[calendar.EventV2]{Items: items, Complete: false}, nil
 	}
 	return calendar.Page[calendar.EventV2]{Items: items, Complete: true}, nil
 }

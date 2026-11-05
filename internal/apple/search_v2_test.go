@@ -201,6 +201,22 @@ func TestAppleSearchDoesNotClaimCompleteForMalformedObjects(t *testing.T) {
 	}
 }
 
+func TestAppleListEventsMarksSkippedObjectsIncomplete(t *testing.T) {
+	malformed := "BEGIN:VEVENT\r\nUID:bad\r\nSUMMARY:Bad event\r\nEND:VEVENT\r\n"
+	p, _ := newSearchFixture(t, searchICS+malformed, 207)
+	req := calendar.ListEventsRequestV2{CalendarID: "/cal/", Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth}
+	page, err := p.ListEventsV2(t.Context(), req)
+	if err != nil || page.Complete || len(page.Items) == 0 {
+		t.Fatalf("expected incomplete page preserving readable events: %#v, %v", page, err)
+	}
+
+	clean, _ := newSearchFixture(t, searchICS, 207)
+	page, err = clean.ListEventsV2(t.Context(), req)
+	if err != nil || !page.Complete || len(page.Items) == 0 {
+		t.Fatalf("expected complete page: %#v, %v", page, err)
+	}
+}
+
 func TestAppleSearchUsesHalfOpenWindowAndDefaultLimit(t *testing.T) {
 	p, _ := newSearchFixture(t, searchICS, 207)
 	req := searchRequest()
