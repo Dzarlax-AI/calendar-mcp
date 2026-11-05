@@ -654,6 +654,7 @@ func validatePage(mode calendar.EventSyncMode, page calendar.EventSyncPage) erro
 
 func toStorageBatch(page calendar.EventSyncPage, canonicalCalendarID string, fullSync, degraded bool) storage.EventSyncBatch {
 	batch := storage.EventSyncBatch{
+		SourceTimeZone:    page.SourceTimeZone,
 		DeletedEventIDs:   append([]string(nil), page.DeletedEventIDs...),
 		DeletedObjectIDs:  append([]string(nil), page.DeletedObjectIDs...),
 		ReplacedObjectIDs: append([]string(nil), page.ReplacedObjectIDs...),

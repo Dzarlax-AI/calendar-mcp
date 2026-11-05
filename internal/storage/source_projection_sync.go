@@ -31,6 +31,9 @@ func (s *Store) PlanSourceProjectionCapture(ctx context.Context, state CalendarS
 	if !enabled || provider != "google" {
 		return out, nil
 	}
+	if _, err := time.LoadLocation(timezone); timezone == "" || timezone == "Local" || err != nil {
+		return out, nil
+	}
 	out.Enabled = true
 	out.Input = ProjectionPageAttemptInput{CalendarID: state.CalendarID, AttemptID: uuid.NewString(), Timezone: timezone, Generation: state.Generation, WindowStart: state.WindowStart, WindowEnd: state.WindowEnd, BaseCursor: state.Cursor, Mode: calendar.EventSyncIncremental}
 	var epoch, revision int64

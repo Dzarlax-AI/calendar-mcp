@@ -564,6 +564,14 @@ func (s *Store) ApplyEventSyncPage(ctx context.Context, state CalendarSyncState,
 // must hold the current calendar sync lease and commits or rolls back all
 // related projection and cursor updates together.
 func (s *Store) applyEventSyncPageTx(ctx context.Context, tx *sql.Tx, state CalendarSyncState, batch EventSyncBatch, final bool, now time.Time) error {
+	if zone := batch.SourceTimeZone; zone != "" && zone != "Local" {
+		if _, err := time.LoadLocation(zone); err == nil {
+			_, err = tx.ExecContext(ctx, s.query(`UPDATE calendars SET timezone=? WHERE id=? AND timezone='' AND EXISTS (SELECT 1 FROM connections WHERE connections.id=calendars.connection_id AND connections.provider='google')`), zone, state.CalendarID)
+			if err != nil {
+				return fmt.Errorf("save source calendar timezone: %w", err)
+			}
+		}
+	}
 	degradedCode := ""
 	if batch.Degraded {
 		degradedCode = batch.ErrorCode

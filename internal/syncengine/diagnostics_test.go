@@ -28,6 +28,7 @@ func TestFailureDiagnosticsNeverExposeProviderContent(t *testing.T) {
 		{"oauth other 400", "source_read", "sync_source_read", &oauth2.RetrieveError{Response: &http.Response{StatusCode: 400}, ErrorCode: "invalid_request", ErrorDescription: secret}},
 		{"oauth invalid grant without response", "provider_setup", "sync_provider_auth", &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: secret}},
 		{"missing series", "reconciliation", "sync_missing_series_mapping", fmt.Errorf("%w: %s", ErrMissingSeriesMapping, secret)},
+		{"unsafe recurring sync", "safe_recurrence_preflight", "sync_unsafe_recurring", fmt.Errorf("%w: %s", ErrUnsafeRecurringSync, secret)},
 		{"unknown source", "source_read", "sync_source_read", errors.New(secret)},
 		{"unknown stage", secret, "sync_failed", errors.New(secret)},
 		{"canceled", "source_read", "sync_interrupted", context.Canceled},
@@ -50,6 +51,14 @@ func TestFailureDiagnosticsNeverExposeProviderContent(t *testing.T) {
 	}
 	if got := FailureMessage(secret); strings.Contains(got, secret) {
 		t.Fatal("unknown code was rendered")
+	}
+}
+
+func TestUnsafeRecurringSyncMessageExplainsSafeAlternative(t *testing.T) {
+	message := FailureMessage("sync_unsafe_recurring")
+	normalized := strings.ToLower(message)
+	if !strings.Contains(normalized, "recurring") || !strings.Contains(normalized, "cached") || strings.Contains(normalized, "logs") {
+		t.Fatalf("unhelpful unsafe-recurring diagnostic: %q", message)
 	}
 }
 
