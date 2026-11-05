@@ -284,3 +284,26 @@ func TestGooglePrimaryDiscoveryAndFailure(t *testing.T) {
 	}
 	check("")
 }
+
+func TestGoogleDiscoveryPreservesAndUpdatesTimezone(t *testing.T) {
+	service, store := newTestService(t)
+	ctx := t.Context()
+	if err := service.CreateOAuth(ctx, "timezone-account", "google", "Synthetic", &oauth2.Token{RefreshToken: "synthetic"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{name: "google", calendars: []calendar.Calendar{{ID: "owner@example.test", Primary: true, Timezone: "Europe/Belgrade"}}}
+	check := func(want string) {
+		t.Helper()
+		calendars, err := store.ListCalendars(ctx, "timezone-account")
+		if err != nil || len(calendars) != 1 || calendars[0].Timezone != want {
+			t.Fatalf("timezone want %s: %v", want, err)
+		}
+	}
+	for _, step := range []struct{ input, want string }{{"Europe/Belgrade", "Europe/Belgrade"}, {"", "Europe/Belgrade"}, {"Local", "Europe/Belgrade"}, {"not-a-zone", "Europe/Belgrade"}, {"America/Los_Angeles", "America/Los_Angeles"}} {
+		provider.calendars[0].Timezone = step.input
+		if err := service.VerifyAndDiscover(ctx, "timezone-account", provider); err != nil {
+			t.Fatal(err)
+		}
+		check(step.want)
+	}
+}

@@ -30,6 +30,12 @@ func (s *Service) reconcileOperation(ctx context.Context, result *calendar.Opera
 		return
 	}
 	now := time.Now().UTC()
+	if result.Status != "completed" {
+		if s.ScheduleCalendarSync(ctx, ref.CalendarID, now) != nil {
+			result.Warnings = append(result.Warnings, reconciliationWarning)
+		}
+		return
+	}
 	projectionFailed := false
 	if deleted {
 		if err := s.eventReadModel.DeleteCachedEvent(ctx, ref, now); err != nil {
@@ -60,6 +66,15 @@ func (s *Service) reconcileDeleteOperation(ctx context.Context, result *calendar
 		return
 	}
 	now := time.Now().UTC()
+	// Partial or otherwise unconfirmed deletion must not hide the cached event.
+	// Ask the provider sync to reconcile it instead; an active mutation fence
+	// continues to block copy-safe publication until the outcome is known.
+	if result.Status != "completed" {
+		if s.ScheduleCalendarSync(ctx, ref.CalendarID, now) != nil {
+			result.Warnings = append(result.Warnings, reconciliationWarning)
+		}
+		return
+	}
 	projectionFailed := false
 	if scope == calendar.ScopeSeries {
 		if err := s.deleteCachedSeries(ctx, ref, now); err != nil {

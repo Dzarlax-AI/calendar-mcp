@@ -41,6 +41,7 @@ export type SyncRule = {
   sourceCalendarId?: string;
   targetCalendarId?: string;
   state?: string;
+  syncMode?: string;
   enabled: boolean;
   lastRun?: string;
 };
@@ -60,7 +61,7 @@ export type RunRecord = {
 };
 
 export type SyncPreviewEntry = { action: string; title: string; start: { date?: string; date_time?: string }; kind: string; reason: string; target_status: string };
-export type SyncPreview = { status: "available" | "unavailable" | "expired"; preview?: { entries: SyncPreviewEntry[]; total: number; truncated: boolean } };
+export type SyncPreview = { status: "available" | "unavailable" | "expired"; preview?: { entries: SyncPreviewEntry[]; total: number; truncated: boolean; source_revision?: number; target_status?: string } };
 
 export type Settings = {
   email?: string;

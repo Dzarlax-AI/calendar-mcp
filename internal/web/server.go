@@ -570,6 +570,11 @@ func (s *Server) refreshProviders(ctx context.Context) error {
 }
 
 func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
+	mode := r.FormValue("sync_mode")
+	if mode != "" && mode != "direct" && mode != "cached_instances" {
+		http.Redirect(w, r, "/rules/new?status=invalid_rule", http.StatusSeeOther)
+		return
+	}
 	interval, intervalErr := strconv.Atoi(r.FormValue("interval_seconds"))
 	lookback, lookbackErr := strconv.Atoi(r.FormValue("lookback_days"))
 	lookahead, lookaheadErr := strconv.Atoi(r.FormValue("lookahead_days"))
@@ -578,7 +583,7 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	rule := storage.Rule{ID: newID(), SourceCalendarID: r.FormValue("source_calendar_id"), TargetCalendarID: r.FormValue("target_calendar_id"), State: "paused", IntervalSeconds: interval, LookbackDays: lookback, LookaheadDays: lookahead, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	rule := storage.Rule{ID: newID(), SourceCalendarID: r.FormValue("source_calendar_id"), TargetCalendarID: r.FormValue("target_calendar_id"), State: "paused", SyncMode: mode, IntervalSeconds: interval, LookbackDays: lookback, LookaheadDays: lookahead, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.CreateRule(r.Context(), rule); err != nil {
 		log.Printf("create sync rule: %v", err)
 		http.Redirect(w, r, "/rules/new?status=invalid_rule", http.StatusSeeOther)
@@ -605,9 +610,23 @@ func (s *Server) enableRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := s.store.SetRuleState(r.Context(), r.PathValue("id"), "enabled", &now, now); err != nil {
-		log.Printf("enable sync rule: %v", err)
+	rule, err := s.store.RuleByID(r.Context(), r.PathValue("id"))
+	if err != nil {
 		http.Redirect(w, r, "/rules?status=invalid_rule", http.StatusSeeOther)
+		return
+	}
+	if rule.SyncMode == "cached_instances" {
+		err = s.store.EnableCachedRuleIfReady(r.Context(), rule.ID, now, 15*time.Minute)
+	} else {
+		err = s.store.SetRuleState(r.Context(), rule.ID, "enabled", &now, now)
+	}
+	if err != nil {
+		log.Printf("enable sync rule: %v", err)
+		status := "invalid_rule"
+		if rule.SyncMode == "cached_instances" {
+			status = "cache_not_ready"
+		}
+		http.Redirect(w, r, "/rules?status="+status, http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/rules?status=rule_enabled", http.StatusSeeOther)
@@ -709,6 +728,6 @@ func pageTitle(page string) string {
 	return titles[page]
 }
 func flashMessage(code string) string {
-	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "connection_failed": "The connection could not be saved.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "oauth_start_failed": "Authorization could not be started. Try again.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
+	messages := map[string]string{"connected": "Connection verified and calendars discovered.", "connection_deleted": "Connection deleted.", "connection_in_use": "This connection is used by a sync rule and cannot be deleted.", "connection_delete_failed": "The connection could not be deleted.", "connection_failed": "The connection could not be saved.", "rule_created": "Rule saved paused and a dry run was queued.", "rule_enabled": "Rule enabled.", "run_queued": "Run queued.", "dry_run_required": "A successful dry run is required before enablement.", "cache_not_ready": "The source cache is not ready or the destination conflicts with another rule.", "oauth_start_failed": "Authorization could not be started. Try again.", "oauth_rejected": "The provider rejected the authorization request.", "oauth_failed": "Authorization could not be completed. Start the connection again.", "verification_failed": "Credentials were accepted but calendar access could not be verified.", "invalid_rule": "The sync rule settings are invalid.", "queue_failed": "The rule was saved, but its dry run could not be queued."}
 	return messages[code]
 }

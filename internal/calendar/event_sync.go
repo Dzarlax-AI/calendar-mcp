@@ -86,6 +86,26 @@ type EventSyncDiagnostic struct {
 	Truncated      bool
 }
 
+// EventSyncRemoval is an observation, not authorization to delete a copy.
+// Provider identifiers and original start are private and must not be logged.
+// Missing or invalid identity fields must be resolved against prior state.
+type EventSyncRemoval struct {
+	ObjectID      string
+	Reason        EventSyncRemovalReason
+	SeriesID      string
+	OriginalStart *EventTime
+	// RecurrencePresent records observed recurrence rules, not a definitive
+	// master classification: cancelled masters may omit those rules.
+	RecurrencePresent bool
+}
+
+type EventSyncRemovalReason string
+
+const (
+	EventSyncProviderCancellation EventSyncRemovalReason = "provider_cancellation"
+	EventSyncWindowEviction       EventSyncRemovalReason = "window_eviction"
+)
+
 // EventSyncPage is a provider-neutral, single-page delta. Inventory is the
 // object inventory observed on this page. ReplacedObjectIDs is an explicit
 // completeness assertion: all current event membership for each listed object
@@ -96,8 +116,14 @@ type EventSyncDiagnostic struct {
 // while replacement-only adapters may intentionally leave NextCursor empty. A
 // reset page has ResetRequired=true and no mutations or continuation values.
 type EventSyncPage struct {
-	Upserts           []EventSyncUpsert
-	DeletedEventIDs   []string
+	// SourceTimeZone is the provider-reported calendar zone for this page.
+	// It must be frozen and verified across a copy-safe sync attempt.
+	SourceTimeZone  string
+	Upserts         []EventSyncUpsert
+	DeletedEventIDs []string
+	// Removals preserves provenance where an adapter can provide it. It is
+	// additive to DeletedEventIDs and does not establish a complete journal.
+	Removals          []EventSyncRemoval
 	DeletedObjectIDs  []string
 	ReplacedObjectIDs []string
 	Inventory         []SyncObject
@@ -148,10 +174,12 @@ const (
 // EventSyncObjectRepairRequest addresses one known provider object. CalendarID
 // is provider-local and the opaque object ID/ETag remain internal only.
 type EventSyncObjectRepairRequest struct {
-	CalendarID string
-	Window     EventSyncWindow
-	Object     SyncObject
-	Generation int64
+	// CalendarTimeZone is the explicit IANA time zone of the source calendar.
+	CalendarTimeZone string
+	CalendarID       string
+	Window           EventSyncWindow
+	Object           SyncObject
+	Generation       int64
 	// AllowProviderMutation is granted once by the authenticated diagnostics
 	// action for this exact quarantined object version. Background workers must
 	// leave it false so adapters keep their normal repair path read-only.

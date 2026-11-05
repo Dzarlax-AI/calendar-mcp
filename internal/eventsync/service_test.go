@@ -29,9 +29,15 @@ type fakeProvider struct {
 	repairResults  []calendar.EventSyncObjectRepairResult
 	repairErrs     []error
 	repairRequests []calendar.EventSyncObjectRepairRequest
+	providerName   string
 }
 
-func (p *fakeProvider) Name() string { return "fake" }
+func (p *fakeProvider) Name() string {
+	if p.providerName != "" {
+		return p.providerName
+	}
+	return "fake"
+}
 
 func (p *fakeProvider) SyncEvents(_ context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
 	p.requests = append(p.requests, request)
@@ -79,17 +85,31 @@ type appliedPage struct {
 }
 
 type fakeStore struct {
-	applied    []appliedPage
-	fails      []string
-	failAt     []time.Time
-	parks      []string
-	resets     int
-	applyErrAt int
-	applyErr   error
-	resetErr   error
-	quarantine []storage.CalendarSyncQuarantine
-	repairs    []storage.EventSyncRepairBatch
-	consumed   []string
+	applied       []appliedPage
+	fails         []string
+	failAt        []time.Time
+	parks         []string
+	resets        int
+	applyErrAt    int
+	applyErr      error
+	resetErr      error
+	quarantine    []storage.CalendarSyncQuarantine
+	repairs       []storage.EventSyncRepairBatch
+	consumed      []string
+	timeZone      *string
+	timeZoneErr   error
+	timeZoneCalls int
+}
+
+func (s *fakeStore) RepairCalendarTimeZone(_ context.Context, _ string) (string, error) {
+	s.timeZoneCalls++
+	if s.timeZoneErr != nil {
+		return "", s.timeZoneErr
+	}
+	if s.timeZone != nil {
+		return *s.timeZone, nil
+	}
+	return "UTC", nil
 }
 
 func (s *fakeStore) ApplyEventSyncPage(_ context.Context, state storage.CalendarSyncState, batch storage.EventSyncBatch, final bool, _ time.Time) error {
@@ -197,7 +217,7 @@ func TestRepairOneProcessesAllDueObjectsAndPersistsOutcomes(t *testing.T) {
 }
 
 func TestRepairOnePassesProviderMutationAuthorizationOnlyWhenPersisted(t *testing.T) {
-	provider := &fakeProvider{repairResults: []calendar.EventSyncObjectRepairResult{
+	provider := &fakeProvider{providerName: "google", repairResults: []calendar.EventSyncObjectRepairResult{
 		repairResult("automatic", calendar.EventSyncObjectStillQuarantined),
 		repairResult("operator", calendar.EventSyncObjectStillQuarantined),
 	}}
@@ -210,7 +230,7 @@ func TestRepairOnePassesProviderMutationAuthorizationOnlyWhenPersisted(t *testin
 	if err := service.repairOne(t.Context(), testState("saved"), provider, "provider-calendar", policy); err != nil {
 		t.Fatal(err)
 	}
-	if len(provider.repairRequests) != 2 || provider.repairRequests[0].AllowProviderMutation || !provider.repairRequests[1].AllowProviderMutation {
+	if len(provider.repairRequests) != 2 || provider.repairRequests[0].CalendarTimeZone != "UTC" || provider.repairRequests[1].CalendarTimeZone != "UTC" || provider.repairRequests[0].AllowProviderMutation || !provider.repairRequests[1].AllowProviderMutation {
 		t.Fatalf("repair authorizations = %#v", provider.repairRequests)
 	}
 	if len(store.consumed) != 1 || store.consumed[0] != "fake:calendar/operator/etag-operator" {
@@ -494,6 +514,18 @@ func TestRunOneResetThenReplacementAndObjectReplacementMapping(t *testing.T) {
 	}
 }
 
+func TestRunOneRejectsResetPageWithRemoval(t *testing.T) {
+	store := &fakeStore{}
+	provider := &fakeProvider{pages: []calendar.EventSyncPage{{ResetRequired: true, Removals: []calendar.EventSyncRemoval{{ObjectID: "event", Reason: calendar.EventSyncProviderCancellation}}}}}
+	err := newService(store, provider).RunOne(t.Context(), testState("cursor"))
+	if !errors.Is(err, ErrInvalidPage) {
+		t.Fatalf("RunOne() error = %v, want invalid page", err)
+	}
+	if store.resets != 0 || len(store.applied) != 0 {
+		t.Fatal("invalid reset page changed the cursor or applied data")
+	}
+}
+
 func TestInvalidPagesRepeatedTokensAndLeaseLossDoNotLeakOpaqueValues(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -632,5 +664,37 @@ func TestClassifyProviderFailures(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("classify(%T) = %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestRepairOneKeepsAuthorizationWhenCalendarZoneUnavailable(t *testing.T) {
+	for _, zone := range []string{"", "Local", "invalid-zone"} {
+		t.Run(zone, func(t *testing.T) {
+			provider := &fakeProvider{providerName: "google", repairResults: []calendar.EventSyncObjectRepairResult{repairResult("operator", calendar.EventSyncObjectStillQuarantined)}}
+			operator := repairItem("operator")
+			operator.ProviderMutationAuthorizedETag = operator.ETag
+			store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{operator}, timeZone: &zone}
+			service := newService(store, provider)
+			if err := service.repairOne(t.Context(), testState("saved"), provider, "provider-calendar", service.policy(provider)); err != nil {
+				t.Fatal(err)
+			}
+			if len(store.consumed) != 0 || len(provider.repairRequests) != 1 || provider.repairRequests[0].AllowProviderMutation || provider.repairRequests[0].CalendarTimeZone != zone {
+				t.Fatalf("unexpected authorization state: consumed=%d requests=%d", len(store.consumed), len(provider.repairRequests))
+			}
+		})
+	}
+}
+
+func TestNonGoogleRepairDoesNotReadCalendarTimeZone(t *testing.T) {
+	provider := &fakeProvider{repairResults: []calendar.EventSyncObjectRepairResult{repairResult("operator", calendar.EventSyncObjectStillQuarantined)}}
+	operator := repairItem("operator")
+	operator.ProviderMutationAuthorizedETag = operator.ETag
+	store := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{operator}, timeZoneErr: errors.New("timezone lookup must not run")}
+	service := newService(store, provider)
+	if err := service.repairOne(t.Context(), testState("saved"), provider, "provider-calendar", service.policy(provider)); err != nil {
+		t.Fatal(err)
+	}
+	if store.timeZoneCalls != 0 || len(provider.repairRequests) != 1 || !provider.repairRequests[0].AllowProviderMutation {
+		t.Fatalf("lookup=%d requests=%d", store.timeZoneCalls, len(provider.repairRequests))
 	}
 }

@@ -205,6 +205,7 @@ type uiRule struct {
 	LookbackDays        int        `json:"lookback_days"`
 	LookaheadDays       int        `json:"lookahead_days"`
 	RecurrenceMode      string     `json:"recurrence_mode"`
+	SyncMode            string     `json:"sync_mode"`
 	NotificationPolicy  string     `json:"notification_policy"`
 	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
@@ -558,7 +559,7 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence, Enabled: item.Enabled, googlePrimary: item.GooglePrimary && item.CanRead && item.Enabled && connectionProviders[item.ConnectionID] == "google"})
 	}
 	for _, item := range rules {
-		result.Rules = append(result.Rules, uiRule{ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
+		result.Rules = append(result.Rules, uiRule{ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, SyncMode: item.SyncMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
 	}
 	for _, item := range runs {
 		result.Runs = append(result.Runs, uiRun{ID: item.ID, JobID: item.JobID, RuleID: item.RuleID, Trigger: item.Trigger, Outcome: item.Outcome, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt, CreatedCount: item.CreatedCount, UpdatedCount: item.UpdatedCount, DeletedCount: item.DeletedCount, SkippedCount: item.SkippedCount, WarningCount: item.WarningCount, ErrorCode: item.ErrorCode, ErrorSummary: safeRunSummary(item), DryRun: item.DryRun})
@@ -1241,6 +1242,13 @@ func uiCalendarProvider(calendarID string) string {
 }
 
 func safeUIError(err error) uiError {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		return uiError{Code: calendar.ErrorProviderUnavailable, Message: protected.Error(), Origin: uiErrorOriginApplication}
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		return uiError{Code: calendar.ErrorMutationOutcomeUnknown, Message: calendar.MutationOutcomeUnknownMessage, Origin: uiErrorOriginApplication}
+	}
 	apiErr := &calendar.APIError{}
 	if !errors.As(err, &apiErr) {
 		return uiError{Code: calendar.ErrorProviderUnavailable, Message: "Calendar provider is temporarily unavailable", Retryable: true, Origin: uiErrorOriginApplication}
@@ -1281,7 +1289,7 @@ func writeUIAPIError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case calendar.ErrorPermissionDenied:
 		status = http.StatusForbidden
-	case calendar.ErrorConflict:
+	case calendar.ErrorConflict, calendar.ErrorMutationOutcomeUnknown:
 		status = http.StatusConflict
 	case calendar.ErrorRateLimited:
 		status = http.StatusTooManyRequests
@@ -1297,6 +1305,10 @@ func writeUISafeError(w http.ResponseWriter, status int, apiErr uiError) {
 	// Log only the normalized, public contract. Raw provider errors may contain
 	// credentials, calendar paths, or event identifiers and must not reach logs.
 	log.Printf("calendar_ui_error error_origin=%s http_status=%d error_code=%s retryable=%t", apiErr.Origin, status, apiErr.Code, apiErr.Retryable)
+	if apiErr.Code == calendar.ErrorMutationOutcomeUnknown {
+		writeUIJSON(w, status, map[string]any{"error": map[string]any{"code": apiErr.Code, "message": apiErr.Message, "retryable": false, "origin": apiErr.Origin}})
+		return
+	}
 	writeUIJSON(w, status, map[string]uiError{"error": apiErr})
 }
 

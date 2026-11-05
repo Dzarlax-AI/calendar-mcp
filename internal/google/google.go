@@ -63,6 +63,7 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 		for _, c := range list.Items {
 			cals = append(cals, calendar.Calendar{
 				ID:       c.Id,
+				Timezone: c.TimeZone,
 				Name:     c.Summary,
 				Color:    c.BackgroundColor,
 				Primary:  c.Primary,

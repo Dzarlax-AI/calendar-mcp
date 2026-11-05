@@ -48,22 +48,48 @@ func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime)
 }
 
 func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, ruleID, sourceEventID string) (*calendar.EventV2, error) {
+	if p == nil || p.svc == nil || calendarID == "" || ruleID == "" || sourceEventID == "" {
+		return nil, errors.New("sync marker lookup requires calendar and marker identifiers")
+	}
 	pageToken := ""
+	seen := map[string]bool{}
 	var found *calendar.EventV2
-	for {
+	for page := 0; page < 250; page++ {
 		call := p.svc.Events.List(calendarID).
 			SingleEvents(false).
 			ShowDeleted(false).
-			PrivateExtendedProperty("calendar_sync_rule="+ruleID, "calendar_source_event="+sourceEventID).
+			PrivateExtendedProperty("calendar_source_event=" + sourceEventID).
 			MaxResults(2)
 		if pageToken != "" {
 			call = call.PageToken(pageToken)
 		}
 		response, err := call.Context(ctx).Do()
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			var apiErr *googleapi.Error
+			if errors.As(err, &apiErr) {
+				return nil, &googleapi.Error{Code: apiErr.Code}
+			}
+			return nil, errors.New("sync marker lookup failed")
+		}
+		if len(response.Items) > 2 {
+			return nil, errors.New("sync marker lookup exceeded page size")
 		}
 		for _, item := range response.Items {
+			if item == nil || item.Id == "" || item.ExtendedProperties == nil || item.ExtendedProperties.Private == nil {
+				return nil, errors.New("sync marker lookup returned an unverifiable event")
+			}
+			properties := item.ExtendedProperties.Private
+			if properties["calendar_sync_rule"] == "" || properties["calendar_source_event"] == "" {
+				return nil, errors.New("sync marker lookup returned an unverifiable event")
+			}
+			// Verify both properties locally; a source marker alone is not
+			// sufficient to establish the requested rule association.
+			if properties["calendar_sync_rule"] != ruleID || properties["calendar_source_event"] != sourceEventID {
+				continue
+			}
 			if found != nil {
 				return nil, fmt.Errorf("multiple target events share the same sync marker")
 			}
@@ -73,8 +99,13 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 		if response.NextPageToken == "" {
 			return found, nil
 		}
+		if len(response.NextPageToken) > 4096 || seen[response.NextPageToken] {
+			return nil, errors.New("sync marker lookup pagination is invalid")
+		}
+		seen[response.NextPageToken] = true
 		pageToken = response.NextPageToken
 	}
+	return nil, errors.New("sync marker lookup exceeded page limit")
 }
 
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
@@ -234,6 +265,10 @@ func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*cale
 		}
 	}
 	result := fromGoogleEventV2(event, ref.CalendarID, fallbackZone)
+	// This full GET sets no maxAttendees restriction. Google may omit the array
+	// for a personal event; attendeesOmitted still blocks partial responses.
+	// Keep source completeness separate and conservative for cached events.
+	result.AttendeesKnown = event.Organizer != nil && event.Organizer.Self && !event.AttendeesOmitted && (event.Attendees == nil || result.SourceAttendeesComplete)
 	return &result, nil
 }
 

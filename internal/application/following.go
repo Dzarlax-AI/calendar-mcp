@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,20 @@ const followingOperationProperty = "calendarMcpOperation"
 
 const maxFollowingPages = 1000
 
+// followingPreflightFailure never exposes provider details and describes a read
+// which occurred before any provider mutation was dispatched.
+func followingPreflightFailure() error {
+	return &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: "Calendar series could not be read before the operation", Retryable: true}
+}
+
+func sanitizeFollowingOccurrenceError(err error) error {
+	var apiErr *calendar.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == calendar.ErrorInvalidArgument && apiErr.Message == "effective_from does not identify an occurrence in the series" {
+		return invalidArgument(apiErr.Message)
+	}
+	return followingPreflightFailure()
+}
+
 func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provider, request calendar.UpdateEventRequestV2, prefixedCalendarID string) (*calendar.OperationResult, error) {
 	v2 := provider.(calendar.EventProviderV2)
 	instances, ok := provider.(calendar.InstanceProviderV2)
@@ -27,8 +42,8 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 		return nil, unsupported(provider.Name(), prefixedCalendarID, "following updates require idempotency lookup")
 	}
 	parent, err := v2.GetEventV2(ctx, request.Ref)
-	if err != nil {
-		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+	if err != nil || parent == nil {
+		return nil, followingPreflightFailure()
 	}
 	if len(parent.Recurrence) == 0 {
 		return nil, invalidArgument("following scope requires a recurring parent series")
@@ -40,12 +55,12 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	if operationID == "" {
 		operationID, err = newOperationID()
 		if err != nil {
-			return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+			return nil, followingPreflightFailure()
 		}
 	}
 	existingReplacement, err := lookup.FindEventByOperationIDV2(ctx, request.Ref.CalendarID, operationID)
 	if err != nil {
-		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+		return nil, followingPreflightFailure()
 	}
 	if existingReplacement == nil && request.ExpectedETag != "" && parent.ETag != request.ExpectedETag {
 		return nil, &calendar.APIError{Code: calendar.ErrorConflict, Message: "event ETag does not match expected_etag", Provider: provider.Name(), CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}
@@ -53,7 +68,7 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	if existingReplacement != nil && eventTimesEqual(existingReplacement.Start, *request.EffectiveFrom) {
 		elapsed, countErr := countPriorInstances(ctx, instances, request.Ref, parent.Start, *request.EffectiveFrom)
 		if countErr != nil {
-			return nil, countErr
+			return nil, followingPreflightFailure()
 		}
 		if recurrenceTrimmedBefore(parent.Recurrence, *request.EffectiveFrom, elapsed) {
 			return completedFollowing(provider.Name(), prefixedCalendarID, parent, existingReplacement, operationID, true), nil
@@ -61,7 +76,7 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	}
 	occurrence, elapsed, err := followingOccurrence(ctx, instances, request.Ref, *request.EffectiveFrom, parent.Start)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeFollowingOccurrenceError(err)
 	}
 	oldRecurrence, futureRecurrence, err := splitRecurrence(parent.Recurrence, *request.EffectiveFrom, elapsed)
 	if err != nil {
@@ -94,17 +109,26 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	if request.PreviewOnly {
 		return preview, nil
 	}
+	if !followingSeriesExceptionsVerified() {
+		return nil, calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "following changes require verified attendee-free series and exceptions")
+	}
+	if err := requireFollowingNoAttendees(provider, parent, future.Attendees, request.Notifications); err != nil {
+		return nil, err
+	}
 
 	replacement := existingReplacement
 	createdNow := false
 	if replacement == nil {
 		replacement, err = v2.CreateEventV2(ctx, calendar.CreateEventRequestV2{
-			CalendarID: request.Ref.CalendarID, Event: future, Notifications: calendar.NotificationsNone,
+			CalendarID: request.Ref.CalendarID, Event: future, Notifications: calendar.NotificationsNone, RequireNoAttendees: true,
 		})
 		if err != nil {
 			return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 		}
 		createdNow = true
+	}
+	if replacement == nil || replacement.ID == "" {
+		return nil, unknownProviderMutation()
 	}
 	if recurrenceEqual(parent.Recurrence, oldRecurrence) {
 		return completedFollowing(provider.Name(), prefixedCalendarID, parent, replacement, operationID, existingReplacement != nil), nil
@@ -117,30 +141,33 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 		}, nil
 	}
 	trimResult, trimErr := v2.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{
-		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications,
+		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications, RequireNoAttendees: true,
 		Patch: calendar.EventPatchV2{Recurrence: calendar.PatchField[[]string]{Present: true, Value: oldRecurrence}},
 	})
 	if trimErr == nil {
+		if trimResult == nil {
+			return nil, unknownProviderMutation()
+		}
+		if trimResult.Status != "completed" {
+			if createdNow {
+				trimResult.RelatedEvents = append(trimResult.RelatedEvents, *replacement)
+			}
+			return trimResult, nil
+		}
 		trimmed := parent
 		if trimResult != nil && trimResult.Event != nil {
 			trimmed = trimResult.Event
 		}
 		return completedFollowing(provider.Name(), prefixedCalendarID, trimmed, replacement, operationID, existingReplacement != nil), nil
 	}
-	if createdNow {
-		_, compensationErr := v2.DeleteEventV2(ctx, calendar.DeleteEventRequestV2{
-			Ref: calendar.EventRef{CalendarID: request.Ref.CalendarID, EventID: replacement.ID}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone,
-		})
-		if compensationErr == nil {
-			return nil, providerFailure(provider.Name(), prefixedCalendarID, fmt.Errorf("trim original series: %w; replacement series was removed", trimErr))
-		}
-		return &calendar.OperationResult{
-			Status: "partial_failure", RelatedEvents: []calendar.EventV2{*parent, *replacement},
-			Steps:    []calendar.OperationStep{{Name: "create replacement series", Completed: true}, {Name: "trim original series", Detail: trimErr.Error()}, {Name: "remove replacement series", Detail: compensationErr.Error()}},
-			Recovery: &calendar.RecoveryAction{Action: "delete the replacement series or trim the original series to remove overlap", Refs: []calendar.EventRef{{CalendarID: prefixedCalendarID, EventID: ensurePrefix(provider.Name(), parent.ID)}, {CalendarID: prefixedCalendarID, EventID: ensurePrefix(provider.Name(), replacement.ID)}}},
-		}, nil
-	}
-	return nil, providerFailure(provider.Name(), prefixedCalendarID, fmt.Errorf("trim original series after idempotent replacement: %w", trimErr))
+	// A failed trim call may have been applied before its response was lost.
+	// Deleting the replacement would then remove all future occurrences, so
+	// leave both series untouched and require explicit reconciliation.
+	return &calendar.OperationResult{
+		Status: "partial_failure", RelatedEvents: []calendar.EventV2{*parent, *replacement},
+		Steps:    []calendar.OperationStep{{Name: "create replacement series", Completed: true}, {Name: "trim original series", Detail: "outcome unknown; reconcile before making further changes"}},
+		Recovery: &calendar.RecoveryAction{Action: "verify both series before making further changes", Refs: []calendar.EventRef{{CalendarID: prefixedCalendarID, EventID: ensurePrefix(provider.Name(), parent.ID)}, {CalendarID: prefixedCalendarID, EventID: ensurePrefix(provider.Name(), replacement.ID)}}},
+	}, nil
 }
 
 func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provider, request calendar.DeleteEventRequestV2, prefixedCalendarID string) (*calendar.OperationResult, error) {
@@ -150,8 +177,8 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 		return nil, unsupported(provider.Name(), prefixedCalendarID, "following deletes require instance listing")
 	}
 	parent, err := v2.GetEventV2(ctx, request.Ref)
-	if err != nil {
-		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+	if err != nil || parent == nil {
+		return nil, followingPreflightFailure()
 	}
 	if len(parent.Recurrence) == 0 {
 		return nil, invalidArgument("following scope requires a recurring parent series")
@@ -161,7 +188,7 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 	}
 	_, elapsed, err := followingOccurrence(ctx, instances, request.Ref, *request.EffectiveFrom, parent.Start)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeFollowingOccurrenceError(err)
 	}
 	oldRecurrence, _, err := splitRecurrence(parent.Recurrence, *request.EffectiveFrom, elapsed)
 	if err != nil {
@@ -170,16 +197,38 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 	if request.PreviewOnly {
 		return &calendar.OperationResult{Status: "preview", RelatedEvents: []calendar.EventV2{{ID: parent.ID, CalendarID: prefixedCalendarID, Provider: provider.Name(), Recurrence: oldRecurrence, Start: parent.Start, End: parent.End}}, Steps: []calendar.OperationStep{{Name: "trim original series", Detail: "guarded by ETag"}}}, nil
 	}
+	if !followingSeriesExceptionsVerified() {
+		return nil, calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "following changes require verified attendee-free series and exceptions")
+	}
+	if err := requireFollowingNoAttendees(provider, parent, nil, request.Notifications); err != nil {
+		return nil, err
+	}
 	result, err := v2.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{
-		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications,
+		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications, RequireNoAttendees: true,
 		Patch: calendar.EventPatchV2{Recurrence: calendar.PatchField[[]string]{Present: true, Value: oldRecurrence}},
 	})
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
-	result.Status = "completed"
+	if result == nil {
+		return nil, unknownProviderMutation()
+	}
+	if result.Status != "completed" {
+		return result, nil
+	}
 	result.Steps = append(result.Steps, calendar.OperationStep{Name: "trim original series", Completed: true})
 	return result, nil
+}
+
+// requireFollowingNoAttendees prevents this multi-step workflow from sending
+// invitations or modifying a meeting when the participant list is incomplete.
+// The provider must enforce the same check on the representation it writes.
+func requireFollowingNoAttendees(provider calendar.Provider, parent *calendar.EventV2, future []calendar.AttendeeV2, policy calendar.NotificationPolicy) error {
+	safe, ok := provider.(calendar.SafeNoAttendeeMutationProvider)
+	if !ok || !safe.SupportsNoAttendeeMutations() || parent == nil || !parent.AttendeesKnown || len(parent.Attendees) != 0 || len(future) != 0 || parent.ETag == "" || policy != calendar.NotificationsNone {
+		return calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "following changes require a verified attendee-free event and notifications disabled")
+	}
+	return nil
 }
 
 func followingOccurrence(ctx context.Context, provider calendar.InstanceProviderV2, ref calendar.EventRef, effective calendar.EventTime, parentStart calendar.EventTime) (calendar.EventV2, int, error) {
@@ -476,3 +525,6 @@ func newOperationID() (string, error) {
 	}
 	return hex.EncodeToString(data), nil
 }
+
+// No provider currently proves attendee safety for every series exception.
+func followingSeriesExceptionsVerified() bool { return false }

@@ -81,6 +81,9 @@ func (s *Service) RespondToEvent(ctx context.Context, request calendar.RespondTo
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
+	if result == nil {
+		return nil, unknownProviderMutation()
+	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	return result, nil
 }
@@ -94,8 +97,8 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	if err != nil {
 		return nil, selectionResolveFailure(request.DestinationCalendarID, err)
 	}
-	if destinationProvider.Name() != provider.Name() {
-		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "cross-provider event moves are not supported")
+	if calendar.ProviderRouteName(destinationProvider) != calendar.ProviderRouteName(provider) {
+		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "cross-account or cross-provider event moves are not supported")
 	}
 	mover, ok := provider.(calendar.MoveProviderV2)
 	if !ok {
@@ -110,6 +113,9 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	result, err := mover.MoveEventV2(ctx, request)
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedDestination, err)
+	}
+	if result == nil {
+		return nil, unknownProviderMutation()
 	}
 	normalizeOperation(result, provider.Name(), prefixedDestination)
 	return result, nil
@@ -138,6 +144,9 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 	event, err := importer.ImportEventV2(ctx, request)
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+	}
+	if event == nil || event.ID == "" {
+		return nil, unknownProviderMutation()
 	}
 	normalizeEvent(event, provider.Name(), prefixedCalendarID)
 	return event, nil

@@ -2,12 +2,15 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,7 +28,7 @@ import (
 
 var errWorkerNotConfigured = errors.New("worker storage is not configured")
 
-const workerLease = 15 * time.Minute
+const workerLease = storage.JobLeaseDuration
 const workerHeartbeat = workerLease / 3
 
 type providerBuilder interface {
@@ -88,8 +91,8 @@ func Worker(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		select {
-		case now := <-ticker.C:
-			if err := runWorkerCycleWithConfig(waitCtx, store, factory, cfg, now.UTC()); err != nil {
+		case <-ticker.C:
+			if err := runWorkerCycleWithConfig(waitCtx, store, factory, cfg, time.Now().UTC()); err != nil {
 				log.Printf("calendar worker cycle failed: category=%T", err)
 			}
 		case <-waitCtx.Done():
@@ -229,11 +232,11 @@ func maintainCalendarSyncLease(ctx context.Context, ticks <-chan time.Time, rene
 		select {
 		case <-ctx.Done():
 			return nil
-		case at, ok := <-ticks:
+		case _, ok := <-ticks:
 			if !ok || ctx.Err() != nil {
 				return nil
 			}
-			if err := renew(at); err != nil {
+			if err := renew(time.Now().UTC()); err != nil {
 				if ctx.Err() != nil {
 					// Work completion can race the final lease release; once the
 					// heartbeat is stopped, that renewal result is not a failure.
@@ -265,17 +268,74 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 			return store.RenewJobLease(heartbeatCtx, job, at.UTC())
 		}, cancelSync)
 	}()
-	providers, err := factory.Build(syncCtx)
 	var result syncengine.Result
-	if err == nil {
-		result, err = syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).Run(syncCtx, rule, run.DryRun)
-	} else {
-		err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
+	var reserved, dispatched bool
+	operationID := uuid.NewString()
+	if !run.DryRun {
+		sum := sha256.Sum256([]byte("sync-run:" + run.ID))
+		err = store.BeginExclusiveDispatch(syncCtx, storage.ExclusiveDispatchRequest{OperationID: operationID, TargetKey: storage.GlobalSyncDispatchKey, RequestHash: hex.EncodeToString(sum[:]), Kind: "run", CalendarIDs: []string{rule.TargetCalendarID}, Now: time.Now().UTC()})
+		reserved = err == nil
+		if err == nil {
+			err = store.CheckSyncTargetEligibility(syncCtx, rule.ID)
+		}
+	}
+	if err == nil && rule.SyncMode == "cached_instances" {
+		if run.DryRun {
+			var before, after int64
+			before, err = store.RuleConfigVersion(syncCtx, rule.ID)
+			if err == nil {
+				rule, err = store.RuleByID(syncCtx, rule.ID)
+			}
+			if err == nil && (rule.SyncMode != "cached_instances" || rule.State != "paused") {
+				err = storage.ErrRuleConfigChanged
+			}
+			if err == nil {
+				result, err = syncengine.PreviewCacheCopy(syncCtx, store, rule, time.Now().UTC(), 15*time.Minute)
+			}
+			if err == nil {
+				after, err = store.RuleConfigVersion(syncCtx, rule.ID)
+			}
+			if err == nil && before != after {
+				err = storage.ErrRuleConfigChanged
+			}
+			if err == nil {
+				result.Preview.RuleConfigVersion = before
+			}
+		} else {
+			checkedAt := time.Now().UTC()
+			_, err = store.GetSourceProjectionForCopy(syncCtx, rule.SourceCalendarID, checkedAt.AddDate(0, 0, -rule.LookbackDays), checkedAt.AddDate(0, 0, rule.LookaheadDays), checkedAt, 15*time.Minute)
+			var providers []calendar.Provider
+			if err == nil {
+				providers, err = factory.Build(syncCtx)
+			}
+			if err == nil {
+				engine := syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true })
+				result, err = engine.RunCacheCopy(syncCtx, store, rule, time.Now().UTC(), 15*time.Minute)
+			} else {
+				err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
+			}
+		}
+	} else if err == nil {
+		var providers []calendar.Provider
+		providers, err = factory.Build(syncCtx)
+		if err == nil {
+			result, err = syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true }).Run(syncCtx, rule, run.DryRun)
+		} else if !errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
+			err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
+		}
 	}
 	stopHeartbeat()
 	ticker.Stop()
 	if heartbeatErr := <-heartbeatDone; heartbeatErr != nil {
 		err = errors.Join(err, &syncengine.Failure{Stage: "job_lease", Cause: heartbeatErr})
+	}
+	// A successful engine run has committed all mapping changes. If any
+	// provider call was attempted and the run failed, its outcome may be
+	// unknown and the global reservation must remain parked indefinitely.
+	if reserved && (err == nil || !dispatched) {
+		if releaseErr := store.ReleaseExclusiveAfterConfirmedRun(ctx, operationID, []string{rule.TargetCalendarID}, time.Now().UTC()); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
 	}
 	finished := time.Now().UTC()
 	if err != nil {
@@ -287,15 +347,30 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		}
 		return err
 	}
-	summary := ""
-	if result.DetachedSeries > 0 {
-		summary = syncengine.DetachedSeriesWarning
+	summary := runWarningsSummary(result)
+	if rule.SyncMode == "cached_instances" && run.DryRun {
+		if summary != "" {
+			summary += " "
+		}
+		summary += "Destination was not checked; this preview does not authorize synchronization."
 	}
 	return store.FinishRun(ctx, run.ID, job, "succeeded", finished, storage.Run{
 		CreatedCount: result.Created, UpdatedCount: result.Updated, DeletedCount: result.Deleted,
 		SkippedCount: result.Skipped, WarningCount: result.Warnings,
 		ErrorSummary: summary, Preview: result.Preview,
 	})
+}
+
+// runWarningsSummary gives operators a safe explanation without event details.
+func runWarningsSummary(result syncengine.Result) string {
+	var messages []string
+	if result.DetachedSeries > 0 {
+		messages = append(messages, syncengine.DetachedSeriesWarning)
+	}
+	if result.ParticipantsIncomplete > 0 {
+		messages = append(messages, "Some participant lists are incomplete; existing descriptions were preserved until the full list is available.")
+	}
+	return strings.Join(messages, " ")
 }
 
 func maintainJobLease(ctx context.Context, ticks <-chan time.Time, renew func(time.Time) (bool, error), cancelWork context.CancelFunc) error {
@@ -306,14 +381,14 @@ func maintainJobLease(ctx context.Context, ticks <-chan time.Time, renew func(ti
 		select {
 		case <-ctx.Done():
 			return nil
-		case at, ok := <-ticks:
+		case _, ok := <-ticks:
 			if !ok {
 				return nil
 			}
 			if ctx.Err() != nil {
 				return nil
 			}
-			owned, err := renew(at)
+			owned, err := renew(time.Now().UTC())
 			if err != nil {
 				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 					return nil

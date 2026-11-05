@@ -44,7 +44,7 @@ func TestListCalendarsFollowsPagination(t *testing.T) {
 			_, _ = io.WriteString(w, `{"items":[{"id":"second","summary":"Second"}]}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"items":[{"id":"first","summary":"First"}],"nextPageToken":"next"}`)
+		_, _ = io.WriteString(w, `{"items":[{"id":"first","summary":"First","timeZone":"Europe/Belgrade"}],"nextPageToken":"next"}`)
 	})
 	defer closeServer()
 
@@ -52,7 +52,7 @@ func TestListCalendarsFollowsPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCalendars() error = %v", err)
 	}
-	if len(got) != 2 || got[0].ID != "first" || got[1].ID != "second" {
+	if len(got) != 2 || got[0].ID != "first" || got[0].Timezone != "Europe/Belgrade" || got[1].ID != "second" || got[1].Timezone != "" {
 		t.Fatalf("ListCalendars() = %#v, want both pages", got)
 	}
 }

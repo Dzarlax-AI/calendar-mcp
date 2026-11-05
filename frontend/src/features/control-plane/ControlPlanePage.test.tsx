@@ -3,12 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CalendarRecord, RunRecord } from "../../lib/types";
+import type { CalendarRecord, RunRecord, SyncRule } from "../../lib/types";
 
 const bootstrap = {
   csrf_token: "test-csrf",
   calendars: [] as CalendarRecord[],
-  rules: [],
+  rules: [] as SyncRule[],
   runs: [] as RunRecord[],
   connections: [],
   settings: {},
@@ -30,6 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   bootstrap.runs = [];
+  bootstrap.rules = [];
   bootstrap.calendars = [];
   bootstrap.settings = {};
   act(() => root.unmount());
@@ -70,6 +71,40 @@ describe("calendar display setting", () => {
     form = container.querySelector<HTMLFormElement>('form[action="/settings/calendar-display"]');
     expect(form?.textContent).toContain("Show declined events");
     expect(form?.querySelector('[name="hide_declined_events"]')?.getAttribute("value")).toBe("false");
+  });
+});
+
+describe("sync modes", () => {
+  it("explains when a cached preview or target is no longer eligible", () => {
+    act(() => root.render(<MemoryRouter initialEntries={["/rules?status=cache_not_ready"]}><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Run a new dry run");
+  });
+  it("defaults to direct and offers cached mode", () => {
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rule-new" /></MemoryRouter>));
+    const form = container.querySelector<HTMLFormElement>('form[action="/rules"]')!;
+    const mode = form.querySelector<HTMLSelectElement>('select[name="sync_mode"]')!;
+    expect(new FormData(form).get("sync_mode")).toBe("direct");
+    expect(mode.querySelector<HTMLOptionElement>('option[value="cached_instances"]')?.disabled).toBe(false);
+    expect(form.textContent).toContain("Cached individual events");
+    expect(form.textContent).toContain("ready, fresh source cache");
+    expect(form.textContent).toContain("individual events");
+    expect(form.textContent).toContain("destination is not checked");
+    expect(form.textContent).toContain("destination is not checked");
+  });
+
+  it("shows only known modes accurately and tolerates legacy rules", () => {
+    bootstrap.rules = [
+      { id: "old", enabled: false },
+      { id: "direct", enabled: false, syncMode: "direct" },
+      { id: "cache", enabled: false, syncMode: "cached_instances" },
+      { id: "future", enabled: false, syncMode: "future" },
+    ];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const rows = container.querySelectorAll(".data-list .data-row");
+    expect(rows[0].textContent).not.toContain("Mode:");
+    expect(rows[1].textContent).toContain("Mode: Direct");
+    expect(rows[2].textContent).toContain("Mode: Cached individual events");
+    expect(rows[3].textContent).toContain("Mode: Unknown");
   });
 });
 

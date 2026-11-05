@@ -638,3 +638,46 @@ func TestPostgresCalendarDisplaySetting(t *testing.T) {
 	}
 	assertCalendarDisplaySetting(t, store)
 }
+
+func TestPostgresProjectionMutationContract(t *testing.T) {
+	databaseURL := os.Getenv("TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_POSTGRES_URL is not set")
+	}
+	ctx := t.Context()
+	first, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	if err := first.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	id := "projection-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	now := time.Now().UTC()
+	if err := first.CreateConnection(ctx, Connection{ID: id, Provider: "google", AccountFingerprint: id, Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = first.db.ExecContext(context.Background(), first.query(`DELETE FROM calendars WHERE connection_id=?`), id)
+		_, _ = first.db.ExecContext(context.Background(), first.query(`DELETE FROM connections WHERE id=?`), id)
+	})
+	for _, suffix := range []string{"-contract", "-race", "-snapshot", "-publishrace"} {
+		cal := id + suffix
+		if err := first.UpsertCalendar(ctx, Calendar{ID: cal, ConnectionID: id, ProviderCalendarID: suffix, Name: suffix, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := first.EnsureCalendarSyncStates(ctx, now, SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	runProjectionMutationContract(t, first, id+"-contract", now)
+	runProjectionMutationLockRace(t, first, second, id+"-race", now)
+	runProjectionSnapshotsContract(t, first, id+"-snapshot", now)
+	runProjectionSnapshotMutationRace(t, first, second, id+"-publishrace", now)
+}

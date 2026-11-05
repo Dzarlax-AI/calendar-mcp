@@ -3,6 +3,8 @@ package calendar
 import "time"
 
 type Calendar struct {
+	// Timezone is internal discovery metadata; existing list JSON remains unchanged.
+	Timezone string `json:"-"`
 	ID       string `json:"id"`
 	Provider string `json:"provider"`
 	Name     string `json:"name"`

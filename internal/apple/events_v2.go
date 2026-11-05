@@ -166,6 +166,9 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 }
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	if request.PreviewOnly {
+		return nil, unsupportedApple("preview is not available for this provider mutation")
+	}
 	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
 		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
 	}
@@ -296,6 +299,9 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 }
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	if request.PreviewOnly {
+		return nil, unsupportedApple("preview is not available for this provider mutation")
+	}
 	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
 		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
 	}

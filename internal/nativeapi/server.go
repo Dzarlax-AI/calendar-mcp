@@ -590,6 +590,15 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func writeApplicationError(w http.ResponseWriter, err error) {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": protected.Error(), "code": calendar.ErrorProviderUnavailable, "retryable": false})
+		return
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": calendar.MutationOutcomeUnknownMessage, "code": calendar.ErrorMutationOutcomeUnknown, "retryable": false})
+		return
+	}
 	var apiError *calendar.APIError
 	if !errors.As(err, &apiError) {
 		writeError(w, http.StatusInternalServerError, "calendar operation failed")

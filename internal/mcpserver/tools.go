@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -78,7 +79,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 			VideoCall:   req.GetBool("video_call", false),
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return legacyMutationError(err), nil
 		}
 		return jsonResult(ev)
 	})
@@ -159,7 +160,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 
 		ev, err := reg.UpdateEvent(ctx, calID, eventID, upd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return legacyMutationError(err), nil
 		}
 		return jsonResult(ev)
 	})
@@ -173,7 +174,7 @@ func registerTools(s *server.MCPServer, reg *calendar.Registry) {
 		eventID := req.GetString("event_id", "")
 
 		if err := reg.DeleteEvent(ctx, calID, eventID); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return legacyMutationError(err), nil
 		}
 		return mcp.NewToolResultText("event deleted"), nil
 	})
@@ -189,4 +190,17 @@ func registerListCalendars(s *server.MCPServer, reg *calendar.Registry, name str
 		}
 		return jsonResult(cals)
 	})
+}
+
+func legacyMutationError(err error) *mcp.CallToolResult {
+	var protected *calendar.ProviderMutationProtectionError
+	if errors.As(err, &protected) {
+		return mcp.NewToolResultError(protected.Error())
+	}
+	if errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		result := mcp.NewToolResultStructured(map[string]any{"code": calendar.ErrorMutationOutcomeUnknown, "message": calendar.MutationOutcomeUnknownMessage, "retryable": false}, calendar.MutationOutcomeUnknownMessage)
+		result.IsError = true
+		return result
+	}
+	return mcp.NewToolResultError(err.Error())
 }

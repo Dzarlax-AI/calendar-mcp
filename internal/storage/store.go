@@ -12,6 +12,7 @@ import (
 
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/credentials"
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -164,6 +165,40 @@ func migrationName(version int) string {
 		return "calendar_display_settings"
 	case 10:
 		return "sync_run_preview"
+	case 11:
+		return "projection_mutations"
+	case 12:
+		return "removal_staging"
+	case 13:
+		return "rule_config_version"
+	case 14:
+		return "projection_page_staging"
+	case 15:
+		return "target_operation_intents"
+	case 16:
+		return "projection_revision_provenance"
+	case 17:
+		return "snapshot_pins"
+	case 18:
+		return "projection_mutation_many"
+	case 19:
+		return "projection_checkpoints"
+	case 20:
+		return "operator_repair_metadata"
+	case 21:
+		return "cache_mappings"
+	case 22:
+		return "target_operation_receipts"
+	case 23:
+		return "target_guard_links"
+	case 24:
+		return "exclusive_dispatch_fence"
+	case 25:
+		return "job_lease_deadline"
+	case 26:
+		return "mapping_version"
+	case 27:
+		return "rule_sync_mode"
 	default:
 		return ""
 	}
@@ -360,10 +395,23 @@ func scanConnection(row rowScanner) (Connection, error) {
 	return c, nil
 }
 
+// safeDiscoveryTimezone accepts only explicit, loadable IANA zone names.
+// Invalid or absent metadata never overwrites a previously known zone.
+func safeDiscoveryTimezone(zone string) string {
+	if zone == "" || zone == "Local" {
+		return ""
+	}
+	if _, err := time.LoadLocation(zone); err != nil {
+		return ""
+	}
+	return zone
+}
+
 func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
+	c.Timezone = safeDiscoveryTimezone(c.Timezone)
 	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(connection_id, provider_calendar_id) DO UPDATE SET
-		name=excluded.name, timezone=excluded.timezone, can_read=excluded.can_read, can_write=excluded.can_write,
+		name=excluded.name, timezone=CASE WHEN excluded.timezone<>'' THEN excluded.timezone ELSE calendars.timezone END, can_read=excluded.can_read, can_write=excluded.can_write,
 		supports_recurrence=excluded.supports_recurrence, discovered_at=excluded.discovered_at, google_primary=excluded.google_primary`
 	_, err := s.db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone,
 		c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary)
@@ -381,9 +429,9 @@ func (s *Store) RegisterDiscoveredCalendar(ctx context.Context, route string, it
 		return nil
 	}
 	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary)
-		SELECT ?, id, ?, ?, '', ?, ?, ?, ?, ? FROM connections WHERE id=? AND provider=? AND status='connected'
+		SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ? FROM connections WHERE id=? AND provider=? AND status='connected'
 		ON CONFLICT(connection_id, provider_calendar_id) DO NOTHING`
-	_, err := s.db.ExecContext(ctx, s.query(q), calendar.AccountCalendarID(provider, connectionID, item.ID), item.ID, item.Name, true, !item.ReadOnly, false, time.Now().UTC(), false, connectionID, provider)
+	_, err := s.db.ExecContext(ctx, s.query(q), calendar.AccountCalendarID(provider, connectionID, item.ID), item.ID, item.Name, safeDiscoveryTimezone(item.Timezone), true, !item.ReadOnly, false, time.Now().UTC(), false, connectionID, provider)
 	if err != nil {
 		return fmt.Errorf("register discovered calendar: %w", err)
 	}
@@ -523,7 +571,17 @@ func (s *Store) ResolveCalendarReference(ctx context.Context, reference string) 
 	return matches[0], nil
 }
 
+func normalizedSyncMode(mode string) string {
+	if mode == "" {
+		return "direct"
+	}
+	return mode
+}
+
 func ValidateRule(r Rule) error {
+	if r.SyncMode != "" && r.SyncMode != "direct" && r.SyncMode != "cached_instances" {
+		return errors.New("invalid sync mode")
+	}
 	if r.ID == "" || r.SourceCalendarID == "" || r.TargetCalendarID == "" {
 		return errors.New("rule id, source calendar, and target calendar are required")
 	}
@@ -552,6 +610,9 @@ func ValidateRule(r Rule) error {
 }
 
 func (s *Store) CreateRule(ctx context.Context, r Rule) error {
+	if r.SyncMode == "cached_instances" && r.State != "paused" {
+		return ErrCacheExecutionIneligible
+	}
 	if err := ValidateRule(r); err != nil {
 		return err
 	}
@@ -568,9 +629,9 @@ func (s *Store) CreateRule(ctx context.Context, r Rule) error {
 	}
 	_, err = tx.ExecContext(ctx, s.query(`INSERT INTO sync_rules(id, source_calendar_id, target_calendar_id, state,
 		interval_seconds, lookback_days, lookahead_days, recurrence_mode, copy_attendees, notification_policy,
-		next_run_at, consecutive_failures, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		next_run_at, consecutive_failures, created_at, updated_at, sync_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		r.ID, r.SourceCalendarID, r.TargetCalendarID, r.State, r.IntervalSeconds, r.LookbackDays, r.LookaheadDays,
-		r.RecurrenceMode, r.CopyAttendees, r.NotificationPolicy, r.NextRunAt, r.ConsecutiveFailures, r.CreatedAt, r.UpdatedAt)
+		r.RecurrenceMode, r.CopyAttendees, r.NotificationPolicy, r.NextRunAt, r.ConsecutiveFailures, r.CreatedAt, r.UpdatedAt, normalizedSyncMode(r.SyncMode))
 	if err != nil {
 		return fmt.Errorf("create rule: %w", err)
 	}
@@ -702,12 +763,16 @@ func (s *Store) ImportLegacy(ctx context.Context, r Rule, mappings []Mapping) er
 		return fmt.Errorf("create legacy rule: %w", err)
 	}
 	for _, mapping := range mappings {
+		token, err := uuid.NewRandom()
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO event_mappings(id, rule_id, object_kind, source_event_id,
 			source_series_id, original_start, target_event_id, target_series_id, content_hash, last_seen_at,
-			reconciliation_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			reconciliation_state, incarnation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			mapping.ID, mapping.RuleID, mapping.ObjectKind, mapping.SourceEventID, mapping.SourceSeriesID,
 			mapping.OriginalStart, mapping.TargetEventID, mapping.TargetSeriesID, mapping.ContentHash,
-			mapping.LastSeenAt, mapping.ReconciliationState); err != nil {
+			mapping.LastSeenAt, mapping.ReconciliationState, "new:"+token.String()); err != nil {
 			return fmt.Errorf("create legacy mapping %q: %w", mapping.SourceEventID, err)
 		}
 	}
@@ -720,7 +785,7 @@ func (s *Store) ImportLegacy(ctx context.Context, r Rule, mappings []Mapping) er
 func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_calendar_id, target_calendar_id, state, interval_seconds,
 		lookback_days, lookahead_days, recurrence_mode, copy_attendees, notification_policy, next_run_at,
-		consecutive_failures, created_at, updated_at FROM sync_rules ORDER BY created_at`)
+		consecutive_failures, created_at, updated_at, sync_mode FROM sync_rules ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list rules: %w", err)
 	}
@@ -731,7 +796,7 @@ func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 		var next sql.NullTime
 		if err := rows.Scan(&r.ID, &r.SourceCalendarID, &r.TargetCalendarID, &r.State, &r.IntervalSeconds,
 			&r.LookbackDays, &r.LookaheadDays, &r.RecurrenceMode, &r.CopyAttendees, &r.NotificationPolicy, &next,
-			&r.ConsecutiveFailures, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&r.ConsecutiveFailures, &r.CreatedAt, &r.UpdatedAt, &r.SyncMode); err != nil {
 			return nil, err
 		}
 		if next.Valid {
@@ -745,11 +810,11 @@ func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 func (s *Store) RuleByID(ctx context.Context, id string) (Rule, error) {
 	row := s.db.QueryRowContext(ctx, s.query(`SELECT id, source_calendar_id, target_calendar_id, state, interval_seconds,
 		lookback_days, lookahead_days, recurrence_mode, copy_attendees, notification_policy, next_run_at,
-		consecutive_failures, created_at, updated_at FROM sync_rules WHERE id=?`), id)
+		consecutive_failures, created_at, updated_at, sync_mode FROM sync_rules WHERE id=?`), id)
 	var r Rule
 	var next sql.NullTime
 	if err := row.Scan(&r.ID, &r.SourceCalendarID, &r.TargetCalendarID, &r.State, &r.IntervalSeconds, &r.LookbackDays,
-		&r.LookaheadDays, &r.RecurrenceMode, &r.CopyAttendees, &r.NotificationPolicy, &next, &r.ConsecutiveFailures, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		&r.LookaheadDays, &r.RecurrenceMode, &r.CopyAttendees, &r.NotificationPolicy, &next, &r.ConsecutiveFailures, &r.CreatedAt, &r.UpdatedAt, &r.SyncMode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return r, ErrNotFound
 		}
@@ -765,8 +830,16 @@ func (s *Store) SetRuleState(ctx context.Context, id, state string, nextRunAt *t
 	if state != "paused" && state != "enabled" {
 		return errors.New("rule state must be paused or enabled")
 	}
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND
-		(? <> 'enabled' OR EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.lockRuleGraph(ctx, tx); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND
+		(? <> 'enabled' OR sync_mode='direct' AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
 		WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE))`), state, nextRunAt, updatedAt, id, state)
 	if err != nil {
 		return fmt.Errorf("set rule state: %w", err)
@@ -775,7 +848,7 @@ func (s *Store) SetRuleState(ctx context.Context, id, state string, nextRunAt *t
 	if changed != 1 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
 }
 
 func nullString(v string) any {

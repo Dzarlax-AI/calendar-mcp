@@ -11,7 +11,53 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+// SupportsNoAttendeeMutations advertises a restrictive sync-only contract.
+// Events with partial attendee data or unconfirmed ownership are blocked.
+func (p *Provider) SupportsNoAttendeeMutations() bool { return true }
+
+func validateGoogleNoAttendeeTarget(event *gcal.Event, expectedETag string) (string, error) {
+	if event == nil || event.AttendeesOmitted || len(event.Attendees) != 0 || event.Organizer == nil || !event.Organizer.Self || event.Etag == "" {
+		return "", unsupportedGoogle("safe sync requires a complete empty attendee list, confirmed organizer and ETag")
+	}
+	// Full PUT would resend conference/special-event state with effects the
+	// no-invite contract cannot establish; preserve such targets untouched.
+	if event.EventType != "default" || event.ConferenceData != nil || event.HangoutLink != "" || event.OutOfOfficeProperties != nil || event.FocusTimeProperties != nil || event.WorkingLocationProperties != nil || event.BirthdayProperties != nil {
+		return "", unsupportedGoogle("safe sync requires a confirmed default event without conferencing")
+	}
+	// A series master can have exceptions with guests even when the master
+	// attendee list is empty. An instance is also not a standalone copy.
+	if len(event.Recurrence) != 0 || event.RecurringEventId != "" || event.OriginalStartTime != nil {
+		return "", unsupportedGoogle("safe sync cannot mutate recurring series or instances")
+	}
+	if expectedETag != "" && expectedETag != event.Etag {
+		return "", &calendar.APIError{Code: calendar.ErrorConflict, Message: "target event changed since preflight", Provider: "google"}
+	}
+	return event.Etag, nil
+}
+
+// validateGoogleSyncOwnership checks private marker and the previously
+// confirmed ETag on the same fetched representation used for If-Match.
+func validateGoogleSyncOwnership(event *gcal.Event, marker *calendar.SyncMarker, expectedETag string) error {
+	if marker == nil {
+		return nil
+	}
+	if marker.RuleID == "" || marker.SourceEventID == "" || expectedETag == "" || event == nil || event.ExtendedProperties == nil || event.ExtendedProperties.Private == nil {
+		return unsupportedGoogle("safe cache sync requires a confirmed marker and ETag")
+	}
+	properties := event.ExtendedProperties.Private
+	if properties["calendar_sync_rule"] != marker.RuleID || properties["calendar_source_event"] != marker.SourceEventID || event.Etag != expectedETag {
+		return &calendar.APIError{Code: calendar.ErrorConflict, Message: "target ownership or version changed", Provider: "google"}
+	}
+	return nil
+}
+
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	if request.RequireNoAttendees && (request.Notifications != calendar.NotificationsNone || len(request.Event.Attendees) != 0 || len(request.Event.Recurrence) != 0 || request.Event.Conference != nil) {
+		return nil, unsupportedGoogle("safe sync requires a standalone event without attendees or conferencing")
+	}
+	if request.RequireNoAttendees && request.Event.Google != nil && (request.Event.Google.EventType != "" && request.Event.Google.EventType != "default" || len(request.Event.Google.OutOfOffice) != 0 || len(request.Event.Google.FocusTime) != 0 || len(request.Event.Google.WorkingLocation) != 0 || len(request.Event.Google.Birthday) != 0) {
+		return nil, unsupportedGoogle("safe sync supports only default standalone events")
+	}
 	event, err := toGoogleEventV2(request.Event)
 	if err != nil {
 		return nil, invalidGoogleArgument(err)
@@ -39,8 +85,17 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 }
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	if request.ExpectedSyncMarker != nil && !request.RequireNoAttendees {
+		return nil, unsupportedGoogle("safe cache sync requires attendee protection")
+	}
+	if request.PreviewOnly {
+		return nil, unsupportedGoogle("preview is not available for this provider mutation")
+	}
 	if request.Scope == calendar.ScopeFollowing {
 		return nil, unsupportedGoogle("following updates require the recoverable split-series workflow")
+	}
+	if request.RequireNoAttendees && (request.Notifications != calendar.NotificationsNone || request.Patch.Attendees.Present || request.Patch.Recurrence.Present || request.Patch.Conference.Present || request.Patch.Google.Present || request.Patch.GuestPermissions.Present) {
+		return nil, unsupportedGoogle("safe sync forbids attendee, recurrence, conferencing and special event changes")
 	}
 	sendUpdates, err := googleSendUpdates(request.Notifications)
 	if err != nil {
@@ -49,6 +104,19 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	existing, err := p.svc.Events.Get(request.Ref.CalendarID, request.Ref.EventID).Context(ctx).Do()
 	if err != nil {
 		return nil, err
+	}
+	if err = validateGoogleSyncOwnership(existing, request.ExpectedSyncMarker, request.ExpectedETag); err != nil {
+		return nil, err
+	}
+	if request.RequireNoAttendees {
+		if request.Notifications != calendar.NotificationsNone || request.Patch.Attendees.Present {
+			return nil, unsupportedGoogle("safe sync forbids attendee changes and requires notifications disabled")
+		}
+		etag, err := validateGoogleNoAttendeeTarget(existing, request.ExpectedETag)
+		if err != nil {
+			return nil, err
+		}
+		request.ExpectedETag = etag
 	}
 	if err := validateGooglePatchForEventType(existing, request.Patch); err != nil {
 		return nil, invalidGoogleArgument(err)
@@ -84,12 +152,35 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 }
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	if request.ExpectedSyncMarker != nil && !request.RequireNoAttendees {
+		return nil, unsupportedGoogle("safe cache sync requires attendee protection")
+	}
+	if request.PreviewOnly {
+		return nil, unsupportedGoogle("preview is not available for this provider mutation")
+	}
 	if request.Scope == calendar.ScopeFollowing {
 		return nil, unsupportedGoogle("following deletes require the recoverable split-series workflow")
 	}
 	sendUpdates, err := googleSendUpdates(request.Notifications)
 	if err != nil {
 		return nil, err
+	}
+	if request.RequireNoAttendees {
+		if request.Notifications != calendar.NotificationsNone {
+			return nil, unsupportedGoogle("safe sync requires notifications disabled")
+		}
+		existing, err := p.svc.Events.Get(request.Ref.CalendarID, request.Ref.EventID).Context(ctx).Do()
+		if err != nil {
+			return nil, err
+		}
+		if err = validateGoogleSyncOwnership(existing, request.ExpectedSyncMarker, request.ExpectedETag); err != nil {
+			return nil, err
+		}
+		etag, err := validateGoogleNoAttendeeTarget(existing, request.ExpectedETag)
+		if err != nil {
+			return nil, err
+		}
+		request.ExpectedETag = etag
 	}
 	call := p.svc.Events.Delete(request.Ref.CalendarID, request.Ref.EventID).SendUpdates(sendUpdates)
 	if request.ExpectedETag != "" {

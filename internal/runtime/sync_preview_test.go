@@ -42,7 +42,7 @@ func (p *previewProvider) Capabilities(context.Context, string) (calendar.Calend
 	return calendar.CalendarCapabilities{}, nil
 }
 func (p *previewProvider) ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
-	return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "event", Title: "Synthetic private event", Start: calendar.EventTime{Date: "2026-11-05"}, End: calendar.EventTime{Date: "2026-11-06"}}}, Complete: true}, nil
+	return calendar.Page[calendar.EventV2]{Items: []calendar.EventV2{{ID: "event", SourceAttendeesComplete: true, Title: "Synthetic private event", Start: calendar.EventTime{Date: "2026-11-05"}, End: calendar.EventTime{Date: "2026-11-06"}}}, Complete: true}, nil
 }
 func (p *previewProvider) GetEventV2(context.Context, calendar.EventRef) (*calendar.EventV2, error) {
 	return nil, nil

@@ -241,6 +241,9 @@ func (r *Registry) CreateEvent(ctx context.Context, calendarID string, event Eve
 	if err != nil {
 		return nil, err
 	}
+	if ev == nil {
+		return nil, ErrProviderMutationOutcomeUnknown
+	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
 	ev.ID = provider.Name() + ":" + ev.ID
@@ -260,6 +263,9 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if err != nil {
 		return nil, err
 	}
+	if ev == nil {
+		return nil, ErrProviderMutationOutcomeUnknown
+	}
 	ev.CalendarID = calendarID
 	ev.Provider = provider.Name()
 	ev.ID = provider.Name() + ":" + ev.ID
@@ -275,7 +281,10 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	if err != nil {
 		return err
 	}
-	return provider.DeleteEvent(ctx, rawCalID, rawEventID)
+	if err := provider.DeleteEvent(ctx, rawCalID, rawEventID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateEventProvider(routeName, providerName, eventID string) (string, error) {

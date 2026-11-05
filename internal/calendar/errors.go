@@ -5,15 +5,16 @@ import "fmt"
 type ErrorCode string
 
 const (
-	ErrorInvalidArgument       ErrorCode = "invalid_argument"
-	ErrorInvalidRecurrence     ErrorCode = "invalid_recurrence"
-	ErrorUnsupportedCapability ErrorCode = "unsupported_capability"
-	ErrorNotFound              ErrorCode = "not_found"
-	ErrorPermissionDenied      ErrorCode = "permission_denied"
-	ErrorConflict              ErrorCode = "conflict"
-	ErrorRateLimited           ErrorCode = "rate_limited"
-	ErrorProviderUnavailable   ErrorCode = "provider_unavailable"
-	ErrorPartialFailure        ErrorCode = "partial_failure"
+	ErrorInvalidArgument        ErrorCode = "invalid_argument"
+	ErrorInvalidRecurrence      ErrorCode = "invalid_recurrence"
+	ErrorUnsupportedCapability  ErrorCode = "unsupported_capability"
+	ErrorNotFound               ErrorCode = "not_found"
+	ErrorPermissionDenied       ErrorCode = "permission_denied"
+	ErrorConflict               ErrorCode = "conflict"
+	ErrorRateLimited            ErrorCode = "rate_limited"
+	ErrorProviderUnavailable    ErrorCode = "provider_unavailable"
+	ErrorPartialFailure         ErrorCode = "partial_failure"
+	ErrorMutationOutcomeUnknown ErrorCode = "mutation_outcome_unknown"
 )
 
 type APIError struct {
@@ -38,3 +39,6 @@ func (e *APIError) Unwrap() error { return e.Cause }
 func NewAPIError(code ErrorCode, message string) *APIError {
 	return &APIError{Code: code, Message: message}
 }
+
+// MutationOutcomeUnknownMessage contains no provider data and explicitly discourages retry.
+const MutationOutcomeUnknownMessage = "The calendar operation may have completed. Check the calendar before trying again."

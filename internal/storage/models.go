@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 27
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -28,6 +28,7 @@ type Calendar struct {
 
 type Rule struct {
 	ID, SourceCalendarID, TargetCalendarID, State string
+	SyncMode                                      string
 	IntervalSeconds, LookbackDays, LookaheadDays  int
 	RecurrenceMode, NotificationPolicy            string
 	CopyAttendees                                 bool
@@ -57,9 +58,12 @@ type Run struct {
 
 // SyncRunPreview contains bounded private details for a completed dry run.
 type SyncRunPreview struct {
-	Entries   []SyncRunPreviewEntry `json:"entries"`
-	Total     int                   `json:"total"`
-	Truncated bool                  `json:"truncated"`
+	Entries           []SyncRunPreviewEntry `json:"entries"`
+	Total             int                   `json:"total"`
+	Truncated         bool                  `json:"truncated"`
+	SourceRevision    int64                 `json:"source_revision,omitempty"`
+	RuleConfigVersion int64                 `json:"rule_config_version,omitempty"`
+	TargetStatus      string                `json:"target_status,omitempty"`
 }
 
 // SyncRunPreviewEntry describes a single estimated sync action.
@@ -77,6 +81,9 @@ type Mapping struct {
 	SourceSeriesID, OriginalStart         string
 	TargetEventID, TargetSeriesID         string
 	ContentHash, ReconciliationState      string
+	Incarnation                           string
+	TargetETag                            string
+	Version                               int64
 	LastSeenAt                            time.Time
 }
 

@@ -184,13 +184,20 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	if err != nil {
 		return nil, nil, providerFailure(provider.Name(), request.CalendarID, err)
 	}
+	if event == nil || event.ID == "" {
+		return nil, nil, unknownProviderMutation()
+	}
 	normalizeEvent(event, provider.Name(), request.CalendarID)
-	return event, s.reconcileCreatedEvent(ctx, *event), nil
+	warnings := s.reconcileCreatedEvent(ctx, *event)
+	return event, warnings, nil
 }
 
 func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
 	if err := validateMutationScope(request.Scope, request.EffectiveFrom); err != nil {
 		return nil, err
+	}
+	if request.PreviewOnly && request.Scope != calendar.ScopeFollowing {
+		return nil, calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "preview is not available for this scope")
 	}
 	prefixedCalendarID := request.Ref.CalendarID
 	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
@@ -214,6 +221,9 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
+	if result == nil {
+		return nil, unknownProviderMutation()
+	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, false)
 	return result, nil
@@ -222,6 +232,9 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
 	if err := validateMutationScope(request.Scope, request.EffectiveFrom); err != nil {
 		return nil, err
+	}
+	if request.PreviewOnly && request.Scope != calendar.ScopeFollowing {
+		return nil, calendar.NewAPIError(calendar.ErrorUnsupportedCapability, "preview is not available for this scope")
 	}
 	prefixedCalendarID := request.Ref.CalendarID
 	provider, rawRef, err := s.resolveEventRef(ctx, request.Ref)
@@ -244,6 +257,9 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
+	}
+	if result == nil {
+		return nil, unknownProviderMutation()
 	}
 	normalizeOperation(result, provider.Name(), prefixedCalendarID)
 	s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)

@@ -17,6 +17,18 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
+func testRepairProvider(t *testing.T, timezone string, handler http.HandlerFunc) (*Provider, func()) {
+	t.Helper()
+	return testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/calendars/primary" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"timeZone": timezone})
+			return
+		}
+		handler(w, r)
+	})
+}
+
 func syncWindow() calendar.EventSyncWindow {
 	return calendar.EventSyncWindow{
 		Start: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
@@ -71,7 +83,7 @@ func TestSyncEventsReplacementUsesCompatibleParametersAndLocalProjection(t *test
 }
 
 func TestRepairEventSyncObjectQuarantinesMalformedAndConfirmsDelete(t *testing.T) {
-	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("unexpected provider mutation: %s", r.Method)
 		}
@@ -83,11 +95,11 @@ func TestRepairEventSyncObjectQuarantinesMalformedAndConfirmsDelete(t *testing.T
 		_, _ = io.WriteString(w, `{"id":"bad","etag":"new-etag","summary":"bad"}`)
 	})
 	defer closeServer()
-	degraded, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "bad", ETag: "old-etag"}, Window: syncWindow()})
+	degraded, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "bad", ETag: "old-etag"}, Window: syncWindow()})
 	if err != nil || degraded.Outcome != calendar.EventSyncObjectStillQuarantined || degraded.Warning == nil || degraded.Warning.ETag != "new-etag" {
 		t.Fatalf("malformed repair=%#v err=%v", degraded, err)
 	}
-	deleted, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "missing"}, Window: syncWindow()})
+	deleted, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "missing"}, Window: syncWindow()})
 	if err != nil || deleted.Outcome != calendar.EventSyncObjectProviderDeleted {
 		t.Fatalf("missing repair=%#v err=%v", deleted, err)
 	}
@@ -95,7 +107,7 @@ func TestRepairEventSyncObjectQuarantinesMalformedAndConfirmsDelete(t *testing.T
 
 func TestRepairEventSyncObjectCorrectsOnlyEqualAllDayDatesAndRefetches(t *testing.T) {
 	var requests atomic.Int32
-	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 		request := requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch request {
@@ -137,7 +149,7 @@ func TestRepairEventSyncObjectCorrectsOnlyEqualAllDayDatesAndRefetches(t *testin
 	})
 	defer closeServer()
 
-	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +163,7 @@ func TestRepairEventSyncObjectCorrectsOnlyEqualAllDayDatesAndRefetches(t *testin
 
 func TestRepairEventSyncObjectDoesNotPatchWithoutExactOperatorAuthorization(t *testing.T) {
 	var requests atomic.Int32
-	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != http.MethodGet {
 			t.Errorf("automatic repair method = %s, want GET", r.Method)
@@ -161,7 +173,7 @@ func TestRepairEventSyncObjectDoesNotPatchWithoutExactOperatorAuthorization(t *t
 	})
 	defer closeServer()
 
-	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "stale"}, Window: syncWindow(), AllowProviderMutation: true})
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "stale"}, Window: syncWindow(), AllowProviderMutation: true})
 	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || result.Warning == nil {
 		t.Fatalf("stale authorization result=%#v err=%v", result, err)
 	}
@@ -183,7 +195,7 @@ func TestRepairEventSyncObjectLeavesOtherInvalidRangesUnchanged(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var patches atomic.Int32
-			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodPatch {
 					patches.Add(1)
 				}
@@ -192,7 +204,7 @@ func TestRepairEventSyncObjectLeavesOtherInvalidRangesUnchanged(t *testing.T) {
 			})
 			defer closeServer()
 
-			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "bad"}, Window: syncWindow()})
+			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "bad"}, Window: syncWindow()})
 			if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || result.Warning == nil || result.Warning.Diagnostic == nil || result.Warning.Diagnostic.ProviderReason != tt.reason {
 				t.Fatalf("repair result=%#v err=%v", result, err)
 			}
@@ -205,7 +217,7 @@ func TestRepairEventSyncObjectLeavesOtherInvalidRangesUnchanged(t *testing.T) {
 
 func TestRepairEventSyncObjectReturnsConditionalUpdateConflict(t *testing.T) {
 	var requests atomic.Int32
-	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 		request := requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if request == 1 {
@@ -220,7 +232,7 @@ func TestRepairEventSyncObjectReturnsConditionalUpdateConflict(t *testing.T) {
 	})
 	defer closeServer()
 
-	_, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+	_, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
 	var syncErr *calendar.EventSyncError
 	if !errors.As(err, &syncErr) || syncErr.Class != calendar.EventSyncProtocol || syncErr.ProviderStatus != http.StatusPreconditionFailed || syncErr.ProviderReason != "conditionNotMet" {
 		t.Fatalf("error = %#v", err)
@@ -234,7 +246,7 @@ func TestRepairEventSyncObjectTreatsMissingDuringPatchAsProviderDeleted(t *testi
 	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var requests atomic.Int32
-			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if requests.Add(1) == 1 {
 					_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
@@ -248,7 +260,7 @@ func TestRepairEventSyncObjectTreatsMissingDuringPatchAsProviderDeleted(t *testi
 			})
 			defer closeServer()
 
-			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
 			if err != nil || result.Outcome != calendar.EventSyncObjectProviderDeleted || requests.Load() != 2 {
 				t.Fatalf("result=%#v err=%v requests=%d", result, err, requests.Load())
 			}
@@ -319,6 +331,43 @@ func TestSyncEventsCancellationAndMovedEventBecomeDeletions(t *testing.T) {
 	}
 	if len(page.Upserts) != 0 || !sameStrings(page.DeletedEventIDs, []string{"cancelled", "moved"}) {
 		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestSyncEventsRemovalProvenancePreservesSparseIdentity(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"timeZone":"UTC","items":[
+			{"id":"instance","status":"cancelled","recurringEventId":"series","originalStartTime":{"dateTime":"2026-08-20T09:00:00+02:00","timeZone":"Europe/Belgrade"}},
+			{"id":"sparse","status":"cancelled"},
+			{"id":"master","status":"cancelled","recurrence":["RRULE:FREQ=DAILY"]},
+			{"id":"incomplete","status":"cancelled","recurringEventId":"series"},
+			{"id":"moved","recurringEventId":"series","originalStartTime":{"date":"2026-08-20"},"start":{"date":"2026-08-22"},"end":{"date":"2026-08-23"}}
+		],"nextSyncToken":"next"}`)
+	})
+	defer closeServer()
+	page, err := provider.SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "primary", Window: syncWindow(), Cursor: "cursor", Mode: calendar.EventSyncIncremental})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(page.DeletedEventIDs, []string{"instance", "sparse", "master", "incomplete", "moved"}) || len(page.Removals) != 5 {
+		t.Fatal("legacy deletions or removal observations changed")
+	}
+	instance, sparse, master, incomplete, moved := page.Removals[0], page.Removals[1], page.Removals[2], page.Removals[3], page.Removals[4]
+	if instance.ObjectID != "instance" || instance.Reason != calendar.EventSyncProviderCancellation || instance.SeriesID != "series" || instance.OriginalStart == nil || instance.OriginalStart.DateTime != "2026-08-20T09:00:00+02:00" || instance.OriginalStart.TimeZone != "Europe/Belgrade" {
+		t.Fatal("instance cancellation identity not preserved")
+	}
+	if sparse.Reason != calendar.EventSyncProviderCancellation || sparse.SeriesID != "" || sparse.OriginalStart != nil || sparse.RecurrencePresent {
+		t.Fatal("sparse cancellation was classified")
+	}
+	if master.ObjectID != "master" || !master.RecurrencePresent || master.SeriesID != "" || master.OriginalStart != nil {
+		t.Fatal("observed master recurrence not preserved")
+	}
+	if incomplete.SeriesID != "series" || incomplete.OriginalStart != nil {
+		t.Fatal("incomplete occurrence identity was inferred")
+	}
+	if moved.ObjectID != "moved" || moved.Reason != calendar.EventSyncWindowEviction || moved.SeriesID != "series" || moved.OriginalStart == nil || moved.OriginalStart.Date != "2026-08-20" {
+		t.Fatal("window eviction provenance not preserved")
 	}
 }
 
@@ -452,5 +501,202 @@ func TestSyncEventsPreservesSelfResponse(t *testing.T) {
 	}
 	if len(page.Upserts) != 1 || len(page.Upserts[0].Event.Attendees) != 1 || !page.Upserts[0].Event.Attendees[0].Self || page.Upserts[0].Event.Attendees[0].Status != "declined" {
 		t.Fatalf("upserts = %#v", page.Upserts)
+	}
+}
+
+func TestGoogleAllDaySyncWindowUsesCalendarZone(t *testing.T) {
+	for _, zone := range []string{"Europe/Belgrade", "America/Los_Angeles"} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, 11, 1, 0, 0, 0, 0, loc)
+		window := calendar.EventSyncWindow{Start: start, End: start.AddDate(0, 0, 1)}
+		for _, tc := range []struct {
+			date, end string
+			want      bool
+		}{
+			{"2026-10-31", "2026-11-01", false},
+			{"2026-11-01", "2026-11-02", true},
+			{"2026-11-02", "2026-11-03", false},
+		} {
+			event := calendar.EventV2{Start: calendar.EventTime{Date: tc.date}, End: calendar.EventTime{Date: tc.end}}
+			got, err := googleEventInSyncWindowInZone(event, window, zone)
+			if err != nil || got != tc.want {
+				t.Fatalf("%s %s got %v, err %v", zone, tc.date, got, err)
+			}
+		}
+	}
+	event := calendar.EventV2{Start: calendar.EventTime{Date: "2011-12-30"}, End: calendar.EventTime{Date: "2011-12-31"}}
+	if _, err := googleEventInSyncWindowInZone(event, syncWindow(), "Pacific/Apia"); err == nil {
+		t.Fatal("accepted skipped civil date")
+	}
+	if _, err := googleEventInSyncWindowInZone(event, syncWindow(), ""); err == nil {
+		t.Fatal("accepted missing calendar zone")
+	}
+}
+
+func TestSyncEventsAllDayBoundaryUsesResponseTimeZone(t *testing.T) {
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"timeZone":"Europe/Belgrade","items":[{"id":"previous","start":{"date":"2026-11-04"},"end":{"date":"2026-11-05"}},{"id":"current","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}}],"nextSyncToken":"next"}`)
+	})
+	defer closeServer()
+	loc, err := time.LoadLocation("Europe/Belgrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
+	page, err := provider.SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "primary", Mode: calendar.EventSyncReplacement, Window: calendar.EventSyncWindow{Start: start, End: start.AddDate(0, 0, 1)}})
+	if err != nil || page.SourceTimeZone != "Europe/Belgrade" || len(page.Warnings) != 0 || len(page.Upserts) != 1 || page.Upserts[0].Event.ID != "current" {
+		t.Fatalf("unexpected projection: upserts=%d warnings=%d err=%v", len(page.Upserts), len(page.Warnings), err)
+	}
+}
+
+func TestRepairAllDayBoundaryWithoutCalendarZoneStaysQuarantined(t *testing.T) {
+	provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"boundary","etag":"one","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}}`)
+	})
+	defer closeServer()
+	start := time.Date(2026, 11, 4, 23, 0, 0, 0, time.UTC)
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", Object: calendar.SyncObject{ObjectID: "boundary"}, Window: calendar.EventSyncWindow{Start: start, End: start.Add(2 * time.Hour)}})
+	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined {
+		t.Fatalf("boundary outcome=%s error=%v", result.Outcome, err)
+	}
+}
+
+func TestRepairAllDayRequiresCalendarTimeZoneBeforePatch(t *testing.T) {
+	for _, zone := range []string{"", "Local", "not-a-zone"} {
+		t.Run(zone, func(t *testing.T) {
+			var patches atomic.Int32
+			provider, closeServer := testRepairProvider(t, "UTC", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch {
+					patches.Add(1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
+			})
+			defer closeServer()
+			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: zone, Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+			if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || patches.Load() != 0 {
+				t.Fatalf("result=%s patches=%d error=%v", result.Outcome, patches.Load(), err)
+			}
+		})
+	}
+}
+
+func TestRepairSkippedCivilDateNeverPatches(t *testing.T) {
+	var patches atomic.Int32
+	provider, closeServer := testRepairProvider(t, "Pacific/Apia", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patches.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"skip","etag":"before","start":{"date":"2011-12-30"},"end":{"date":"2011-12-30"}}`)
+	})
+	defer closeServer()
+	start := time.Date(2011, 12, 28, 0, 0, 0, 0, time.UTC)
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "Pacific/Apia", Object: calendar.SyncObject{ObjectID: "skip", ETag: "before"}, Window: calendar.EventSyncWindow{Start: start, End: start.AddDate(0, 0, 5)}, AllowProviderMutation: true})
+	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || patches.Load() != 0 {
+		t.Fatalf("result=%s patches=%d error=%v", result.Outcome, patches.Load(), err)
+	}
+}
+
+func TestRepairAllDayUsesCalendarZoneAcrossDSTAfterPatch(t *testing.T) {
+	var requests atomic.Int32
+	provider, closeServer := testRepairProvider(t, "America/Los_Angeles", func(w http.ResponseWriter, r *http.Request) {
+		count := requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch count {
+		case 1:
+			_, _ = io.WriteString(w, `{"id":"dst","etag":"before","start":{"date":"2026-11-01"},"end":{"date":"2026-11-01"}}`)
+		case 2:
+			if r.Method != http.MethodPatch {
+				t.Errorf("second request = %s", r.Method)
+			}
+			_, _ = io.WriteString(w, `{"id":"dst"}`)
+		case 3:
+			_, _ = io.WriteString(w, `{"id":"dst","etag":"after","start":{"date":"2026-11-01"},"end":{"date":"2026-11-02"}}`)
+		default:
+			t.Errorf("unexpected request %d", count)
+		}
+	})
+	defer closeServer()
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 1, 0, 0, 0, 0, loc)
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "America/Los_Angeles", Object: calendar.SyncObject{ObjectID: "dst", ETag: "before"}, Window: calendar.EventSyncWindow{Start: start, End: start.AddDate(0, 0, 1)}, AllowProviderMutation: true})
+	if err != nil || result.Outcome != calendar.EventSyncObjectProviderCorrected || len(result.Upserts) != 1 || requests.Load() != 3 {
+		t.Fatalf("result=%s requests=%d error=%v", result.Outcome, requests.Load(), err)
+	}
+}
+
+func TestRepairAllDayQuarantinesWhenProviderZoneDiffersOrUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "changed", status: http.StatusOK, body: `{"timeZone":"America/Los_Angeles"}`},
+		{name: "invalid", status: http.StatusOK, body: `{"timeZone":"Local"}`},
+		{name: "missing", status: http.StatusOK, body: `{}`},
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"error":{"code":503}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var eventReads, zoneReads, patches atomic.Int32
+			provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/calendars/primary" {
+					zoneReads.Add(1)
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				if r.Method == http.MethodPatch {
+					patches.Add(1)
+				} else {
+					eventReads.Add(1)
+				}
+				_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
+			})
+			defer closeServer()
+			result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+			if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || result.Warning == nil || zoneReads.Load() != 1 || eventReads.Load() != 1 || patches.Load() != 0 {
+				t.Fatalf("result=%s reads=%d zones=%d patches=%d err=%v", result.Outcome, eventReads.Load(), zoneReads.Load(), patches.Load(), err)
+			}
+		})
+	}
+}
+
+func TestRepairAllDayRechecksProviderZoneAfterPatch(t *testing.T) {
+	var events, zones, patches atomic.Int32
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/calendars/primary" {
+			if zones.Add(1) == 1 {
+				_, _ = io.WriteString(w, `{"timeZone":"UTC"}`)
+			} else {
+				_, _ = io.WriteString(w, `{"timeZone":"Europe/Belgrade"}`)
+			}
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patches.Add(1)
+			_, _ = io.WriteString(w, `{"id":"all-day"}`)
+			return
+		}
+		if events.Add(1) == 1 {
+			_, _ = io.WriteString(w, `{"id":"all-day","etag":"before","start":{"date":"2026-08-20"},"end":{"date":"2026-08-20"}}`)
+		} else {
+			_, _ = io.WriteString(w, `{"id":"all-day","etag":"after","start":{"date":"2026-08-20"},"end":{"date":"2026-08-21"}}`)
+		}
+	})
+	defer closeServer()
+	result, err := provider.RepairEventSyncObject(context.Background(), calendar.EventSyncObjectRepairRequest{CalendarID: "primary", CalendarTimeZone: "UTC", Object: calendar.SyncObject{ObjectID: "all-day", ETag: "before"}, Window: syncWindow(), AllowProviderMutation: true})
+	if err != nil || result.Outcome != calendar.EventSyncObjectStillQuarantined || zones.Load() != 2 || patches.Load() != 1 {
+		t.Fatalf("result=%s zones=%d patches=%d err=%v", result.Outcome, zones.Load(), patches.Load(), err)
 	}
 }
