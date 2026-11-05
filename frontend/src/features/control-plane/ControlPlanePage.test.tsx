@@ -74,6 +74,21 @@ describe("calendar display setting", () => {
 });
 
 describe("sync activity", () => {
+  it("ignores an older request after the preview is closed and reopened", async () => {
+    bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
+    let rejectFirst!: (error: Error) => void;
+    const first = new Promise<Response>((_, reject) => { rejectFirst = reject; });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(first).mockResolvedValueOnce(new Response(JSON.stringify({ status: "available", preview: { total: 0, truncated: false, entries: [] } }), { status: 200 })));
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "View dry run details")!;
+    await act(async () => { button.click(); });
+    await act(async () => { button.click(); });
+    await act(async () => { button.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("No actions match these filters.");
+    await act(async () => { rejectFirst(new Error("late failure")); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("No actions match these filters.");
+    expect(container.textContent).not.toContain("Could not load dry run details.");
+  });
   it("shows an error when preview loading fails", async () => {
     bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));

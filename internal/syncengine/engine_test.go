@@ -576,6 +576,24 @@ func TestEngineRestoresOccurrenceWhenSourceExceptionDisappears(t *testing.T) {
 	}
 
 	source.events = []calendar.EventV2{master, {ID: "ordinary", InstanceKind: "occurrence", RecurringEventID: "master", OriginalStart: &original, Title: "Daily", Start: original, End: calendar.EventTime{DateTime: "2026-08-21T10:00:00Z", TimeZone: "UTC"}}}
+	source.events[1].Title = ""
+	preview, err := engine.Run(context.Background(), rule, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range preview.Preview.Entries {
+		if item.Reason == "restore_series_occurrence" {
+			found = true
+			if item.Title != "Series: Daily" {
+				t.Fatalf("restoration title = %q", item.Title)
+			}
+		}
+	}
+	if !found || target.updated != 1 {
+		t.Fatal("dry run failed to preview restoration without writes")
+	}
+	source.events[1].Title = "Daily"
 	result, err := engine.Run(context.Background(), rule, false)
 	if err != nil {
 		t.Fatal(err)

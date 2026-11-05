@@ -456,7 +456,11 @@ func (e *Engine) Run(ctx context.Context, rule storage.Rule, dryRun bool) (runRe
 		if mapping.ObjectKind == "exception" {
 			if occurrence, ok := occurrences[seriesOccurrenceKey(mapping.SourceSeriesID, mapping.OriginalStart)]; ok {
 				result.Updated++
-				previewAction(result.Preview, occurrence, "update", "restore_series_occurrence", "not_checked")
+				previewOccurrence := occurrence
+				if previewOccurrence.Title == "" && seriesTitles[previewOccurrence.RecurringEventID] != "" {
+					previewOccurrence.Title = "Series: " + seriesTitles[previewOccurrence.RecurringEventID]
+				}
+				previewAction(result.Preview, previewOccurrence, "update", "restore_series_occurrence", "not_checked")
 				if !dryRun {
 					if _, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorPatch(occurrence), Scope: calendar.ScopeSingle, Notifications: calendar.NotificationsNone}); err != nil {
 						return result, fmt.Errorf("restore target occurrence after removed exception: %w", err)
