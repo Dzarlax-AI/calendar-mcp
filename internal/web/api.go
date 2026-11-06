@@ -568,16 +568,44 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 }
 
 func safeRunSummary(run storage.Run) string {
-	if run.Outcome == "succeeded" && run.WarningCount > 0 && run.ErrorSummary == syncengine.DetachedSeriesWarning {
-		return syncengine.DetachedSeriesWarning
+	if run.Outcome == "failed" {
+		if run.ErrorCode != "" {
+			return syncengine.FailureMessage(run.ErrorCode)
+		}
+		return "Run failed; inspect server logs for details."
 	}
-	if run.Outcome == "failed" && run.ErrorCode != "" {
-		return syncengine.FailureMessage(run.ErrorCode)
+	if run.Outcome == "unknown" {
+		return "A provider request may have completed. Review is required before another write."
+	}
+	if run.Outcome == "stopped" {
+		return "Stopped before a provider mutation was dispatched."
 	}
 	if run.ErrorSummary == "" {
 		return ""
 	}
-	return "Run failed; inspect server logs for details."
+	if run.Outcome != "succeeded" {
+		return "Run details are unavailable."
+	}
+	// Stored summaries are untrusted. Accept only whole known messages in the
+	// exact order emitted by the worker, including its historical wording.
+	remaining := run.ErrorSummary
+	var safe []string
+	for _, item := range []struct{ stored, displayed string }{
+		{syncengine.DetachedSeriesWarning, syncengine.DetachedSeriesWarning},
+		{"Some participant lists may be incomplete.", "Some participant lists may be incomplete."},
+		{"Some participant lists are incomplete; existing descriptions were preserved until the full list is available.", "Some participant lists may be incomplete."},
+		{"Destination was not checked; this preview does not authorize synchronization.", "Destination was not checked; this preview does not authorize synchronization."},
+	} {
+		if remaining == item.stored || strings.HasPrefix(remaining, item.stored+" ") {
+			safe = append(safe, item.displayed)
+			remaining = strings.TrimPrefix(remaining, item.stored)
+			remaining = strings.TrimPrefix(remaining, " ")
+		}
+	}
+	if remaining != "" || len(safe) == 0 {
+		return "Run completed; some details are unavailable."
+	}
+	return strings.Join(safe, " ")
 }
 
 func (s *Server) listUIEvents(w http.ResponseWriter, r *http.Request) {
