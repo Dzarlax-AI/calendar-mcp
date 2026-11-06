@@ -63,6 +63,20 @@ type importEventV2Request struct {
 }
 
 func registerV2Routes(mux *http.ServeMux, app *application.Service) {
+	mux.HandleFunc("GET /api/v2/availability/calendars", func(w http.ResponseWriter, r *http.Request) {
+		params := r.URL.Query()
+		if len(params) != 1 || len(params["provider"]) != 1 {
+			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "one provider is required"))
+			return
+		}
+		result, err := app.ListAvailabilityCalendars(r.Context(), params.Get("provider"))
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("GET /api/v2/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		calendarID := r.URL.Query().Get("calendar_id")
 		if calendarID == "" {

@@ -5,12 +5,14 @@ import "time"
 type Calendar struct {
 	// Timezone is internal discovery metadata; existing list JSON remains unchanged.
 	Timezone string `json:"-"`
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
-	Name     string `json:"name"`
-	Color    string `json:"color,omitempty"`
-	Primary  bool   `json:"primary,omitempty"`
-	ReadOnly bool   `json:"read_only,omitempty"`
+	// GoogleWriteAccessProven is internal evidence for strict catalogs only.
+	GoogleWriteAccessProven bool   `json:"-"`
+	ID                      string `json:"id"`
+	Provider                string `json:"provider"`
+	Name                    string `json:"name"`
+	Color                   string `json:"color,omitempty"`
+	Primary                 bool   `json:"primary,omitempty"`
+	ReadOnly                bool   `json:"read_only,omitempty"`
 }
 
 type Attendee struct {

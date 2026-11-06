@@ -21,8 +21,8 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 	if err != nil {
 		return calendar.CalendarCapabilities{}, err
 	}
-	readOnly := entry.AccessRole == "reader" || entry.AccessRole == "freeBusyReader"
-	canWrite := !readOnly
+	canWrite := entry.AccessRole == "owner" || entry.AccessRole == "writer"
+	readOnly := !canWrite
 	eventTypes := []string{"default"}
 	if entry.Primary || calendarID == "primary" {
 		eventTypes = append(eventTypes, "birthday", "focusTime", "outOfOffice", "workingLocation", "fromGmail")

@@ -62,12 +62,13 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 	err := p.svc.CalendarList.List().Pages(ctx, func(list *gcal.CalendarList) error {
 		for _, c := range list.Items {
 			cals = append(cals, calendar.Calendar{
-				ID:       c.Id,
-				Timezone: c.TimeZone,
-				Name:     c.Summary,
-				Color:    c.BackgroundColor,
-				Primary:  c.Primary,
-				ReadOnly: c.AccessRole == "reader" || c.AccessRole == "freeBusyReader",
+				ID:                      c.Id,
+				Timezone:                c.TimeZone,
+				Name:                    c.Summary,
+				Color:                   c.BackgroundColor,
+				Primary:                 c.Primary,
+				ReadOnly:                c.AccessRole == "reader" || c.AccessRole == "freeBusyReader",
+				GoogleWriteAccessProven: c.AccessRole == "owner" || c.AccessRole == "writer",
 			})
 		}
 		return nil

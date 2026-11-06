@@ -407,6 +407,22 @@ boundaries. Pagination and provider reads do not create a snapshot against
 external calendar edits. Existing V2 event routes and MCP catalogs retain their
 contracts; this endpoint is additive.
 
+`GET /api/v2/availability/calendars?provider=google` lists enabled,
+account-scoped calendars for exactly one provider (`google`, `microsoft`, or
+`apple`), using the same REST authentication. A successful response contains
+`provider`, `complete: true`, and a non-null `calendars` array. An empty array
+means the platform database confirms no configured account for that provider,
+or all of its known calendars are disabled. Every configured account for the
+selected provider must be connected and successfully listed, and every enabled
+registered calendar must appear in the provider result; errors never return a
+partial list. Other providers are not contacted. The route requires
+the platform database to confirm provider/account identity and does not create
+discovery records: a newly seen unregistered calendar makes the catalog unavailable until
+registered by the normal discovery flow; disabled registered calendars are omitted. A provider token may still be refreshed by
+the existing OAuth token source. The legacy catalog, MCP catalogs and write
+checks are unchanged. Clients must not use a one-provider list as evidence
+that an omitted provider has no busy events.
+
 Keep this listener internal unless an external client explicitly requires it.
 
 ## Standalone compatibility mode
