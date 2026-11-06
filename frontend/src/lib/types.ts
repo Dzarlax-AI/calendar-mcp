@@ -42,6 +42,7 @@ export type SyncRule = {
   targetCalendarId?: string;
   state?: string;
   syncMode?: string;
+  controlStatus?: string;
   enabled: boolean;
   lastRun?: string;
 };
@@ -49,10 +50,13 @@ export type SyncRule = {
 export type RunRecord = {
   id: string;
   ruleId?: string;
+  jobId?: string;
+  stopRequested?: boolean;
   status: "queued" | "running" | "success" | "failed" | string;
   startedAt?: string;
   finishedAt?: string;
   message?: string;
+  errorCode?: string;
   outcome?: string;
   trigger?: string;
   createdCount?: number;
@@ -80,6 +84,7 @@ export type Bootstrap = {
   connections: Connection[];
   rules: SyncRule[];
   runs: RunRecord[];
+  pending_jobs?: Array<{ id: string; rule_id: string; kind: string; created_at: string }>;
   settings: Settings;
   capabilities?: Record<string, RawCalendarCapabilities>;
   diagnostics_operator?: boolean;

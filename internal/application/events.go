@@ -180,15 +180,21 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	}
 	providerRequest := request
 	providerRequest.CalendarID = rawCalendarID
-	event, err := v2.CreateEventV2(ctx, providerRequest)
+	var warnings []string
+	event, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func() (*calendar.EventV2, error) {
+		event, err := v2.CreateEventV2(ctx, providerRequest)
+		if err == nil && event != nil && event.ID != "" {
+			normalizeEvent(event, provider.Name(), request.CalendarID)
+			warnings = s.reconcileCreatedEvent(ctx, *event)
+		}
+		return event, err
+	}, func(event *calendar.EventV2) bool { return event != nil && event.ID != "" })
 	if err != nil {
 		return nil, nil, providerFailure(provider.Name(), request.CalendarID, err)
 	}
 	if event == nil || event.ID == "" {
 		return nil, nil, unknownProviderMutation()
 	}
-	normalizeEvent(event, provider.Name(), request.CalendarID)
-	warnings := s.reconcileCreatedEvent(ctx, *event)
 	return event, warnings, nil
 }
 
@@ -213,10 +219,25 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	}
 	request.Ref = rawRef
 	var result *calendar.OperationResult
-	if request.Scope == calendar.ScopeFollowing {
-		result, err = s.updateFollowing(ctx, provider, request, prefixedCalendarID)
+	call := func() (*calendar.OperationResult, error) {
+		var result *calendar.OperationResult
+		var err error
+		if request.Scope == calendar.ScopeFollowing {
+			result, err = s.updateFollowing(ctx, provider, request, prefixedCalendarID)
+			err = calendar.MaskNoDispatch(err)
+		} else {
+			result, err = v2.UpdateEventV2(ctx, request)
+		}
+		if err == nil && result != nil {
+			normalizeOperation(result, provider.Name(), prefixedCalendarID)
+			s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, false)
+		}
+		return result, err
+	}
+	if request.PreviewOnly {
+		result, err = call()
 	} else {
-		result, err = v2.UpdateEventV2(ctx, request)
+		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
@@ -224,8 +245,6 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	if result == nil {
 		return nil, unknownProviderMutation()
 	}
-	normalizeOperation(result, provider.Name(), prefixedCalendarID)
-	s.reconcileOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, false)
 	return result, nil
 }
 
@@ -250,10 +269,25 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	}
 	request.Ref = rawRef
 	var result *calendar.OperationResult
-	if request.Scope == calendar.ScopeFollowing {
-		result, err = s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
+	call := func() (*calendar.OperationResult, error) {
+		var result *calendar.OperationResult
+		var err error
+		if request.Scope == calendar.ScopeFollowing {
+			result, err = s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
+			err = calendar.MaskNoDispatch(err)
+		} else {
+			result, err = v2.DeleteEventV2(ctx, request)
+		}
+		if err == nil && result != nil {
+			normalizeOperation(result, provider.Name(), prefixedCalendarID)
+			s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)
+		}
+		return result, err
+	}
+	if request.PreviewOnly {
+		result, err = call()
 	} else {
-		result, err = v2.DeleteEventV2(ctx, request)
+		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
@@ -261,8 +295,6 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	if result == nil {
 		return nil, unknownProviderMutation()
 	}
-	normalizeOperation(result, provider.Name(), prefixedCalendarID)
-	s.reconcileDeleteOperation(ctx, result, calendar.EventRef{CalendarID: prefixedCalendarID, EventID: request.Ref.EventID}, request.Scope)
 	return result, nil
 }
 
@@ -406,6 +438,9 @@ func unsupported(provider, calendarID, message string) *calendar.APIError {
 }
 
 func providerFailure(provider, calendarID string, err error) *calendar.APIError {
+	if errors.Is(err, calendar.ErrWriteDispatchBlocked) {
+		return &calendar.APIError{Code: calendar.ErrorConflict, Message: calendar.ErrWriteDispatchBlocked.Error(), Provider: provider, CalendarID: calendarID, Cause: err}
+	}
 	var apiErr *calendar.APIError
 	if errors.As(err, &apiErr) {
 		return apiErr

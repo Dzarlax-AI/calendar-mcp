@@ -175,7 +175,7 @@ func runStorageContract(t *testing.T, store *Store) {
 	if err != nil || claimed == nil || claimed.State != "running" || claimed.Attempt != 1 {
 		t.Fatalf("claimed = %#v, err = %v", claimed, err)
 	}
-	parallel := Job{ID: "parallel", RuleID: "rule", Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now.Add(time.Second)}
+	parallel := Job{ID: "parallel", RuleID: "rule", Kind: "dry_run", State: "pending", AvailableAt: now, CreatedAt: now.Add(time.Second)}
 	if err := store.EnqueueJob(ctx, parallel); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func runStorageContract(t *testing.T, store *Store) {
 	if err := store.FinishRun(ctx, "parallel-run", *claimedParallel, "succeeded", now.Add(2*time.Minute), Run{}); err != nil {
 		t.Fatal(err)
 	}
-	stale := Job{ID: "stale", RuleID: "rule", Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now.Add(2 * time.Minute)}
+	stale := Job{ID: "stale", RuleID: "rule", Kind: "dry_run", State: "pending", AvailableAt: now, CreatedAt: now.Add(2 * time.Minute)}
 	if err := store.EnqueueJob(ctx, stale); err != nil {
 		t.Fatal(err)
 	}

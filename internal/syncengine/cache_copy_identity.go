@@ -14,8 +14,8 @@ func cacheCopyIdentity(sourceCalendarID string, event calendar.EventV2) (string,
 	return calendarprojection.Identity(sourceCalendarID, event)
 }
 
-// cacheCopyCreate builds a standalone target event with the same canonical
-// identity in its ownership marker and UID. It performs no provider calls.
+// cacheCopyCreate builds a standalone target with stable ownership. Google
+// assigns its UID; other providers retain the deterministic copy UID.
 func cacheCopyCreate(ruleID, sourceCalendarID string, event calendar.EventV2, targetProvider string) (calendar.EventCreateV2, error) {
 	if ruleID == "" || strings.ContainsRune(ruleID, '\x00') {
 		return calendar.EventCreateV2{}, errors.New("rule ID is required")

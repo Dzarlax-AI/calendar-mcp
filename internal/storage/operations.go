@@ -23,7 +23,14 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.dialect == DialectSQLite {
+		if _, err = tx.ExecContext(ctx, `UPDATE sync_rules SET state=state WHERE 0`); err != nil {
+			return 0, err
+		}
+	}
 	q := `SELECT id, interval_seconds FROM sync_rules WHERE state=? AND (next_run_at IS NULL OR next_run_at<=?)
+		AND NOT EXISTS (SELECT 1 FROM sync_jobs blocked WHERE blocked.rule_id=sync_rules.id AND blocked.state='unknown')
+		AND NOT EXISTS (SELECT 1 FROM exclusive_dispatch_reservations WHERE released_at IS NULL)
 		AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
 			WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE) ORDER BY created_at`
 	if s.dialect == DialectPostgres {
@@ -69,7 +76,39 @@ func (s *Store) ScheduleDueJobs(ctx context.Context, now time.Time) (int, error)
 }
 
 func (s *Store) EnqueueJob(ctx context.Context, j Job) error {
-	result, err := s.db.ExecContext(ctx, s.query(`INSERT INTO sync_jobs
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if s.dialect == DialectSQLite {
+		if _, err = tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=state WHERE id=?`), j.RuleID); err != nil {
+			return err
+		}
+	}
+	q := `SELECT state FROM sync_rules WHERE id=?`
+	if s.dialect == DialectPostgres {
+		q += ` FOR UPDATE`
+	}
+	var state string
+	if err = tx.QueryRowContext(ctx, s.query(q), j.RuleID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return ErrCalendarSyncIneligible
+	} else if err != nil {
+		return err
+	}
+	if state != "enabled" && !(state == "paused" && j.Kind == "dry_run") {
+		return ErrCalendarSyncIneligible
+	}
+	if j.Kind != "dry_run" {
+		var blocked bool
+		if err = tx.QueryRowContext(ctx, s.query(`SELECT EXISTS(SELECT 1 FROM sync_jobs WHERE rule_id=? AND state='unknown') OR EXISTS(SELECT 1 FROM exclusive_dispatch_reservations WHERE released_at IS NULL)`), j.RuleID).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked {
+			return ErrCalendarSyncIneligible
+		}
+	}
+	result, err := tx.ExecContext(ctx, s.query(`INSERT INTO sync_jobs
 		(id, rule_id, kind, state, available_at, claimed_at, claimed_by, attempt, created_at, finished_at)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
 			SELECT 1 FROM sync_rules r JOIN calendars source ON source.id=r.source_calendar_id
@@ -84,7 +123,7 @@ func (s *Store) EnqueueJob(ctx context.Context, j Job) error {
 	} else if changed == 0 {
 		return ErrCalendarSyncIneligible
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*Job, error) {
@@ -105,7 +144,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 		FROM sync_jobs AS candidate WHERE candidate.state = ? AND candidate.available_at <= ?
 		AND EXISTS (SELECT 1 FROM sync_rules r JOIN calendars source ON source.id=r.source_calendar_id
 			JOIN calendars target ON target.id=r.target_calendar_id
-			WHERE r.id=candidate.rule_id AND source.enabled=TRUE AND target.enabled=TRUE)
+			WHERE r.id=candidate.rule_id AND source.enabled=TRUE AND target.enabled=TRUE AND (r.state='enabled' OR (r.state='paused' AND candidate.kind='dry_run')))
 		AND NOT EXISTS (SELECT 1 FROM sync_jobs AS active WHERE active.rule_id = candidate.rule_id AND active.state = ?)
 		ORDER BY candidate.available_at, candidate.created_at LIMIT 1`
 	if s.dialect == DialectPostgres {
@@ -167,6 +206,11 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.dialect == DialectSQLite {
+		if _, err = tx.ExecContext(ctx, `UPDATE sync_jobs SET state=state WHERE 0`); err != nil {
+			return 0, err
+		}
+	}
 	selectStale := `SELECT id FROM sync_jobs WHERE state=? AND claimed_at<? AND (lease_until IS NULL OR lease_until<=?) ORDER BY id`
 	if s.dialect == DialectPostgres {
 		selectStale += " FOR UPDATE"
@@ -193,8 +237,8 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 	}
 	recovered := make([]string, 0, len(candidates))
 	for _, jobID := range candidates {
-		res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, available_at=?, claimed_at=NULL, claimed_by=NULL, lease_until=NULL, finished_at=NULL
-			WHERE id=? AND state=? AND claimed_at<? AND (lease_until IS NULL OR lease_until<=?)`), "pending", now, jobID, "running", staleBefore, now)
+		res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=CASE WHEN stop_requested THEN 'unknown' ELSE ? END, available_at=?, claimed_at=NULL, claimed_by=NULL, lease_until=NULL, finished_at=CASE WHEN stop_requested THEN ? ELSE finished_at END
+			WHERE id=? AND state=? AND claimed_at<? AND (lease_until IS NULL OR lease_until<=?)`), "pending", now, now, jobID, "running", staleBefore, now)
 		if err != nil {
 			return 0, fmt.Errorf("recover stale job %q: %w", jobID, err)
 		}
@@ -207,9 +251,9 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleBefore, now time.Time
 		}
 	}
 	for _, jobID := range recovered {
-		if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=?, finished_at=?, error_code=?, error_summary=?
-			WHERE outcome=? AND job_id=?`), "failed", now, "worker_lease_expired",
-			"Worker stopped before the synchronization run completed", "running", jobID); err != nil {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_runs SET outcome=CASE WHEN EXISTS(SELECT 1 FROM sync_jobs WHERE id=? AND state='unknown') THEN 'unknown' ELSE ? END, finished_at=?, error_code=?, error_summary=?
+			WHERE outcome=? AND job_id=?`), jobID, "failed", now, "worker_lease_expired",
+			"Worker stopped before the synchronization run completed; the result may be unknown", "running", jobID); err != nil {
 			return 0, fmt.Errorf("close stale runs for job %q: %w", jobID, err)
 		}
 	}
@@ -340,6 +384,21 @@ func (s *Store) finishRun(ctx context.Context, runID string, job Job, outcome st
 	if !found || deadline.Valid && !deadline.Time.After(finished.Add(time.Since(started))) {
 		return ErrJobLeaseLost
 	}
+	var stopRequested bool
+	if err := tx.QueryRowContext(ctx, s.query(`SELECT stop_requested FROM sync_jobs WHERE id=?`), job.ID).Scan(&stopRequested); err != nil {
+		return err
+	}
+	if stopRequested && outcome == "failed" {
+		if counters.ProviderDispatched {
+			outcome = "unknown"
+			counters.ErrorCode = "sync_outcome_unknown"
+			counters.ErrorSummary = "A provider request may have completed. Review is required before another write."
+		} else {
+			outcome = "stopped"
+			counters.ErrorCode = ""
+			counters.ErrorSummary = "Stop completed before a provider mutation was dispatched."
+		}
+	}
 	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=?, finished_at=?,lease_until=NULL
 		WHERE id=? AND state=? AND claimed_by=? AND attempt=?`), outcome, finished, job.ID, "running", job.ClaimedBy, job.Attempt)
 	if err != nil {
@@ -418,9 +477,9 @@ func (s *Store) ListRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, s.query(`SELECT id, job_id, rule_id, trigger_kind, outcome, started_at,
-		finished_at, created_count, updated_count, deleted_count, skipped_count, warning_count, error_code,
-		error_summary, dry_run FROM sync_runs ORDER BY started_at DESC LIMIT ?`), limit)
+	rows, err := s.db.QueryContext(ctx, s.query(`SELECT r.id, r.job_id, r.rule_id, r.trigger_kind, r.outcome, r.started_at,
+		r.finished_at, r.created_count, r.updated_count, r.deleted_count, r.skipped_count, r.warning_count, r.error_code,
+		r.error_summary, r.dry_run, j.stop_requested FROM sync_runs r JOIN sync_jobs j ON j.id=r.job_id ORDER BY r.started_at DESC LIMIT ?`), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
@@ -431,7 +490,7 @@ func (s *Store) ListRuns(ctx context.Context, limit int) ([]Run, error) {
 		var finished sql.NullTime
 		var code, summary sql.NullString
 		if err := rows.Scan(&r.ID, &r.JobID, &r.RuleID, &r.Trigger, &r.Outcome, &r.StartedAt, &finished,
-			&r.CreatedCount, &r.UpdatedCount, &r.DeletedCount, &r.SkippedCount, &r.WarningCount, &code, &summary, &r.DryRun); err != nil {
+			&r.CreatedCount, &r.UpdatedCount, &r.DeletedCount, &r.SkippedCount, &r.WarningCount, &code, &summary, &r.DryRun, &r.StopRequested); err != nil {
 			return nil, err
 		}
 		if finished.Valid {

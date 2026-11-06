@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"calendar-mcp/internal/storage"
+
 	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 )
@@ -51,6 +53,15 @@ func TestFailureDiagnosticsNeverExposeProviderContent(t *testing.T) {
 	}
 	if got := FailureMessage(secret); strings.Contains(got, secret) {
 		t.Fatal("unknown code was rendered")
+	}
+}
+
+func TestDispatchConflictHasSafeActionableDiagnostic(t *testing.T) {
+	if got := FailureCode(storage.ErrExclusiveDispatchConflict); got != "sync_dispatch_blocked" {
+		t.Fatalf("code = %q", got)
+	}
+	if got := FailureMessage("sync_dispatch_blocked"); !strings.Contains(got, "reservation") {
+		t.Fatalf("message = %q", got)
 	}
 }
 

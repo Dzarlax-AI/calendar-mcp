@@ -369,7 +369,7 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 	if err != nil {
 		return fmt.Errorf("fence calendar window update: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider, EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=?)
+	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider, EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=? AND r.state<>'archived')
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id
 		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`), "cached_instances", true, true, "connected")
 	if err != nil {
@@ -466,7 +466,7 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		JOIN connections conn ON conn.id=c.connection_id
 		WHERE (ss.status IN (?, ?, ?, ?, ?) OR (ss.status='parked' AND ss.last_error_code='auth' AND conn.provider='apple'))
 			AND conn.status=? AND c.can_read=? AND c.enabled=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
-			AND (? OR NOT EXISTS (SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=ss.calendar_id AND r.sync_mode='cached_instances'))
+			AND (? OR NOT EXISTS (SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=ss.calendar_id AND r.sync_mode='cached_instances' AND r.state<>'archived'))
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE SKIP LOCKED"

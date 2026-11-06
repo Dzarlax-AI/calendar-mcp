@@ -300,7 +300,7 @@ func testPostgresClaimsOnlyOneJobPerRule(t *testing.T, databaseURL string, first
 	}
 	t.Cleanup(func() { _ = second.Close() })
 	now := time.Now().UTC()
-	rule := Rule{ID: "parallel-claim-rule", SourceCalendarID: "microsoft:ms:source-provider", TargetCalendarID: "google:google:target-provider", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	rule := Rule{ID: "parallel-claim-rule", SourceCalendarID: "microsoft:ms:source-provider", TargetCalendarID: "google:google:target-provider", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err := first.CreateRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func testPostgresFinishAndRecoveryUseConsistentLockOrder(t *testing.T, databaseU
 	}
 	t.Cleanup(func() { _ = second.Close() })
 	now := time.Now().UTC()
-	rule := Rule{ID: "finish-recovery-rule", SourceCalendarID: "microsoft:ms:source-provider", TargetCalendarID: "google:google:target-provider", State: "paused", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
+	rule := Rule{ID: "finish-recovery-rule", SourceCalendarID: "microsoft:ms:source-provider", TargetCalendarID: "google:google:target-provider", State: "enabled", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err := first.CreateRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}

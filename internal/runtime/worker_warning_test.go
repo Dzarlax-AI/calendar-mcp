@@ -12,7 +12,7 @@ func TestRunWarningsExplainIncompleteParticipantsAndDetachedSeries(t *testing.T)
 		t.Fatalf("unexpected warning: %q", got)
 	}
 	got := runWarningsSummary(syncengine.Result{ParticipantsIncomplete: 1, DetachedSeries: 1})
-	if !strings.Contains(got, "participant lists are incomplete") || !strings.Contains(got, syncengine.DetachedSeriesWarning) {
+	if !strings.Contains(got, syncengine.IncompleteParticipantsWarning) || !strings.Contains(got, syncengine.DetachedSeriesWarning) {
 		t.Fatalf("missing warning: %q", got)
 	}
 }

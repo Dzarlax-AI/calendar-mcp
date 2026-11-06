@@ -268,6 +268,30 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 			return store.RenewJobLease(heartbeatCtx, job, at.UTC())
 		}, cancelSync)
 	}()
+	// Polling asks the active worker to stop but never claims a provider call
+	// already dispatched has been revoked. Its reservation remains parked on
+	// any ambiguous result.
+	stopPollCtx, stopPoll := context.WithCancel(ctx)
+	stopPollDone := make(chan struct{})
+	go func() {
+		defer close(stopPollDone)
+		timer := time.NewTicker(time.Second)
+		defer timer.Stop()
+		for {
+			requested, pollErr := store.JobStopRequested(stopPollCtx, job)
+			if pollErr != nil || requested {
+				if stopPollCtx.Err() == nil {
+					cancelSync()
+				}
+				return
+			}
+			select {
+			case <-stopPollCtx.Done():
+				return
+			case <-timer.C:
+			}
+		}
+	}()
 	var result syncengine.Result
 	var reserved, dispatched bool
 	operationID := uuid.NewString()
@@ -324,6 +348,8 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 			err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
 		}
 	}
+	stopPoll()
+	<-stopPollDone
 	stopHeartbeat()
 	ticker.Stop()
 	if heartbeatErr := <-heartbeatDone; heartbeatErr != nil {
@@ -341,7 +367,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	if err != nil {
 		code := syncengine.FailureCode(err)
 		summary := syncengine.FailureMessage(code)
-		finishErr := store.FinishRun(ctx, run.ID, job, "failed", finished, storage.Run{ErrorCode: code, ErrorSummary: summary})
+		finishErr := store.FinishRun(ctx, run.ID, job, "failed", finished, storage.Run{ErrorCode: code, ErrorSummary: summary, ProviderDispatched: dispatched})
 		if finishErr != nil {
 			return errors.Join(err, finishErr)
 		}
@@ -352,7 +378,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		if summary != "" {
 			summary += " "
 		}
-		summary += "Destination was not checked; this preview does not authorize synchronization."
+		summary += syncengine.SourceOnlyPreviewWarning
 	}
 	return store.FinishRun(ctx, run.ID, job, "succeeded", finished, storage.Run{
 		CreatedCount: result.Created, UpdatedCount: result.Updated, DeletedCount: result.Deleted,
@@ -368,7 +394,7 @@ func runWarningsSummary(result syncengine.Result) string {
 		messages = append(messages, syncengine.DetachedSeriesWarning)
 	}
 	if result.ParticipantsIncomplete > 0 {
-		messages = append(messages, "Some participant lists are incomplete; existing descriptions were preserved until the full list is available.")
+		messages = append(messages, syncengine.IncompleteParticipantsWarning)
 	}
 	return strings.Join(messages, " ")
 }

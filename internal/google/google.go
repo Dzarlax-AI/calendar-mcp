@@ -129,7 +129,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, event calendar.EventUpdate) (*calendar.Event, error) {
 	existing, err := p.svc.Events.Get(calendarID, eventID).Context(ctx).Do()
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	if event.Title != nil {
 		existing.Summary = *event.Title

@@ -43,8 +43,8 @@ func (s *Store) SetRuleStateAtVersion(ctx context.Context, id, state string, exp
 	if state != "paused" && state != "enabled" {
 		return errors.New("rule state must be paused or enabled")
 	}
-	result, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND config_version=? AND state<>? AND
-        (? <> 'enabled' OR EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
+	result, err := s.db.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND config_version=? AND state<>? AND state<>'archived' AND
+        (? <> 'enabled' OR NOT EXISTS (SELECT 1 FROM sync_jobs WHERE rule_id=sync_rules.id AND (state='unknown' OR (state='running' AND stop_requested=TRUE))) AND NOT EXISTS (SELECT 1 FROM exclusive_dispatch_reservations WHERE released_at IS NULL) AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
         WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE))`), state, nextRunAt, updatedAt, id, expectedVersion, state, state)
 	if err != nil {
 		return fmt.Errorf("conditionally set rule state: %w", err)

@@ -394,8 +394,27 @@ func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncSt
 		validZone = err == nil
 	}
 	allowProviderMutation := false
+	var releaseWrite func(context.Context) error
 	if validZone && item.ProviderMutationAuthorizedETag != "" && item.ProviderMutationAuthorizedETag == item.ETag {
+		if guard, ok := s.Store.(calendar.WriteDispatchGuard); ok {
+			var err error
+			releaseWrite, err = guard.BeginWriteDispatch(ctx, []string{state.CalendarID})
+			if err != nil {
+				return calendar.ErrWriteDispatchBlocked
+			}
+		}
 		consumed, err := s.Store.ConsumeEventSyncProviderMutationAuthorization(ctx, state, item.CalendarID, item.ObjectID, item.ETag, s.now())
+		if err != nil && releaseWrite != nil {
+			// Authorization consumption precedes the provider call, so even
+			// an ambiguous storage result cannot have dispatched a mutation.
+			// Cleanup must survive cancellation of the worker's lease context.
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			releaseErr := releaseWrite(releaseCtx)
+			cancel()
+			if releaseErr != nil {
+				return &calendar.APIError{Code: calendar.ErrorMutationOutcomeUnknown, Message: calendar.MutationOutcomeUnknownMessage, Cause: errors.Join(calendar.ErrProviderMutationOutcomeUnknown, err, releaseErr)}
+			}
+		}
 		if errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
 			return err
 		}
@@ -403,6 +422,15 @@ func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncSt
 			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
 		}
 		allowProviderMutation = consumed
+		if !consumed && releaseWrite != nil {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := releaseWrite(releaseCtx)
+			cancel()
+			if err != nil {
+				return &calendar.APIError{Code: calendar.ErrorMutationOutcomeUnknown, Message: calendar.MutationOutcomeUnknownMessage, Cause: errors.Join(calendar.ErrProviderMutationOutcomeUnknown, err)}
+			}
+			releaseWrite = nil
+		}
 	}
 	result, repairErr := repairer.RepairEventSyncObject(ctx, calendar.EventSyncObjectRepairRequest{
 		CalendarID: providerCalendarID, CalendarTimeZone: zone,
@@ -444,6 +472,14 @@ func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncSt
 			return err
 		}
 		return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrStorageFailure)
+	}
+	if releaseWrite != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := releaseWrite(releaseCtx)
+		cancel()
+		if err != nil {
+			return &calendar.APIError{Code: calendar.ErrorMutationOutcomeUnknown, Message: calendar.MutationOutcomeUnknownMessage, Cause: errors.Join(calendar.ErrProviderMutationOutcomeUnknown, err)}
+		}
 	}
 	return nil
 }

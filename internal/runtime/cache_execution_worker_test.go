@@ -27,6 +27,8 @@ type syntheticCacheTarget struct {
 	etag                                   string
 	bootstrapPage                          calendar.EventSyncPage
 	bootstrapCalls                         int
+	createStarted, createRelease           chan struct{}
+	honorCancellation                      bool
 }
 
 func (p *syntheticCacheTarget) SyncEvents(context.Context, calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
@@ -45,11 +47,20 @@ func (p *syntheticCacheTarget) ListEventsV2(context.Context, calendar.ListEvents
 func (p *syntheticCacheTarget) FindEventBySyncMarkerV2(context.Context, string, string, string) (*calendar.EventV2, error) {
 	return nil, nil
 }
-func (p *syntheticCacheTarget) CreateEventV2(_ context.Context, r calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+func (p *syntheticCacheTarget) CreateEventV2(ctx context.Context, r calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
 	if !r.RequireNoAttendees || r.Notifications != calendar.NotificationsNone || len(r.Event.Attendees) != 0 || len(r.Event.Recurrence) != 0 {
 		return nil, errors.New("unsafe create")
 	}
 	p.creates++
+	if p.createStarted != nil {
+		close(p.createStarted)
+		if p.honorCancellation {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		<-p.createRelease
+		return nil, context.DeadlineExceeded
+	}
 	if p.failCreate {
 		return nil, context.DeadlineExceeded
 	}
@@ -74,6 +85,15 @@ func (p *syntheticCacheTarget) DeleteEventV2(_ context.Context, r calendar.Delet
 }
 
 func TestSyntheticCacheWorkerCreateUpdateCancellationWithoutSourceProvider(t *testing.T) {
+	runSyntheticCacheWorker(t, "timeout")
+}
+func TestSyntheticStopDuringProviderCallParksUnknownOutcome(t *testing.T) {
+	runSyntheticCacheWorker(t, "late")
+}
+
+func TestSyntheticStopCancelsWorkerContext(t *testing.T) { runSyntheticCacheWorker(t, "cancel") }
+
+func runSyntheticCacheWorker(t *testing.T, mode string) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "cache-execution.db")
 	s, err := storage.Open(ctx, "sqlite://"+path)
@@ -249,7 +269,53 @@ func TestSyntheticCacheWorkerCreateUpdateCancellationWithoutSourceProvider(t *te
 	if err != nil || job == nil {
 		t.Fatalf("timeout claim: %v", err)
 	}
-	if err = executeJob(ctx, s, previewBuilder{providers: []calendar.Provider{target}}, *job, at); !errors.Is(err, context.DeadlineExceeded) {
+	if mode != "timeout" {
+		target.createStarted, target.createRelease = make(chan struct{}), make(chan struct{})
+		target.honorCancellation = mode == "cancel"
+		finished := make(chan error, 1)
+		go func() {
+			finished <- executeJob(ctx, s, previewBuilder{providers: []calendar.Provider{target}}, *job, at)
+		}()
+		select {
+		case <-target.createStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider call did not start")
+		}
+		if err = s.RequestRulePause(ctx, rule.ID, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if status, e := s.RuleControlStatus(ctx, rule.ID); e != nil || status != "pausing" {
+			t.Fatalf("in-flight status %q %v", status, e)
+		}
+		if err = s.ArchiveRule(ctx, rule.ID, time.Now().UTC()); !errors.Is(err, storage.ErrSyncControlConflict) {
+			t.Fatalf("archive in-flight: %v", err)
+		}
+		if mode == "late" {
+			close(target.createRelease)
+		}
+		select {
+		case e := <-finished:
+			want := context.DeadlineExceeded
+			if mode == "cancel" {
+				want = context.Canceled
+			}
+			if !errors.Is(e, want) {
+				t.Fatalf("stopped run: %v", e)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker did not stop")
+		}
+		runs, e := s.ListRuns(ctx, 10)
+		if e != nil || len(runs) == 0 || runs[0].Outcome != "unknown" {
+			t.Fatalf("stop result: %+v %v", runs, e)
+		}
+		if status, e := s.RuleControlStatus(ctx, rule.ID); e != nil || status != "needs_review" {
+			t.Fatalf("unknown status %q %v", status, e)
+		}
+		if err = s.ArchiveRule(ctx, rule.ID, time.Now().UTC()); !errors.Is(err, storage.ErrSyncControlConflict) {
+			t.Fatalf("archive unknown: %v", err)
+		}
+	} else if err = executeJob(ctx, s, previewBuilder{providers: []calendar.Provider{target}}, *job, at); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timeout run: %v", err)
 	}
 	probe := storage.ExclusiveDispatchRequest{OperationID: "another-synthetic-run-0001", TargetKey: storage.GlobalSyncDispatchKey, RequestHash: "0000000000000000000000000000000000000000000000000000000000000000", Kind: "run", CalendarIDs: []string{rule.TargetCalendarID}, Now: time.Now().UTC()}

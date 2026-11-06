@@ -201,6 +201,7 @@ type uiRule struct {
 	SourceCalendarID    string     `json:"source_calendar_id"`
 	TargetCalendarID    string     `json:"target_calendar_id"`
 	State               string     `json:"state"`
+	ControlStatus       string     `json:"control_status,omitempty"`
 	IntervalSeconds     int        `json:"interval_seconds"`
 	LookbackDays        int        `json:"lookback_days"`
 	LookaheadDays       int        `json:"lookahead_days"`
@@ -214,21 +215,22 @@ type uiRule struct {
 }
 
 type uiRun struct {
-	ID           string     `json:"id"`
-	JobID        string     `json:"job_id"`
-	RuleID       string     `json:"rule_id"`
-	Trigger      string     `json:"trigger"`
-	Outcome      string     `json:"outcome"`
-	StartedAt    time.Time  `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	CreatedCount int        `json:"created_count"`
-	UpdatedCount int        `json:"updated_count"`
-	DeletedCount int        `json:"deleted_count"`
-	SkippedCount int        `json:"skipped_count"`
-	WarningCount int        `json:"warning_count"`
-	ErrorCode    string     `json:"error_code,omitempty"`
-	ErrorSummary string     `json:"error_summary,omitempty"`
-	DryRun       bool       `json:"dry_run"`
+	ID            string     `json:"id"`
+	JobID         string     `json:"job_id"`
+	RuleID        string     `json:"rule_id"`
+	Trigger       string     `json:"trigger"`
+	Outcome       string     `json:"outcome"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	CreatedCount  int        `json:"created_count"`
+	UpdatedCount  int        `json:"updated_count"`
+	DeletedCount  int        `json:"deleted_count"`
+	SkippedCount  int        `json:"skipped_count"`
+	WarningCount  int        `json:"warning_count"`
+	ErrorCode     string     `json:"error_code,omitempty"`
+	ErrorSummary  string     `json:"error_summary,omitempty"`
+	DryRun        bool       `json:"dry_run"`
+	StopRequested bool       `json:"stop_requested"`
 }
 
 type uiSettings struct {
@@ -239,11 +241,19 @@ type uiSettings struct {
 	HideDeclinedEvents     bool   `json:"hide_declined_events"`
 }
 
+type uiPendingJob struct {
+	ID        string    `json:"id"`
+	RuleID    string    `json:"rule_id"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type uiControlPlane struct {
 	Connections []uiConnection `json:"connections"`
 	Calendars   []uiCalendar   `json:"calendars"`
 	Rules       []uiRule       `json:"rules"`
 	Runs        []uiRun        `json:"runs"`
+	PendingJobs []uiPendingJob `json:"pending_jobs"`
 	Settings    uiSettings     `json:"settings"`
 }
 
@@ -255,6 +265,7 @@ type uiBootstrap struct {
 	Calendars              []uiCalendar                             `json:"calendars"`
 	Rules                  []uiRule                                 `json:"rules"`
 	Runs                   []uiRun                                  `json:"runs"`
+	PendingJobs            []uiPendingJob                           `json:"pending_jobs"`
 	Settings               uiSettings                               `json:"settings"`
 	MCPEndpoint            string                                   `json:"mcp_endpoint"`
 	LegacyAPIKeyConfigured bool                                     `json:"legacy_api_key_configured"`
@@ -287,7 +298,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	writeUIJSON(w, http.StatusOK, uiBootstrap{
 		Username: r.Header.Get("X-authentik-username"), DiagnosticsOperator: containsString(s.config.RawArtifactOperators, r.Header.Get("X-authentik-username")), CSRFToken: s.csrfToken(w, r),
-		Connections: control.Connections, Calendars: control.Calendars, Rules: control.Rules, Runs: control.Runs, Settings: control.Settings,
+		Connections: control.Connections, Calendars: control.Calendars, Rules: control.Rules, Runs: control.Runs, PendingJobs: control.PendingJobs, Settings: control.Settings,
 		MCPEndpoint: control.Settings.MCPEndpoint, LegacyAPIKeyConfigured: control.Settings.LegacyAPIKeyConfigured,
 		Capabilities: capabilities, Sources: sources,
 	})
@@ -534,13 +545,17 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 	if err != nil {
 		return uiControlPlane{}, fmt.Errorf("list runs: %w", err)
 	}
+	pendingJobs, err := s.store.ListPendingSyncJobs(ctx)
+	if err != nil {
+		return uiControlPlane{}, fmt.Errorf("list pending sync jobs: %w", err)
+	}
 	hideDeclined, err := s.store.HideDeclinedEvents(ctx)
 	if err != nil {
 		return uiControlPlane{}, fmt.Errorf("read calendar display settings: %w", err)
 	}
 	result := uiControlPlane{
 		Connections: make([]uiConnection, 0, len(connectionsList)), Calendars: make([]uiCalendar, 0, len(calendars)),
-		Rules: make([]uiRule, 0, len(rules)), Runs: make([]uiRun, 0, len(runs)),
+		Rules: make([]uiRule, 0, len(rules)), Runs: make([]uiRun, 0, len(runs)), PendingJobs: make([]uiPendingJob, 0, len(pendingJobs)),
 		Settings: uiSettings{MCPEndpoint: strings.TrimSuffix(s.config.PublicURL, "/") + "/mcp", LegacyAPIKeyConfigured: s.config.LegacyAPIKeyConfigured, GoogleConfigured: s.config.GoogleConfigured, MicrosoftConfigured: s.config.MicrosoftConfigured, HideDeclinedEvents: hideDeclined},
 	}
 	connectionProviders := make(map[string]string, len(connectionsList))
@@ -558,11 +573,21 @@ func (s *Server) uiControlPlane(ctx context.Context) (uiControlPlane, error) {
 		}
 		result.Calendars = append(result.Calendars, uiCalendar{ID: item.ID, ConnectionID: item.ConnectionID, Provider: connectionProviders[item.ConnectionID], ConnectionName: connectionNames[item.ConnectionID], ProviderCalendarID: item.ProviderCalendarID, Name: item.Name, TimeZone: item.Timezone, CanRead: item.CanRead, CanWrite: item.CanWrite, SupportsRecurrence: item.SupportsRecurrence, Enabled: item.Enabled, googlePrimary: item.GooglePrimary && item.CanRead && item.Enabled && connectionProviders[item.ConnectionID] == "google"})
 	}
+	for _, item := range pendingJobs {
+		result.PendingJobs = append(result.PendingJobs, uiPendingJob{ID: item.ID, RuleID: item.RuleID, Kind: item.Kind, CreatedAt: item.CreatedAt})
+	}
 	for _, item := range rules {
-		result.Rules = append(result.Rules, uiRule{ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, SyncMode: item.SyncMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
+		controlStatus := ""
+		if item.State == "paused" || item.State == "enabled" {
+			controlStatus, err = s.store.RuleControlStatus(ctx, item.ID)
+			if err != nil {
+				return uiControlPlane{}, err
+			}
+		}
+		result.Rules = append(result.Rules, uiRule{ControlStatus: controlStatus, ID: item.ID, SourceCalendarID: item.SourceCalendarID, TargetCalendarID: item.TargetCalendarID, State: item.State, IntervalSeconds: item.IntervalSeconds, LookbackDays: item.LookbackDays, LookaheadDays: item.LookaheadDays, RecurrenceMode: item.RecurrenceMode, SyncMode: item.SyncMode, NotificationPolicy: item.NotificationPolicy, NextRunAt: item.NextRunAt, ConsecutiveFailures: item.ConsecutiveFailures, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
 	}
 	for _, item := range runs {
-		result.Runs = append(result.Runs, uiRun{ID: item.ID, JobID: item.JobID, RuleID: item.RuleID, Trigger: item.Trigger, Outcome: item.Outcome, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt, CreatedCount: item.CreatedCount, UpdatedCount: item.UpdatedCount, DeletedCount: item.DeletedCount, SkippedCount: item.SkippedCount, WarningCount: item.WarningCount, ErrorCode: item.ErrorCode, ErrorSummary: safeRunSummary(item), DryRun: item.DryRun})
+		result.Runs = append(result.Runs, uiRun{ID: item.ID, JobID: item.JobID, RuleID: item.RuleID, Trigger: item.Trigger, Outcome: item.Outcome, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt, CreatedCount: item.CreatedCount, UpdatedCount: item.UpdatedCount, DeletedCount: item.DeletedCount, SkippedCount: item.SkippedCount, WarningCount: item.WarningCount, ErrorCode: item.ErrorCode, ErrorSummary: safeRunSummary(item), DryRun: item.DryRun, StopRequested: item.StopRequested})
 	}
 	return result, nil
 }
@@ -592,9 +617,9 @@ func safeRunSummary(run storage.Run) string {
 	var safe []string
 	for _, item := range []struct{ stored, displayed string }{
 		{syncengine.DetachedSeriesWarning, syncengine.DetachedSeriesWarning},
-		{"Some participant lists may be incomplete.", "Some participant lists may be incomplete."},
-		{"Some participant lists are incomplete; existing descriptions were preserved until the full list is available.", "Some participant lists may be incomplete."},
-		{"Destination was not checked; this preview does not authorize synchronization.", "Destination was not checked; this preview does not authorize synchronization."},
+		{syncengine.IncompleteParticipantsWarning, syncengine.IncompleteParticipantsWarning},
+		{syncengine.LegacyIncompleteParticipantsWarning, syncengine.IncompleteParticipantsWarning},
+		{syncengine.SourceOnlyPreviewWarning, syncengine.SourceOnlyPreviewWarning},
 	} {
 		if remaining == item.stored || strings.HasPrefix(remaining, item.stored+" ") {
 			safe = append(safe, item.displayed)

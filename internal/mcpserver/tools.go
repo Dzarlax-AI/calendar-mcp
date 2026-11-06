@@ -193,6 +193,11 @@ func registerListCalendars(s *server.MCPServer, reg *calendar.Registry, name str
 }
 
 func legacyMutationError(err error) *mcp.CallToolResult {
+	if errors.Is(err, calendar.ErrWriteDispatchBlocked) {
+		result := mcp.NewToolResultStructured(map[string]any{"code": calendar.ErrorConflict, "message": calendar.ErrWriteDispatchBlocked.Error(), "retryable": false}, calendar.ErrWriteDispatchBlocked.Error())
+		result.IsError = true
+		return result
+	}
 	var protected *calendar.ProviderMutationProtectionError
 	if errors.As(err, &protected) {
 		return mcp.NewToolResultError(protected.Error())
