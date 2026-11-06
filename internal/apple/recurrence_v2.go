@@ -39,6 +39,10 @@ func splitAppleInstanceID(value string) (string, *calendar.EventTime, error) {
 }
 
 func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEventsRequestV2) ([]calendar.EventV2, error) {
+	return appleEventsFromObjectWithBoundary(object, request, false)
+}
+
+func appleEventsFromObjectWithBoundary(object caldav.CalendarObject, request calendar.ListEventsRequestV2, checkBoundary bool) ([]calendar.EventV2, error) {
 	if err := normalizeAppleFixedOffsetTimezone(&object); err != nil {
 		return nil, err
 	}
@@ -46,16 +50,24 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 	var master *ical.Event
 	for i := range events {
 		if events[i].Props.Get(ical.PropRecurrenceID) == nil {
+			if master != nil {
+				return nil, fmt.Errorf("Apple calendar object has multiple master events")
+			}
 			copy := events[i]
 			master = &copy
-			break
 		}
 	}
 	if master == nil {
-		return nil, nil
+		return nil, fmt.Errorf("Apple calendar object has no master event")
 	}
 	base := appleEventV2(*master, request.CalendarID, object.Path, object.ETag)
+	if strings.TrimSpace(base.ICalUID) == "" {
+		return nil, fmt.Errorf("Apple master event has no UID")
+	}
 	if len(base.Recurrence) == 0 {
+		if len(events) != 1 {
+			return nil, fmt.Errorf("Apple calendar object has exceptions without a recurring master")
+		}
 		start, err := base.Start.Instant()
 		if err != nil {
 			return nil, fmt.Errorf("parse Apple event start %q: %w", object.Path, err)
@@ -63,6 +75,12 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		end, err := base.End.Instant()
 		if err != nil {
 			return nil, fmt.Errorf("parse Apple event end %q: %w", object.Path, err)
+		}
+		if end.Before(start) {
+			return nil, fmt.Errorf("Apple event ends before it starts")
+		}
+		if checkBoundary && base.Start.IsAllDay() && appleAllDayBoundaryAmbiguous(start, end, request.Start, request.End) {
+			return nil, fmt.Errorf("Apple all-day event timezone is ambiguous at the window boundary")
 		}
 		if !appleIntervalOverlaps(start, end, request.Start, request.End) {
 			return nil, nil
@@ -86,9 +104,18 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 	if err != nil {
 		return nil, err
 	}
+	if end.Before(start) {
+		return nil, fmt.Errorf("Apple recurring event ends before it starts")
+	}
 	set := &rrule.Set{}
 	set.DTStart(start)
-	for _, prop := range master.Props.Values(ical.PropRecurrenceRule) {
+	// DTSTART belongs to the recurrence set even when only RDATE is present.
+	set.RDate(start)
+	rules := master.Props.Values(ical.PropRecurrenceRule)
+	if len(rules) > 1 {
+		return nil, fmt.Errorf("multiple Apple recurrence rules are unsupported")
+	}
+	for _, prop := range rules {
 		option, err := rrule.StrToROptionInLocation(prop.Value, start.Location())
 		if err != nil {
 			return nil, fmt.Errorf("parse Apple RRULE: %w", err)
@@ -127,17 +154,52 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 		if recurrenceID == nil {
 			continue
 		}
+		if _, exists := recurrenceID.Params["RANGE"]; exists {
+			return nil, fmt.Errorf("Apple recurrence RANGE is unsupported")
+		}
 		original := appleEventTimeV2(recurrenceID)
+		if _, err := original.Instant(); err != nil {
+			return nil, fmt.Errorf("invalid Apple recurrence ID: %w", err)
+		}
 		item := appleEventV2(event, request.CalendarID, appleInstanceID(object.Path, original), object.ETag)
+		if item.ICalUID != base.ICalUID {
+			return nil, fmt.Errorf("Apple exception has a different UID")
+		}
 		item.RecurringEventID = object.Path
 		item.OriginalStart = &original
 		item.InstanceKind = "exception"
 		if strings.EqualFold(item.Status, "CANCELLED") {
 			item.Status, item.InstanceKind = "cancelled", "cancelled"
+		} else {
+			exceptionStart, err := item.Start.Instant()
+			if err != nil {
+				return nil, fmt.Errorf("invalid Apple exception start: %w", err)
+			}
+			exceptionEnd, err := item.End.Instant()
+			if err != nil {
+				return nil, fmt.Errorf("invalid Apple exception end: %w", err)
+			}
+			if exceptionEnd.Before(exceptionStart) {
+				return nil, fmt.Errorf("Apple exception ends before it starts")
+			}
+			if checkBoundary && item.Start.IsAllDay() && appleAllDayBoundaryAmbiguous(exceptionStart, exceptionEnd, request.Start, request.End) {
+				return nil, fmt.Errorf("Apple all-day exception timezone is ambiguous at the window boundary")
+			}
 		}
-		exceptions[appleTimeKey(original)] = item
+		key := appleTimeKey(original)
+		if _, exists := exceptions[key]; exists {
+			return nil, fmt.Errorf("duplicate Apple recurrence exception")
+		}
+		exceptions[key] = item
 	}
 	duration := end.Sub(start)
+	if checkBoundary && base.Start.IsAllDay() {
+		for _, occurrence := range set.Between(request.Start.Add(-duration-24*time.Hour), request.End.Add(24*time.Hour), true) {
+			if appleAllDayBoundaryAmbiguous(occurrence, occurrence.Add(duration), request.Start, request.End) {
+				return nil, fmt.Errorf("Apple all-day occurrence timezone is ambiguous at the window boundary")
+			}
+		}
+	}
 	for _, occurrence := range set.Between(request.Start.Add(-duration), request.End, true) {
 		if !appleIntervalOverlaps(occurrence, occurrence.Add(duration), request.Start, request.End) {
 			continue
@@ -192,10 +254,14 @@ func appleEventsFromObject(object caldav.CalendarObject, request calendar.ListEv
 }
 
 func appleEventsFromObjects(objects []caldav.CalendarObject, request calendar.ListEventsRequestV2) ([]calendar.EventV2, int) {
+	return appleEventsFromObjectsWithBoundary(objects, request, false)
+}
+
+func appleEventsFromObjectsWithBoundary(objects []caldav.CalendarObject, request calendar.ListEventsRequestV2, checkBoundary bool) ([]calendar.EventV2, int) {
 	items := make([]calendar.EventV2, 0, len(objects))
 	skipped := 0
 	for _, object := range objects {
-		expanded, err := appleEventsFromObject(object, request)
+		expanded, err := appleEventsFromObjectWithBoundary(object, request, checkBoundary)
 		if err != nil {
 			skipped++
 			continue
@@ -217,6 +283,14 @@ func appleIntervalOverlaps(start, end, windowStart, windowEnd time.Time) bool {
 		return !start.Before(windowStart) && start.Before(windowEnd)
 	}
 	return end.After(windowStart) && start.Before(windowEnd)
+}
+
+// A date-only value has no timezone. Its real interval can start and end on
+// either side of UTC midnight; even a UTC overlap does not prove that its
+// boundaries are correct. Fail closed for any nearby all-day event until the
+// calendar timezone is available and verified.
+func appleAllDayBoundaryAmbiguous(start, end, windowStart, windowEnd time.Time) bool {
+	return appleIntervalOverlaps(start, end, windowStart.Add(-24*time.Hour), windowEnd.Add(24*time.Hour))
 }
 
 func appleRecurrenceDates(prop ical.Prop, location *time.Location) ([]time.Time, error) {

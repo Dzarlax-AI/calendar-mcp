@@ -348,6 +348,11 @@ func (p *Provider) getEventsFallback(ctx context.Context, calendarID string, sta
 }
 
 func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID string) ([]caldav.CalendarObject, error) {
+	return p.getCalendarObjectsFallbackWithCompleteness(ctx, calendarID, false)
+}
+
+// Strict callers cannot treat a vanished object as a proven complete snapshot.
+func (p *Provider) getCalendarObjectsFallbackWithCompleteness(ctx context.Context, calendarID string, strict bool) ([]caldav.CalendarObject, error) {
 	paths, err := p.propfindCalendarObjects(ctx, calendarID)
 	if err != nil {
 		return nil, fmt.Errorf("apple PROPFIND fallback for %s: %w", calendarID, err)
@@ -408,6 +413,9 @@ func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID st
 		}
 	}
 	if missingCount > 0 {
+		if strict {
+			return nil, fmt.Errorf("apple GET fallback incomplete: %d object(s) disappeared after PROPFIND", missingCount)
+		}
 		log.Printf("apple: GET fallback for %s skipped %d object(s) deleted after PROPFIND", calendarID, missingCount)
 	}
 	if len(objectErrs) > 0 {

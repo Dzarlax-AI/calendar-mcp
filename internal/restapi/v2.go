@@ -77,6 +77,30 @@ func registerV2Routes(mux *http.ServeMux, app *application.Service) {
 		writeJSON(w, http.StatusOK, capabilities)
 	})
 
+	mux.HandleFunc("GET /api/v2/availability/events", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("view") != "expanded" || q.Get("page_token") != "" || q.Get("event_id") != "" {
+			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "expanded availability without page token is required"))
+			return
+		}
+		start, err := time.Parse(time.RFC3339, q.Get("start"))
+		if err != nil {
+			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid start"))
+			return
+		}
+		end, err := time.Parse(time.RFC3339, q.Get("end"))
+		if err != nil {
+			writeAPIError(w, calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid end"))
+			return
+		}
+		page, err := app.ListAvailabilityEvents(r.Context(), q.Get("calendar_id"), start, end)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+	})
+
 	mux.HandleFunc("GET /api/v2/events", func(w http.ResponseWriter, r *http.Request) {
 		calendarID := r.URL.Query().Get("calendar_id")
 		eventID := r.URL.Query().Get("event_id")

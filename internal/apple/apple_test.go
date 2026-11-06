@@ -72,6 +72,9 @@ func TestCalendarObjectsFallbackSkipsObjectsDeletedAfterPropfind(t *testing.T) {
 	if len(objects) != 1 || objects[0].Path != "/calendar/active.ics" {
 		t.Fatalf("objects = %#v, want only active object", objects)
 	}
+	if _, err := p.getCalendarObjectsFallbackWithCompleteness(t.Context(), calendarPath, true); err == nil {
+		t.Fatal("strict V2 fallback accepted an object disappearing after PROPFIND")
+	}
 }
 
 func TestConvertEventMarksAllDay(t *testing.T) {
@@ -181,5 +184,39 @@ func TestAppleV2RejectsAttendeeWrites(t *testing.T) {
 	err := validateAppleWrite(calendar.EventCreateV2{Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Email: "person@example.com"}}}})
 	if err == nil {
 		t.Fatal("validateAppleWrite() allowed an attendee write")
+	}
+}
+
+func TestAvailabilityOnlyMakesDisappearedFallbackStrict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "REPORT":
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(`<D:multistatus xmlns:D="DAV:">`))
+		case "PROPFIND":
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>/calendar/deleted.ics</D:href></D:response></D:multistatus>`))
+		case "GET":
+			http.NotFound(w, r)
+		default:
+			http.Error(w, "unexpected", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	client, err := caldav.NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Provider{client: client, httpClient: server.Client(), caldavURL: server.URL}
+	req := calendar.ListEventsRequestV2{CalendarID: "/calendar/", Start: time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceExpanded}
+	page, err := p.ListEventsV2(t.Context(), req)
+	if err != nil || !page.Complete {
+		t.Fatalf("ordinary list changed: %v", err)
+	}
+	req.AvailabilityStrict = true
+	if _, err = p.ListEventsV2(t.Context(), req); err == nil {
+		t.Fatal("strict availability accepted missing object")
 	}
 }
