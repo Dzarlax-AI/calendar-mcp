@@ -50,6 +50,16 @@ func (s *Service) ListAvailabilityEvents(ctx context.Context, calendarID string,
 			if event.ID == "" || event.CalendarID != calendarID || event.Provider != provider || len(event.Recurrence) > 0 {
 				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("invalid availability event")
 			}
+			// RFC 5545 permits a timed event with no DTEND or DURATION. It is a
+			// point in time and cannot overlap a half-open busy interval.
+			// Do not extend this exception to all-day or malformed events.
+			if !event.Start.IsAllDay() && !event.End.IsAllDay() && event.Start.Validate() == nil && event.End.Validate() == nil {
+				pointStart, _ := event.Start.Instant()
+				pointEnd, _ := event.End.Instant()
+				if pointStart.Equal(pointEnd) {
+					continue
+				}
+			}
 			if err = calendar.ValidateEventTimeRangeV2(event.Start, event.End); err != nil {
 				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("invalid availability time range")
 			}

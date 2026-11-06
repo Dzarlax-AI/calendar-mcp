@@ -77,3 +77,31 @@ func TestAvailabilityFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestAvailabilityExcludesTimedPointEventsAndRejectsInvalidRanges(t *testing.T) {
+	start := time.Date(2026, 11, 5, 20, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	point := calendar.EventTime{DateTime: "2026-11-05T20:30:00Z", TimeZone: "UTC"}
+	for _, tc := range []struct {
+		name    string
+		event   calendar.EventV2
+		wantErr bool
+	}{
+		{"timed point", calendar.EventV2{ID: "point", Start: point, End: point}, false},
+		{"all-day zero", calendar.EventV2{ID: "all-day", Start: calendar.EventTime{Date: "2026-11-05"}, End: calendar.EventTime{Date: "2026-11-05"}}, true},
+		{"reversed", calendar.EventV2{ID: "bad", Start: point, End: calendar.EventTime{DateTime: "2026-11-05T20:00:00Z", TimeZone: "UTC"}}, true},
+		{"missing end", calendar.EventV2{ID: "bad", Start: point}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &availabilityStub{&stubV2Provider{name: "google", page: calendar.Page[calendar.EventV2]{Complete: true, Items: []calendar.EventV2{tc.event}}}, "google@acct"}
+			s := New(calendar.NewRegistry([]calendar.Provider{p}))
+			page, err := s.ListAvailabilityEvents(context.Background(), "google:acct:physical", start, end)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v", err)
+			}
+			if !tc.wantErr && (!page.Complete || len(page.Items) != 0) {
+				t.Fatalf("point affected busy: %+v", page)
+			}
+		})
+	}
+}
