@@ -27,11 +27,16 @@ func TestSafeRunSummaryShowsOnlyBoundedStandaloneWarning(t *testing.T) {
 		run  storage.Run
 		want string
 	}{
+		{"combined legacy preview", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "Some participant lists are incomplete; existing descriptions were preserved until the full list is available." + " " + "Destination was not checked; this preview does not authorize synchronization."}, "Some participant lists may be incomplete." + " " + "Destination was not checked; this preview does not authorize synchronization."},
+		{"preview without warning count", storage.Run{Outcome: "succeeded", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization."}, "Destination was not checked; this preview does not authorize synchronization."},
+		{"successful preview with stale error code", storage.Run{Outcome: "succeeded", ErrorCode: "sync_failed", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization."}, "Destination was not checked; this preview does not authorize synchronization."},
+		{"injected suffix", storage.Run{Outcome: "succeeded", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization." + " secret"}, "Run completed; some details are unavailable."},
 		{"standalone", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.DetachedSeriesWarning}, syncengine.DetachedSeriesWarning},
-		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run failed; inspect server logs for details."},
+		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run completed; some details are unavailable."},
 		{"failed run", storage.Run{Outcome: "failed", ErrorSummary: syncengine.DetachedSeriesWarning}, "Run failed; inspect server logs for details."},
 		{"known failure", storage.Run{Outcome: "failed", ErrorCode: "sync_missing_series_mapping", ErrorSummary: "private-title token=secret"}, "A recurring event exception has no matching series in the sync mapping."},
 		{"unknown failure", storage.Run{Outcome: "failed", ErrorCode: "private-token", ErrorSummary: "private-title"}, "Run failed; inspect server logs for details."},
+		{"failure without stored details", storage.Run{Outcome: "failed"}, "Run failed; inspect server logs for details."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := safeRunSummary(tt.run); got != tt.want {
