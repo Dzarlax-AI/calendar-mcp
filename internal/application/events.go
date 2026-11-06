@@ -98,6 +98,18 @@ func (s *Service) Capabilities(ctx context.Context, calendarID string) (calendar
 	return capabilities, nil
 }
 
+// ListAvailabilityCalendars isolates one provider and does not register discovery.
+func (s *Service) ListAvailabilityCalendars(ctx context.Context, provider string) (calendar.AvailabilityCalendarCatalog, error) {
+	if provider != "google" && provider != "microsoft" && provider != "apple" {
+		return calendar.AvailabilityCalendarCatalog{}, invalidArgument("provider must be google, microsoft, or apple")
+	}
+	result, err := s.registry.ListAvailabilityCalendars(ctx, provider)
+	if err != nil {
+		return calendar.AvailabilityCalendarCatalog{}, &calendar.APIError{Code: calendar.ErrorProviderUnavailable, Message: "provider catalog unavailable", Provider: provider, Retryable: true, Cause: err}
+	}
+	return result, nil
+}
+
 func (s *Service) ListEvents(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
 	if err := validateRange(request.Start, request.End); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
