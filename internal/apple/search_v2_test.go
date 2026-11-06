@@ -210,7 +210,10 @@ func TestAppleListEventsMarksSkippedObjectsIncomplete(t *testing.T) {
 		t.Fatalf("expected incomplete page preserving readable events: %#v, %v", page, err)
 	}
 
-	clean, _ := newSearchFixture(t, searchICS, 207)
+	// Date-only objects require timezone proof for a complete V2 list. Keep
+	// this control fixture limited to the well-formed timed series.
+	timedOnly := strings.Replace(searchICS, "BEGIN:VEVENT\r\nUID:allday\r\nSUMMARY:КОНФЕРЕНЦИЯ\r\nDESCRIPTION:JetBrains all day\r\nDTSTART;VALUE=DATE:20261023\r\nDTEND;VALUE=DATE:20261024\r\nEND:VEVENT\r\n", "", 1)
+	clean, _ := newSearchFixture(t, timedOnly, 207)
 	page, err = clean.ListEventsV2(t.Context(), req)
 	if err != nil || !page.Complete || len(page.Items) == 0 {
 		t.Fatalf("expected complete page: %#v, %v", page, err)

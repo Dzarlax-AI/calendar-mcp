@@ -234,13 +234,15 @@ type EventRef struct {
 }
 
 type ListEventsRequestV2 struct {
-	CalendarID  string         `json:"calendar_id,omitempty"`
-	Start       time.Time      `json:"-"`
-	End         time.Time      `json:"-"`
-	View        RecurrenceView `json:"view,omitempty"`
-	ShowDeleted bool           `json:"show_deleted,omitempty"`
-	PageToken   string         `json:"page_token,omitempty"`
-	MaxResults  int64          `json:"max_results,omitempty"`
+	// AvailabilityStrict is internal-only; strict REST uses it to reject races.
+	AvailabilityStrict bool           `json:"-"`
+	CalendarID         string         `json:"calendar_id,omitempty"`
+	Start              time.Time      `json:"-"`
+	End                time.Time      `json:"-"`
+	View               RecurrenceView `json:"view,omitempty"`
+	ShowDeleted        bool           `json:"show_deleted,omitempty"`
+	PageToken          string         `json:"page_token,omitempty"`
+	MaxResults         int64          `json:"max_results,omitempty"`
 }
 
 type CreateEventRequestV2 struct {

@@ -55,13 +55,24 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 	params := url.Values{"$filter": {filter}, "$top": {"2"}}
 	next := p.baseURL + path + "?" + params.Encode()
 	var found *calendar.EventV2
+	seen := map[string]bool{}
 	for next != "" {
+		if seen[next] {
+			return nil, fmt.Errorf("Graph pagination repeated next link")
+		}
+		if len(seen) >= 1000 {
+			return nil, fmt.Errorf("Graph pagination exceeded page limit")
+		}
+		seen[next] = true
 		var response struct {
 			Value    []graphEvent `json:"value"`
 			NextLink string       `json:"@odata.nextLink"`
 		}
 		if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 			return nil, err
+		}
+		if response.Value == nil {
+			return nil, fmt.Errorf("Graph event page is missing its value array")
 		}
 		for i := range response.Value {
 			if found != nil {
@@ -103,20 +114,34 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
+	if response.Value == nil {
+		return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph event page is missing its value array")
+	}
 	if response.NextLink != "" {
 		if err := p.validateGraphPageURL(response.NextLink); err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
 		}
 	}
 	if request.View == calendar.RecurrenceBoth {
+		seen := map[string]bool{next: true}
 		for response.NextLink != "" {
 			nextPage := response.NextLink
+			if seen[nextPage] {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph pagination repeated next link")
+			}
+			if len(seen) >= 1000 {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph pagination exceeded page limit")
+			}
+			seen[nextPage] = true
 			var following struct {
 				Value    []graphEvent `json:"value"`
 				NextLink string       `json:"@odata.nextLink"`
 			}
 			if err := p.getURLWithHeaders(ctx, nextPage, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &following); err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
+			}
+			if following.Value == nil {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph event page is missing its value array")
 			}
 			if following.NextLink != "" {
 				if err := p.validateGraphPageURL(following.NextLink); err != nil {
@@ -220,6 +245,9 @@ func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.Ins
 	}
 	if err := p.getURLWithHeaders(ctx, next, http.Header{"Prefer": {`outlook.timezone="UTC"`, `outlook.body-content-type="html"`}}, &response); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
+	}
+	if response.Value == nil {
+		return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph event page is missing its value array")
 	}
 	if response.NextLink != "" {
 		if err := p.validateGraphPageURL(response.NextLink); err != nil {

@@ -382,6 +382,31 @@ DELETE /api/events
 
 When `ENABLE_V2=true`, typed routes are also available under `/api/v2`, including capabilities, event lifecycle, instances, search, response, move, and import.
 
+`GET /api/v2/availability/events` is an additional read-only route for clients
+such as Book that need a complete availability check for one calendar. It uses
+the same REST authentication. Supply an exact account-scoped `calendar_id`,
+RFC 3339 `start` and `end`, and `view=expanded`. For example:
+
+```text
+GET /api/v2/availability/events?calendar_id=google%40account-id%3Acalendar-id&start=2030-01-02T09%3A00%3A00Z&end=2030-01-02T18%3A00%3A00Z&view=expanded
+```
+
+The ID must identify the connected account and the physical calendar; ambiguous
+legacy aliases such as `google:primary` and account-scoped `primary` are not
+accepted. Use IDs from the calendar catalog rather than constructing or guessing
+them. The service expands recurring events and drains provider pagination
+internally. Clients must not supply `page_token`: the route returns the complete
+bounded result or an error, rather than a partial list. Consumers should still
+check the response's `complete` and `sources` fields and treat errors or an
+incomplete source as unavailable, not as an empty calendar.
+
+All-day events contain date-only values without a proven timezone. The route
+includes them conservatively whenever a plausible calendar timezone could overlap
+the requested interval; clients must not treat those dates as precise UTC
+boundaries. Pagination and provider reads do not create a snapshot against
+external calendar edits. Existing V2 event routes and MCP catalogs retain their
+contracts; this endpoint is additive.
+
 Keep this listener internal unless an external client explicitly requires it.
 
 ## Standalone compatibility mode

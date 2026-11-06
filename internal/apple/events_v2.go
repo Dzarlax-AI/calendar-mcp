@@ -77,7 +77,7 @@ func (p *Provider) listEventsV2(ctx context.Context, request calendar.ListEvents
 			return calendar.Page[calendar.EventV2]{}, err
 		}
 		log.Printf("apple: calendar %s V2 REPORT failed, trying PROPFIND+GET fallback: %v", request.CalendarID, err)
-		objects, err = p.getCalendarObjectsFallback(ctx, request.CalendarID)
+		objects, err = p.getCalendarObjectsFallbackWithCompleteness(ctx, request.CalendarID, requireComplete || request.AvailabilityStrict)
 		if err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
 		}
