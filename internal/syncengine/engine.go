@@ -872,6 +872,9 @@ func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) 
 		created.Recurrence = nil
 	}
 	if targetProvider == "google" {
+		if event.InstanceKind == "cache_instance" {
+			created.ICalUID = ""
+		}
 		created.Google = &calendar.GoogleEventExtension{PrivateProperties: map[string]string{"calendar_sync_rule": ruleID, "calendar_source_event": event.ID}}
 	}
 	return created

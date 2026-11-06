@@ -49,26 +49,44 @@ func TestCacheCopyCreateProducesStableStandaloneCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ICalUID == "shared" || len(first.Recurrence) != 0 || len(first.Attendees) != 0 || first.SyncMarker == nil || first.Google.PrivateProperties["calendar_source_event"] != first.SyncMarker.SourceEventID {
+	if first.ICalUID != "" || len(first.Recurrence) != 0 || len(first.Attendees) != 0 || first.SyncMarker == nil || first.Google.PrivateProperties["calendar_source_event"] != first.SyncMarker.SourceEventID {
 		t.Fatal("standalone identity and marker not preserved")
 	}
 	if cacheCopyScope() != calendar.ScopeSeries {
 		t.Fatal("standalone target must use top-level scope")
 	}
 	repeated, err := cacheCopyCreate("rule", "source", event, "google")
-	if err != nil || repeated.ICalUID != first.ICalUID {
+	if err != nil || repeated.ICalUID != "" || repeated.SyncMarker.SourceEventID != first.SyncMarker.SourceEventID {
 		t.Fatal("identity is not stable")
 	}
 	event.ID = "another"
 	next := calendar.EventTime{Date: "2026-11-06"}
 	event.OriginalStart = &next
 	second, err := cacheCopyCreate("rule", "source", event, "google")
-	if err != nil || second.ICalUID == first.ICalUID || second.SyncMarker.SourceEventID == first.SyncMarker.SourceEventID {
+	if err != nil || second.ICalUID != "" || second.SyncMarker.SourceEventID == first.SyncMarker.SourceEventID {
 		t.Fatal("instances share ownership identity")
 	}
 	event.Status = "cancelled"
 	if _, err := cacheCopyCreate("rule", "source", event, "google"); err == nil {
 		t.Fatal("cancelled event can be created")
+	}
+}
+
+func TestCacheCopyUIDAssignmentIsGoogleOnly(t *testing.T) {
+	event := calendar.EventV2{CalendarID: "source", ID: "source-event", ICalUID: "source-uid", InstanceKind: "cache_instance", Start: calendar.EventTime{Date: "2026-11-05"}, End: calendar.EventTime{Date: "2026-11-06"}}
+	for _, provider := range []string{"google", "apple", "microsoft"} {
+		created := mirrorCreate("rule", event, provider)
+		if provider == "google" && created.ICalUID != "" || provider != "google" && created.ICalUID != "source-uid" {
+			t.Fatalf("provider %s UID=%q", provider, created.ICalUID)
+		}
+		preview, err := cacheCopyCreate("rule", "source", event, provider)
+		if err != nil || provider == "google" && preview.ICalUID != "" || provider != "google" && preview.ICalUID == "" {
+			t.Fatalf("provider %s preview=%+v err=%v", provider, preview, err)
+		}
+	}
+	event.InstanceKind = "event"
+	if created := mirrorCreate("rule", event, "google"); created.ICalUID != "source-uid" {
+		t.Fatal("ordinary Google creation changed UID behavior")
 	}
 }
 

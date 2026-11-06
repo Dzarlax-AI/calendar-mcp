@@ -33,6 +33,9 @@ func cacheCopyCreate(ruleID, sourceCalendarID string, event calendar.EventV2, ta
 	marker := newMappingID(ruleID, identity, "")
 	created := mirrorCreate(ruleID, event, targetProvider)
 	created.ICalUID = marker + "@calendar-mcp"
+	if targetProvider == "google" {
+		created.ICalUID = ""
+	}
 	created.Recurrence = nil
 	// Copies must never invite the source event participants.
 	created.Attendees = nil
