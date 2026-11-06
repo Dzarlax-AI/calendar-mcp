@@ -10,6 +10,7 @@ const bootstrap = {
   calendars: [] as CalendarRecord[],
   rules: [] as SyncRule[],
   runs: [] as RunRecord[],
+  pending_jobs: [] as Array<{ id: string; rule_id: string; kind: string; created_at: string }>,
   connections: [],
   settings: {},
 };
@@ -30,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   bootstrap.runs = [];
+  bootstrap.pending_jobs = [];
   bootstrap.rules = [];
   bootstrap.calendars = [];
   bootstrap.settings = {};
@@ -109,6 +111,51 @@ describe("sync modes", () => {
 });
 
 describe("sync activity", () => {
+  it("offers cancellation for a queued job", () => {
+    bootstrap.pending_jobs = [{ id: "pending", rule_id: "rule", kind: "manual", created_at: "2026-11-06T00:00:00Z" }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.querySelector('form[action="/jobs/pending/stop"]')?.textContent).toContain("Cancel queued job");
+  });
+
+  it("shows pause and stop requests and blocks deletion while work is unresolved", () => {
+    bootstrap.rules = [{ id: "active", state: "enabled", controlStatus: "active", enabled: true }, { id: "waiting", state: "paused", controlStatus: "pausing", enabled: false }, { id: "uncertain", state: "paused", controlStatus: "needs_review", enabled: false }, { id: "ready", state: "paused", controlStatus: "paused", enabled: false }];
+    bootstrap.runs = [{ id: "run", jobId: "job", ruleId: "active", status: "running", outcome: "running" }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.querySelector('form[action="/rules/active/pause"]')).not.toBeNull();
+    expect(container.querySelector('form[action="/jobs/job/stop"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('form[action="/rules/waiting/delete"] button')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('form[action="/rules/uncertain/delete"] button')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('form[action="/rules/ready/delete"] button')?.disabled).toBe(false);
+    expect(container.textContent).toContain("already sent request may still finish");
+  });
+
+  it("groups only explicitly classified reservation conflicts and retains each run", () => {
+    bootstrap.runs = [{ id: "one", ruleId: "r", errorCode: "sync_dispatch_blocked", outcome: "failed", status: "failed" }, { id: "two", ruleId: "r", errorCode: "sync_dispatch_blocked", outcome: "failed", status: "failed" }, { id: "old", ruleId: "r", errorCode: "sync_failed", outcome: "failed", status: "failed" }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    const group = container.querySelector("details");
+    expect(group?.querySelector("summary")?.textContent).toContain("2 runs blocked");
+    expect(group?.querySelectorAll(".data-row")).toHaveLength(2);
+    expect(container.querySelectorAll(".data-list > details")).toHaveLength(1);
+    expect(container.querySelectorAll(".data-list .data-row")).toHaveLength(3);
+  });
+
+  it("does not count an unknown rule as paused", () => {
+    bootstrap.rules = [{ id: "active", state: "enabled", controlStatus: "active", enabled: true }, { id: "paused", state: "paused", controlStatus: "paused", enabled: false }, { id: "unknown", enabled: false }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.textContent).toContain("1 active · 1 paused · 1 pending or unknown");
+    expect(container.textContent).toContain("Status unknown");
+  });
+
+  it("identifies activity by rule route and mode", () => {
+    const capability = { read: true, create: true, write: true, delete: true, recurring: false };
+    bootstrap.calendars = [{ id: "source", name: "Work", provider: "google", color: "blue", capability }, { id: "target", name: "Personal", provider: "google", color: "red", capability }];
+    bootstrap.rules = [{ id: "opaque", sourceCalendarId: "source", targetCalendarId: "target", syncMode: "cached_instances", enabled: false }];
+    bootstrap.runs = [{ id: "run", ruleId: "opaque", status: "failed", outcome: "failed" }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.textContent).toContain("Work → Personal · Cached individual events");
+    expect(container.textContent).not.toContain("opaque");
+  });
+
   it("ignores an older request after the preview is closed and reopened", async () => {
     bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded" }];
     let rejectFirst!: (error: Error) => void;
@@ -159,6 +206,14 @@ describe("sync activity", () => {
     act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
     expect(container.textContent).toContain("mirrored as individual events");
     expect(container.querySelector(".status-pill.success")?.textContent).toBe("succeeded");
+  });
+
+  it("shows a successful dry run with its preview limitation without marking it as failed", () => {
+    bootstrap.runs = [{ id: "run", trigger: "dry_run", status: "succeeded", outcome: "succeeded", message: "Destination was not checked; this preview does not authorize synchronization." }];
+    act(() => root.render(<MemoryRouter><ControlPlanePage section="rules" /></MemoryRouter>));
+    expect(container.querySelector(".status-pill.success")?.textContent).toBe("succeeded");
+    expect(container.textContent).toContain("Destination was not checked");
+    expect(container.textContent).not.toContain("Run failed; inspect server logs");
   });
 
   it("keeps rules and recent activity on one page", () => {

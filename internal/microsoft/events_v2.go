@@ -239,14 +239,14 @@ func (p *Provider) GetEventInstancesV2(ctx context.Context, request calendar.Ins
 
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
 	if request.RequireNoAttendees {
-		return nil, unsupportedMicrosoft("safe sync create is unavailable until notification semantics are verified")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("safe sync create is unavailable until notification semantics are verified"))
 	}
 	if err := validateMicrosoftCreate(request.Event, request.Notifications); err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	body, err := toGraphCreateV2(request.Event)
 	if err != nil {
-		return nil, invalidMicrosoft(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(err))
 	}
 	path := fmt.Sprintf("/me/calendars/%s/events", url.PathEscape(request.CalendarID))
 	var created graphEvent
@@ -262,43 +262,43 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
 	if request.PreviewOnly {
-		return nil, unsupportedMicrosoft("preview is not available for this provider mutation")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("preview is not available for this provider mutation"))
 	}
 	if request.RequireNoAttendees {
-		return nil, unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified"))
 	}
 	if request.Scope == calendar.ScopeFollowing {
-		return nil, unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter"))
 	}
 	if request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
-		return nil, unsupportedMicrosoft("the patch contains fields not supported by the Microsoft V2 adapter")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("the patch contains fields not supported by the Microsoft V2 adapter"))
 	}
 	if request.Patch.Attendees.Present && request.Notifications != calendar.NotificationsAll {
-		return nil, unsupportedMicrosoft("Microsoft attendee changes require notification_policy=all")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("Microsoft attendee changes require notification_policy=all"))
 	}
 	existing, err := p.GetEventV2(ctx, request.Ref)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	if request.Notifications == calendar.NotificationsNone && len(existing.Attendees) > 0 {
-		return nil, unsupportedMicrosoft("Microsoft cannot suppress update messages for events with attendees; use notification_policy=all")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("Microsoft cannot suppress update messages for events with attendees; use notification_policy=all"))
 	}
 	start, end := existing.Start, existing.End
 	if request.Patch.Start.Present {
 		if request.Patch.Start.Null {
-			return nil, invalidMicrosoft(fmt.Errorf("start cannot be null"))
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(fmt.Errorf("start cannot be null")))
 		}
 		start = request.Patch.Start.Value
 	}
 	if request.Patch.End.Present {
 		if request.Patch.End.Null {
-			return nil, invalidMicrosoft(fmt.Errorf("end cannot be null"))
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(fmt.Errorf("end cannot be null")))
 		}
 		end = request.Patch.End.Value
 	}
 	if request.Patch.Start.Present || request.Patch.End.Present {
 		if err := calendar.ValidateEventTimeRangeV2(start, end); err != nil {
-			return nil, invalidMicrosoft(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(err))
 		}
 	}
 	patch := map[string]any{}
@@ -318,14 +318,14 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Start.Present {
 		value, _, err := graphTimeFromEventTime(request.Patch.Start.Value)
 		if err != nil {
-			return nil, invalidMicrosoft(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(err))
 		}
 		patch["start"] = value
 	}
 	if request.Patch.End.Present {
 		value, _, err := graphTimeFromEventTime(request.Patch.End.Value)
 		if err != nil {
-			return nil, invalidMicrosoft(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(err))
 		}
 		patch["end"] = value
 	}
@@ -341,7 +341,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		} else {
 			recurrence, err := portableToGraphRecurrence(request.Patch.Recurrence.Value, start)
 			if err != nil {
-				return nil, unsupportedMicrosoft(err.Error())
+				return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft(err.Error()))
 			}
 			patch["recurrence"] = recurrence
 		}
@@ -349,7 +349,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Transparency.Present {
 		showAs, err := graphShowAs(request.Patch.Transparency.Value)
 		if err != nil {
-			return nil, invalidMicrosoft(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidMicrosoft(err))
 		}
 		patch["showAs"] = showAs
 	}
@@ -357,7 +357,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		patch["sensitivity"] = request.Patch.Visibility.Value
 	}
 	if request.Patch.Conference.Present {
-		return nil, unsupportedMicrosoft("Teams meeting state cannot be safely changed after creation")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("Teams meeting state cannot be safely changed after creation"))
 	}
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(request.Ref.CalendarID), url.PathEscape(request.Ref.EventID))
 	var updated graphEvent
@@ -373,21 +373,21 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
 	if request.PreviewOnly {
-		return nil, unsupportedMicrosoft("preview is not available for this provider mutation")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("preview is not available for this provider mutation"))
 	}
 	if request.RequireNoAttendees {
-		return nil, unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("safe sync mutations are unavailable until conditional writes are verified"))
 	}
 	if request.Scope == calendar.ScopeFollowing {
-		return nil, unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("following mutations are not supported by the Microsoft V2 adapter"))
 	}
 	if request.Notifications == calendar.NotificationsNone {
 		event, err := p.GetEventV2(ctx, request.Ref)
 		if err != nil {
-			return nil, err
+			return nil, calendar.DefinitiveNoDispatch(err)
 		}
 		if len(event.Attendees) > 0 {
-			return nil, unsupportedMicrosoft("Microsoft cannot suppress cancellation messages; use notification_policy=all")
+			return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("Microsoft cannot suppress cancellation messages; use notification_policy=all"))
 		}
 	}
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(request.Ref.CalendarID), url.PathEscape(request.Ref.EventID))

@@ -175,6 +175,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /rules", s.protected(s.mutating(http.HandlerFunc(s.createRule))))
 	mux.Handle("POST /rules/{id}/enable", s.protected(s.mutating(http.HandlerFunc(s.enableRule))))
 	mux.Handle("POST /rules/{id}/run", s.protected(s.mutating(http.HandlerFunc(s.runRule))))
+	mux.Handle("POST /rules/{id}/pause", s.protected(s.mutating(http.HandlerFunc(s.pauseRule))))
+	mux.Handle("POST /rules/{id}/delete", s.protected(s.mutating(http.HandlerFunc(s.archiveRule))))
+	mux.Handle("POST /jobs/{id}/stop", s.protected(s.mutating(http.HandlerFunc(s.stopSyncJob))))
 	return mux
 }
 
@@ -630,6 +633,28 @@ func (s *Server) enableRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/rules?status=rule_enabled", http.StatusSeeOther)
+}
+
+func (s *Server) pauseRule(w http.ResponseWriter, r *http.Request) {
+	status := "pause_requested"
+	if err := s.store.RequestRulePause(r.Context(), r.PathValue("id"), time.Now().UTC()); err != nil {
+		status = "control_conflict"
+	}
+	http.Redirect(w, r, "/rules?status="+status, http.StatusSeeOther)
+}
+func (s *Server) stopSyncJob(w http.ResponseWriter, r *http.Request) {
+	status := "stop_requested"
+	if err := s.store.RequestJobStop(r.Context(), r.PathValue("id"), time.Now().UTC()); err != nil {
+		status = "control_conflict"
+	}
+	http.Redirect(w, r, "/rules?status="+status, http.StatusSeeOther)
+}
+func (s *Server) archiveRule(w http.ResponseWriter, r *http.Request) {
+	status := "rule_removed"
+	if err := s.store.ArchiveRule(r.Context(), r.PathValue("id"), time.Now().UTC()); err != nil {
+		status = "control_conflict"
+	}
+	http.Redirect(w, r, "/rules?status="+status, http.StatusSeeOther)
 }
 
 func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {

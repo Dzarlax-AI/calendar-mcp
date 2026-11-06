@@ -27,10 +27,10 @@ func TestSafeRunSummaryShowsOnlyBoundedStandaloneWarning(t *testing.T) {
 		run  storage.Run
 		want string
 	}{
-		{"combined legacy preview", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "Some participant lists are incomplete; existing descriptions were preserved until the full list is available." + " " + "Destination was not checked; this preview does not authorize synchronization."}, "Some participant lists may be incomplete." + " " + "Destination was not checked; this preview does not authorize synchronization."},
-		{"preview without warning count", storage.Run{Outcome: "succeeded", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization."}, "Destination was not checked; this preview does not authorize synchronization."},
-		{"successful preview with stale error code", storage.Run{Outcome: "succeeded", ErrorCode: "sync_failed", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization."}, "Destination was not checked; this preview does not authorize synchronization."},
-		{"injected suffix", storage.Run{Outcome: "succeeded", ErrorSummary: "Destination was not checked; this preview does not authorize synchronization." + " secret"}, "Run completed; some details are unavailable."},
+		{"combined legacy preview", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.LegacyIncompleteParticipantsWarning + " " + syncengine.SourceOnlyPreviewWarning}, syncengine.IncompleteParticipantsWarning + " " + syncengine.SourceOnlyPreviewWarning},
+		{"preview without warning count", storage.Run{Outcome: "succeeded", ErrorSummary: syncengine.SourceOnlyPreviewWarning}, syncengine.SourceOnlyPreviewWarning},
+		{"successful preview with stale error code", storage.Run{Outcome: "succeeded", ErrorCode: "sync_failed", ErrorSummary: syncengine.SourceOnlyPreviewWarning}, syncengine.SourceOnlyPreviewWarning},
+		{"injected suffix", storage.Run{Outcome: "succeeded", ErrorSummary: syncengine.SourceOnlyPreviewWarning + " secret"}, "Run completed; some details are unavailable."},
 		{"standalone", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.DetachedSeriesWarning}, syncengine.DetachedSeriesWarning},
 		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run completed; some details are unavailable."},
 		{"failed run", storage.Run{Outcome: "failed", ErrorSummary: syncengine.DetachedSeriesWarning}, "Run failed; inspect server logs for details."},

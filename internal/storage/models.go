@@ -6,7 +6,7 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 27
+const SchemaVersion = 28
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
@@ -53,6 +53,8 @@ type Run struct {
 	WarningCount                        int
 	ErrorCode, ErrorSummary             string
 	DryRun                              bool
+	StopRequested                       bool
+	ProviderDispatched                  bool // Internal completion evidence, never exposed to clients.
 	Preview                             *SyncRunPreview
 }
 

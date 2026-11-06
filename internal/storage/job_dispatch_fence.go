@@ -17,10 +17,12 @@ func (s *Store) CheckJobDispatchLease(ctx context.Context, job Job) error {
 		return ErrJobLeaseLost
 	}
 	var state string
+	var stopRequested bool
+	var ruleState, kind string
 	var worker sql.NullString
 	var attempt int
 	var claimed, deadline sql.NullTime
-	err := s.db.QueryRowContext(ctx, s.query(`SELECT state,claimed_by,attempt,claimed_at,lease_until FROM sync_jobs WHERE id=? AND rule_id=?`), job.ID, job.RuleID).Scan(&state, &worker, &attempt, &claimed, &deadline)
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT j.state,j.claimed_by,j.attempt,j.claimed_at,j.lease_until,j.stop_requested,r.state,j.kind FROM sync_jobs j JOIN sync_rules r ON r.id=j.rule_id WHERE j.id=? AND j.rule_id=?`), job.ID, job.RuleID).Scan(&state, &worker, &attempt, &claimed, &deadline, &stopRequested, &ruleState, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrJobLeaseLost
 	}
@@ -31,7 +33,7 @@ func (s *Store) CheckJobDispatchLease(ctx context.Context, job Job) error {
 		return err
 	}
 	now := time.Now().UTC()
-	if state != "running" || !worker.Valid || worker.String != job.ClaimedBy || attempt != job.Attempt || !claimed.Valid || claimed.Time.After(now) || !deadline.Valid || !deadline.Time.After(now) {
+	if stopRequested || (kind != "dry_run" && ruleState != "enabled") || state != "running" || !worker.Valid || worker.String != job.ClaimedBy || attempt != job.Attempt || !claimed.Valid || claimed.Time.After(now) || !deadline.Valid || !deadline.Time.After(now) {
 		return ErrJobLeaseLost
 	}
 	return nil

@@ -16,6 +16,7 @@ type Registry struct {
 	excludeIDs      map[string]struct{} // prefixed IDs to skip in fan-out
 	includeImported bool                // if false, skip google:*@import.calendar.google.com in fan-out
 	selection       CalendarSelection
+	writeGuard      WriteDispatchGuard
 }
 
 type CalendarSelection interface {
@@ -34,6 +35,7 @@ type RegistryOptions struct {
 	ExcludeIDs               []string
 	IncludeImportedCalendars bool
 	Selection                CalendarSelection
+	WriteGuard               WriteDispatchGuard
 }
 
 func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
@@ -48,6 +50,7 @@ func NewRegistry(providers []Provider, opts ...RegistryOptions) *Registry {
 		}
 		r.includeImported = opts[0].IncludeImportedCalendars
 		r.selection = opts[0].Selection
+		r.writeGuard = opts[0].WriteGuard
 	}
 	return r
 }
@@ -237,7 +240,7 @@ func (r *Registry) CreateEvent(ctx context.Context, calendarID string, event Eve
 	if err != nil {
 		return nil, err
 	}
-	ev, err := provider.CreateEvent(ctx, rawID, event)
+	ev, err := GuardedWrite(ctx, r.writeGuard, []string{CanonicalCalendarID(provider, rawID)}, func() (*Event, error) { return provider.CreateEvent(ctx, rawID, event) }, func(ev *Event) bool { return ev != nil && ev.ID != "" })
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +262,7 @@ func (r *Registry) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 	if err != nil {
 		return nil, err
 	}
-	ev, err := provider.UpdateEvent(ctx, rawCalID, rawEventID, event)
+	ev, err := GuardedWrite(ctx, r.writeGuard, []string{CanonicalCalendarID(provider, rawCalID)}, func() (*Event, error) { return provider.UpdateEvent(ctx, rawCalID, rawEventID, event) }, func(ev *Event) bool { return ev != nil && ev.ID != "" })
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +284,8 @@ func (r *Registry) DeleteEvent(ctx context.Context, calendarID, eventID string) 
 	if err != nil {
 		return err
 	}
-	if err := provider.DeleteEvent(ctx, rawCalID, rawEventID); err != nil {
+	_, err = GuardedWrite(ctx, r.writeGuard, []string{CanonicalCalendarID(provider, rawCalID)}, func() (bool, error) { err := provider.DeleteEvent(ctx, rawCalID, rawEventID); return err == nil, err }, func(ok bool) bool { return ok })
+	if err != nil {
 		return err
 	}
 	return nil
@@ -374,3 +378,6 @@ func prefixEvents(events []Event, provider Provider) {
 		events[i].Provider = provider.Name()
 	}
 }
+
+// WriteGuard returns the registry-wide provider dispatch guard.
+func (r *Registry) WriteGuard() WriteDispatchGuard { return r.writeGuard }

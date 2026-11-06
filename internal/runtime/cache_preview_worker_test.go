@@ -123,15 +123,8 @@ func TestCachedPreviewWorkerUsesOnlyVerifiedLocalSnapshot(t *testing.T) {
 	if err = s.SetRuleState(ctx, "rule", "enabled", nil, now); err == nil {
 		t.Fatal("cached rule enabled")
 	}
-	if err = s.EnqueueJob(ctx, storage.Job{ID: "manual", RuleID: "rule", Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	manual, err := s.ClaimJob(ctx, "worker", time.Now().UTC())
-	if err != nil || manual == nil {
-		t.Fatalf("manual claim: %v", err)
-	}
-	if err = executeJob(ctx, s, factory, *manual, time.Now().UTC()); err == nil {
-		t.Fatalf("cached write was not blocked: %v calls=%d", err, factory.calls)
+	if err = s.EnqueueJob(ctx, storage.Job{ID: "manual", RuleID: "rule", Kind: "manual", State: "pending", AvailableAt: now, CreatedAt: now}); !errors.Is(err, storage.ErrCalendarSyncIneligible) {
+		t.Fatalf("manual write on paused rule must be rejected: %v", err)
 	}
 	if err = s.EnableCachedRuleIfReady(ctx, "rule", now.Add(16*time.Minute), 15*time.Minute); !errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
 		t.Fatalf("stale source enabled: %v", err)

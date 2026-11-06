@@ -100,7 +100,7 @@ func (s *Store) EnableCachedRuleIfReady(ctx context.Context, id string, now time
 	if _, err = s.getSourceProjectionForCopy(ctx, tx, source, checked.AddDate(0, 0, -lookback), checked.AddDate(0, 0, lookahead), checked, maxAge); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state='enabled',next_run_at=?,updated_at=? WHERE id=? AND sync_mode='cached_instances' AND state='paused' AND config_version=?`), checked, checked, id, version)
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state='enabled',next_run_at=?,updated_at=? WHERE id=? AND sync_mode='cached_instances' AND state='paused' AND config_version=? AND NOT EXISTS (SELECT 1 FROM sync_jobs WHERE rule_id=sync_rules.id AND (state='unknown' OR (state='running' AND stop_requested=TRUE))) AND NOT EXISTS (SELECT 1 FROM exclusive_dispatch_reservations WHERE released_at IS NULL)`), checked, checked, id, version)
 	if err != nil {
 		return err
 	}

@@ -402,3 +402,29 @@ func TestActionControlsExposePendingState(t *testing.T) {
 		}
 	}
 }
+
+func TestSyncControlRoutesRequireAuthenticationAndCSRF(t *testing.T) {
+	handler := newTestHandler(t, true, false)
+	for _, path := range []string{"/rules/synthetic/pause", "/rules/synthetic/delete", "/jobs/synthetic/stop"} {
+		for _, tc := range []struct {
+			name, identity, token string
+			want                  int
+		}{{"anonymous", "", "token", http.StatusUnauthorized}, {"missing csrf", "synthetic", "wrong", http.StatusForbidden}} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				form := url.Values{"csrf_token": {tc.token}}
+				req := httptest.NewRequest(http.MethodPost, "https://calendar.example"+path, strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.Header.Set("Origin", "https://calendar.example")
+				if tc.identity != "" {
+					req.Header.Set("X-authentik-username", tc.identity)
+				}
+				req.AddCookie(&http.Cookie{Name: "calendar_csrf", Value: "token"})
+				res := httptest.NewRecorder()
+				handler.ServeHTTP(res, req)
+				if res.Code != tc.want {
+					t.Fatalf("status %d want %d", res.Code, tc.want)
+				}
+			})
+		}
+	}
+}

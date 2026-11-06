@@ -25,6 +25,10 @@ type MappingStore interface {
 
 const DetachedSeriesWarning = "Some recurring events are mirrored as individual events because their source series was unavailable."
 
+const IncompleteParticipantsWarning = "Some participant lists may be incomplete."
+const LegacyIncompleteParticipantsWarning = "Some participant lists are incomplete; existing descriptions were preserved until the full list is available."
+const SourceOnlyPreviewWarning = "Destination was not checked; this preview does not authorize synchronization."
+
 type Failure struct {
 	Stage string
 	Cause error
@@ -873,6 +877,8 @@ func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) 
 	}
 	if targetProvider == "google" {
 		if event.InstanceKind == "cache_instance" {
+			// Google retains deleted UIDs. Let it assign a fresh UID while
+			// the stable private marker remains the cache-copy identity.
 			created.ICalUID = ""
 		}
 		created.Google = &calendar.GoogleEventExtension{PrivateProperties: map[string]string{"calendar_sync_rule": ruleID, "calendar_source_event": event.ID}}

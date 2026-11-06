@@ -31,7 +31,23 @@ func sanitizeFollowingOccurrenceError(err error) error {
 	return followingPreflightFailure()
 }
 
-func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provider, request calendar.UpdateEventRequestV2, prefixedCalendarID string) (*calendar.OperationResult, error) {
+// followingOutcomeError scopes a child no-dispatch marker to the complete
+// split operation, including any mutation attempted by an earlier step.
+func followingOutcomeError(dispatched bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	if dispatched {
+		return calendar.MaskNoDispatch(err)
+	}
+	return calendar.DefinitiveNoDispatch(err)
+}
+
+func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provider, request calendar.UpdateEventRequestV2, prefixedCalendarID string) (result *calendar.OperationResult, retErr error) {
+	dispatched := false
+	defer func() {
+		retErr = followingOutcomeError(dispatched, retErr)
+	}()
 	v2 := provider.(calendar.EventProviderV2)
 	instances, ok := provider.(calendar.InstanceProviderV2)
 	if !ok {
@@ -119,6 +135,7 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	replacement := existingReplacement
 	createdNow := false
 	if replacement == nil {
+		dispatched = true
 		replacement, err = v2.CreateEventV2(ctx, calendar.CreateEventRequestV2{
 			CalendarID: request.Ref.CalendarID, Event: future, Notifications: calendar.NotificationsNone, RequireNoAttendees: true,
 		})
@@ -140,6 +157,7 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 			Warnings: []string{"an idempotent replacement exists, but the original series changed since the requested ETag"},
 		}, nil
 	}
+	dispatched = true
 	trimResult, trimErr := v2.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{
 		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications, RequireNoAttendees: true,
 		Patch: calendar.EventPatchV2{Recurrence: calendar.PatchField[[]string]{Present: true, Value: oldRecurrence}},
@@ -170,7 +188,11 @@ func (s *Service) updateFollowing(ctx context.Context, provider calendar.Provide
 	}, nil
 }
 
-func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provider, request calendar.DeleteEventRequestV2, prefixedCalendarID string) (*calendar.OperationResult, error) {
+func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provider, request calendar.DeleteEventRequestV2, prefixedCalendarID string) (result *calendar.OperationResult, retErr error) {
+	dispatched := false
+	defer func() {
+		retErr = followingOutcomeError(dispatched, retErr)
+	}()
 	v2 := provider.(calendar.EventProviderV2)
 	instances, ok := provider.(calendar.InstanceProviderV2)
 	if !ok {
@@ -203,7 +225,8 @@ func (s *Service) deleteFollowing(ctx context.Context, provider calendar.Provide
 	if err := requireFollowingNoAttendees(provider, parent, nil, request.Notifications); err != nil {
 		return nil, err
 	}
-	result, err := v2.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{
+	dispatched = true
+	result, err = v2.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{
 		Ref: request.Ref, Scope: calendar.ScopeSeries, ExpectedETag: parent.ETag, Notifications: request.Notifications, RequireNoAttendees: true,
 		Patch: calendar.EventPatchV2{Recurrence: calendar.PatchField[[]string]{Present: true, Value: oldRecurrence}},
 	})

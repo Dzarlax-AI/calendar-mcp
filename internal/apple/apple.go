@@ -151,7 +151,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 
 	path, err := appleObjectPath(calendarID, uid)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	_, err = p.client.PutCalendarObject(ctx, path, cal)
 	if err != nil {
@@ -164,14 +164,14 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, event calendar.EventUpdate) (*calendar.Event, error) {
 	path, err := appleObjectPath(calendarID, eventID)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 
 	objects, err := p.client.MultiGetCalendar(ctx, calendarID, &caldav.CalendarMultiGet{
 		Paths: []string{path},
 	})
 	if err != nil || len(objects) == 0 {
-		return nil, fmt.Errorf("event not found: %s", eventID)
+		return nil, calendar.DefinitiveNoDispatch(fmt.Errorf("event not found: %s", eventID))
 	}
 	obj := objects[0]
 
@@ -214,7 +214,7 @@ func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, 
 func (p *Provider) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	path, err := appleObjectPath(calendarID, eventID)
 	if err != nil {
-		return err
+		return calendar.DefinitiveNoDispatch(err)
 	}
 	return p.client.RemoveAll(ctx, path)
 }

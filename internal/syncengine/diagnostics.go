@@ -13,6 +13,9 @@ import (
 
 // FailureCode returns a finite code. Provider text and identifiers are never persisted.
 func FailureCode(err error) string {
+	if errors.Is(err, storage.ErrExclusiveDispatchConflict) {
+		return "sync_dispatch_blocked"
+	}
 	if errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
 		return "sync_cache_unavailable"
 	}
@@ -113,6 +116,8 @@ func FailureCode(err error) string {
 // FailureMessage accepts only known codes; it never renders stored provider text.
 func FailureMessage(code string) string {
 	switch code {
+	case "sync_dispatch_blocked":
+		return "Synchronization is blocked by an existing dispatch reservation. Check its status before retrying."
 	case "sync_cache_unavailable":
 		return "The source cache is unavailable, stale, incomplete, or does not cover the requested window."
 	case "recurrence_unsupported":

@@ -95,13 +95,16 @@ func Serve(_ context.Context) error {
 	}
 
 	var selection calendar.CalendarSelection
+	var writeGuard calendar.WriteDispatchGuard
 	if platformStore != nil {
 		selection = platformStore
+		writeGuard = platformStore
 	}
 	reg := calendar.NewRegistry(calendarProviders, calendar.RegistryOptions{
 		ExcludeIDs:               cfg.ExcludeCalendarIDs,
 		IncludeImportedCalendars: cfg.IncludeImportedCalendars,
 		Selection:                selection,
+		WriteGuard:               writeGuard,
 	})
 	appService := application.New(reg)
 	if len(cfg.ExcludeCalendarIDs) > 0 {

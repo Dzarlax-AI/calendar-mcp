@@ -95,6 +95,8 @@ Google and Apple can express broader iCalendar recurrence than Microsoft Graph. 
 
 Google targets receive private rule/source markers. Before a create, the engine checks those markers so a target created before a timeout or local mapping failure can be recovered on the next run. Microsoft and Apple currently rely on persisted mappings and do not yet provide equivalent provider-side marker recovery for an ambiguous remote create.
 
+For cache-backed copies to Google, Google assigns the event ID and iCalUID instead of reusing the deterministic copy UID. The rule/source markers remain stable. If a create has an unknown outcome, a missing marker alone does not prove that the provider did not create the event, and the create is not retried blindly.
+
 ## Web control plane
 
 Platform mode exposes a public product landing page at `/`, plus the repository-maintained [Privacy Policy](internal/web/legal/privacy.md) at `/privacy` and [Terms of Service](internal/web/legal/terms.md) at `/terms`. These routes contain no connection or calendar state. They can be routed publicly for OAuth application verification while the control plane stays authenticated.
@@ -102,9 +104,11 @@ Platform mode exposes a public product landing page at `/`, plus the repository-
 The authenticated React application starts at `/app`. Its primary screen is a unified calendar with day, week, month, and list views, connected-calendar filters, event details, and capability-aware create/edit/reschedule/delete actions. The remaining control-plane pages are:
 
 - Connections — add, reconnect, verify, discover, and safely remove accounts;
-- Sync Rules — create directed routes and run dry runs or manual jobs;
-- Runs — sanitized outcomes and mutation counters;
+- Sync activity — create directed routes, request a pause, stop queued or running jobs, and review sanitized outcomes;
+- Deleting a paused rule archives its configuration and retains its history, mappings, and copied calendar events. Deletion is rejected while jobs, pending mutations, or an active dispatch reservation could make the outcome uncertain;
 - Settings — installation readiness plus deliberate, short-lived MCP access-key reveal for a single-user installation.
+
+A pause or stop is a request, not proof that a provider request already in flight was revoked. While a worker is still active the UI reports a transitional state; a stopped attempt that may have dispatched a mutation is recorded as unknown and blocks automatic retry. A lost stopped worker is also treated as unknown. Reservations and pending mappings are never cleared by pause, stop, or rule deletion. An active global dispatch reservation conservatively blocks rule deletion and additional real sync jobs. Older running workers do not understand the stop-request schema and must not overlap an upgrade to it. This behavior does not resolve existing unknown provider outcomes.
 
 Google and Microsoft use OAuth 2.0 with expiring single-use state and PKCE. Apple uses an app-specific password. Provider credentials are encrypted with AES-256-GCM before database storage.
 

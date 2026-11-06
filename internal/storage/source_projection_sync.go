@@ -21,7 +21,7 @@ func (s *Store) PlanSourceProjectionCapture(ctx context.Context, state CalendarS
 	var out SourceProjectionCapturePlan
 	var provider, timezone string
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, s.query(`SELECT conn.provider,c.timezone,EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=?) FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=?`), "cached_instances", state.CalendarID).Scan(&provider, &timezone, &enabled)
+	err := s.db.QueryRowContext(ctx, s.query(`SELECT conn.provider,c.timezone,EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=? AND r.state<>'archived') FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=?`), "cached_instances", state.CalendarID).Scan(&provider, &timezone, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, ErrNotFound
 	}

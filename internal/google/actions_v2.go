@@ -39,15 +39,15 @@ func (p *Provider) SearchEventsV2(ctx context.Context, request calendar.SearchEv
 func (p *Provider) RespondToEventV2(ctx context.Context, request calendar.RespondToEventRequestV2) (*calendar.OperationResult, error) {
 	responseStatus, err := googleResponseStatus(request.Response)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	sendUpdates, err := googleSendUpdates(request.Notifications)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	existing, err := p.svc.Events.Get(request.Ref.CalendarID, request.Ref.EventID).Context(ctx).Do()
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	var self *gcal.EventAttendee
 	for _, attendee := range existing.Attendees {
@@ -58,7 +58,7 @@ func (p *Provider) RespondToEventV2(ctx context.Context, request calendar.Respon
 		}
 	}
 	if self == nil {
-		return nil, invalidGoogleArgument(fmt.Errorf("the authenticated user is not an attendee of this event"))
+		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(fmt.Errorf("the authenticated user is not an attendee of this event")))
 	}
 	self.ResponseStatus = responseStatus
 	self.Comment = request.Comment
@@ -78,18 +78,18 @@ func (p *Provider) RespondToEventV2(ctx context.Context, request calendar.Respon
 
 func (p *Provider) MoveEventV2(ctx context.Context, request calendar.MoveEventRequestV2) (*calendar.OperationResult, error) {
 	if request.DestinationCalendarID == "" {
-		return nil, invalidGoogleArgument(fmt.Errorf("destination_calendar_id is required"))
+		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(fmt.Errorf("destination_calendar_id is required")))
 	}
 	sendUpdates, err := googleSendUpdates(request.Notifications)
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	existing, err := p.svc.Events.Get(request.Ref.CalendarID, request.Ref.EventID).Context(ctx).Do()
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	if normalizedGoogleEventType(existing.EventType) != "default" {
-		return nil, unsupportedGoogle("Google can move only default events")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedGoogle("Google can move only default events"))
 	}
 	call := p.svc.Events.Move(request.Ref.CalendarID, request.Ref.EventID, request.DestinationCalendarID).SendUpdates(sendUpdates)
 	if request.ExpectedETag != "" {
@@ -105,14 +105,14 @@ func (p *Provider) MoveEventV2(ctx context.Context, request calendar.MoveEventRe
 
 func (p *Provider) ImportEventV2(ctx context.Context, request calendar.ImportEventRequestV2) (*calendar.EventV2, error) {
 	if request.Event.ICalUID == "" {
-		return nil, invalidGoogleArgument(fmt.Errorf("ical_uid is required for Google event import"))
+		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(fmt.Errorf("ical_uid is required for Google event import")))
 	}
 	event, err := toGoogleEventV2(request.Event)
 	if err != nil {
-		return nil, invalidGoogleArgument(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(err))
 	}
 	if normalizedGoogleEventType(event.EventType) != "default" {
-		return nil, unsupportedGoogle("Google can import only default events")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedGoogle("Google can import only default events"))
 	}
 	call := p.svc.Events.Import(request.CalendarID, event)
 	if len(event.Attachments) > 0 {

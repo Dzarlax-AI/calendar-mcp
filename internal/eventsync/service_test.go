@@ -698,3 +698,137 @@ func TestNonGoogleRepairDoesNotReadCalendarTimeZone(t *testing.T) {
 		t.Fatalf("lookup=%d requests=%d", store.timeZoneCalls, len(provider.repairRequests))
 	}
 }
+
+type repairFenceStore struct {
+	*fakeStore
+	blocked            bool
+	released           int
+	consumeErr         error
+	consumeFalse       bool
+	consumeCancel      context.CancelFunc
+	releaseErr         error
+	releaseContextErr  error
+	releaseHasDeadline bool
+}
+
+func (s *repairFenceStore) ConsumeEventSyncProviderMutationAuthorization(ctx context.Context, state storage.CalendarSyncState, calendarID, objectID, etag string, now time.Time) (bool, error) {
+	if s.consumeCancel != nil {
+		s.consumeCancel()
+	}
+	if s.consumeErr != nil {
+		return false, s.consumeErr
+	}
+	if s.consumeFalse {
+		return false, nil
+	}
+	return s.fakeStore.ConsumeEventSyncProviderMutationAuthorization(ctx, state, calendarID, objectID, etag, now)
+}
+
+func (s *repairFenceStore) BeginWriteDispatch(context.Context, []string) (func(context.Context) error, error) {
+	if s.blocked {
+		return nil, errors.New("busy")
+	}
+	return func(ctx context.Context) error {
+		s.released++
+		s.releaseContextErr = ctx.Err()
+		_, s.releaseHasDeadline = ctx.Deadline()
+		return s.releaseErr
+	}, nil
+}
+
+func TestAuthorizedRepairReleasesFenceOnPreDispatchConsumeFailure(t *testing.T) {
+	for _, scenario := range []string{"lease_lost", "storage_error", "cancelled", "release_unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			item := repairItem("synthetic")
+			item.ProviderMutationAuthorizedETag = item.ETag
+			fs := &fakeStore{}
+			store := &repairFenceStore{fakeStore: fs, consumeErr: storage.ErrCalendarSyncLeaseLost}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if scenario == "storage_error" {
+				store.consumeErr = errors.New("synthetic storage failure")
+			}
+			if scenario == "cancelled" {
+				store.consumeErr, store.consumeCancel = context.Canceled, cancel
+			}
+			if scenario == "release_unknown" {
+				store.releaseErr = errors.New("synthetic ambiguous release")
+			}
+			provider := &fakeProvider{providerName: "google"}
+			svc := newService(fs, provider)
+			svc.Store = store
+			err := svc.repairObject(ctx, testState("saved"), "provider-calendar", true, svc.PolicyFor(provider), provider, item)
+			if err == nil || len(provider.repairRequests) != 0 || store.released != 1 || store.releaseContextErr != nil || !store.releaseHasDeadline {
+				t.Fatalf("unsafe pre-dispatch cleanup: err=%v provider calls=%d releases=%d context=%v deadline=%v", err, len(provider.repairRequests), store.released, store.releaseContextErr, store.releaseHasDeadline)
+			}
+			if scenario == "lease_lost" && !errors.Is(err, storage.ErrCalendarSyncLeaseLost) {
+				t.Fatalf("lost lease error: %v", err)
+			}
+			if scenario == "release_unknown" {
+				var apiErr *calendar.APIError
+				if !errors.As(err, &apiErr) || apiErr.Code != calendar.ErrorMutationOutcomeUnknown || !errors.Is(err, store.releaseErr) {
+					t.Fatalf("release ambiguity was hidden: %v", err)
+				}
+			}
+		})
+	}
+}
+func TestAuthorizedRepairReportsReleaseAmbiguity(t *testing.T) {
+	for _, consumed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "authorization_not_consumed", true: "provider_completed"}[consumed], func(t *testing.T) {
+			item := repairItem("synthetic")
+			item.ProviderMutationAuthorizedETag = item.ETag
+			fs := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{item}}
+			releaseErr := errors.New("synthetic ambiguous release")
+			store := &repairFenceStore{fakeStore: fs, consumeFalse: !consumed, releaseErr: releaseErr}
+			provider := &fakeProvider{providerName: "google", repairResults: []calendar.EventSyncObjectRepairResult{repairResult("synthetic", calendar.EventSyncObjectStillQuarantined)}}
+			svc := newService(fs, provider)
+			svc.Store = store
+			err := svc.repairObject(t.Context(), testState("saved"), "provider-calendar", true, svc.PolicyFor(provider), provider, item)
+			var apiErr *calendar.APIError
+			if !errors.As(err, &apiErr) || apiErr.Code != calendar.ErrorMutationOutcomeUnknown || !errors.Is(err, releaseErr) || !errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+				t.Fatalf("release ambiguity was hidden: %v", err)
+			}
+			wantCalls := 0
+			if consumed {
+				wantCalls = 1
+			}
+			if store.released != 1 || len(provider.repairRequests) != wantCalls || store.releaseContextErr != nil || !store.releaseHasDeadline {
+				t.Fatalf("unsafe release: releases=%d provider calls=%d context=%v deadline=%v", store.released, len(provider.repairRequests), store.releaseContextErr, store.releaseHasDeadline)
+			}
+		})
+	}
+}
+
+func TestAuthorizedRepairHonorsSharedWriteFence(t *testing.T) {
+	for _, scenario := range []string{"blocked", "completed", "unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			item := repairItem("synthetic")
+			item.ProviderMutationAuthorizedETag = item.ETag
+			fs := &fakeStore{quarantine: []storage.CalendarSyncQuarantine{item}}
+			store := &repairFenceStore{fakeStore: fs, blocked: scenario == "blocked"}
+			provider := &fakeProvider{providerName: "google", repairResults: []calendar.EventSyncObjectRepairResult{repairResult("synthetic", calendar.EventSyncObjectStillQuarantined)}}
+			if scenario == "unknown" {
+				provider.repairErrs = []error{context.DeadlineExceeded}
+			}
+			svc := newService(fs, provider)
+			svc.Store = store
+			err := svc.repairObject(t.Context(), testState("saved"), "provider-calendar", true, svc.PolicyFor(provider), provider, item)
+			if scenario == "blocked" {
+				if !errors.Is(err, calendar.ErrWriteDispatchBlocked) || len(fs.consumed) != 0 || len(provider.repairRequests) != 0 {
+					t.Fatalf("unsafe blocked repair: %v", err)
+				}
+				return
+			}
+			if len(fs.consumed) != 1 || len(provider.repairRequests) != 1 || !provider.repairRequests[0].AllowProviderMutation {
+				t.Fatalf("repair not dispatched: %v", err)
+			}
+			if scenario == "completed" && (err != nil || store.released != 1) {
+				t.Fatalf("completed repair: err=%v released=%d", err, store.released)
+			}
+			if scenario == "unknown" && store.released != 0 {
+				t.Fatalf("unknown repair released fence")
+			}
+		})
+	}
+}

@@ -137,10 +137,25 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("record schema version %d: %w", next, err)
 		}
 	}
+	if err := validateStopRequestSchema(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
 	return nil
+}
+
+// The abandoned evidence experiment used the same version number without this
+// column. A version number alone must not make that schema appear compatible.
+func validateStopRequestSchema(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) error {
+	rows, err := db.QueryContext(ctx, `SELECT stop_requested FROM sync_jobs WHERE 1=0`)
+	if err != nil {
+		return fmt.Errorf("%w: sync stop-request schema is missing", ErrSchemaMismatch)
+	}
+	return rows.Close()
 }
 
 func migrationName(version int) string {
@@ -199,6 +214,8 @@ func migrationName(version int) string {
 		return "mapping_version"
 	case 27:
 		return "rule_sync_mode"
+	case 28:
+		return "sync_stop_request"
 	default:
 		return ""
 	}
@@ -212,7 +229,7 @@ func (s *Store) CheckSchema(ctx context.Context) error {
 	if version != SchemaVersion {
 		return fmt.Errorf("%w: database=%d binary=%d", ErrSchemaMismatch, version, SchemaVersion)
 	}
-	return nil
+	return validateStopRequestSchema(ctx, s.db)
 }
 
 func (s *Store) query(q string) string {
@@ -671,7 +688,7 @@ func (s *Store) validateRuleRoute(ctx context.Context, tx *sql.Tx, candidate Rul
 		return errors.New("target calendar is not writable")
 	}
 
-	rows, err := tx.QueryContext(ctx, "SELECT source_calendar_id, target_calendar_id FROM sync_rules")
+	rows, err := tx.QueryContext(ctx, "SELECT source_calendar_id, target_calendar_id FROM sync_rules WHERE state<>'archived'")
 	if err != nil {
 		return fmt.Errorf("load sync rule graph: %w", err)
 	}
@@ -838,8 +855,8 @@ func (s *Store) SetRuleState(ctx context.Context, id, state string, nextRunAt *t
 	if err := s.lockRuleGraph(ctx, tx); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND
-		(? <> 'enabled' OR sync_mode='direct' AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
+	res, err := tx.ExecContext(ctx, s.query(`UPDATE sync_rules SET state=?,next_run_at=?,updated_at=? WHERE id=? AND state<>'archived' AND
+		(? <> 'enabled' OR NOT EXISTS (SELECT 1 FROM sync_jobs WHERE rule_id=sync_rules.id AND (state='unknown' OR (state='running' AND stop_requested=TRUE))) AND NOT EXISTS (SELECT 1 FROM exclusive_dispatch_reservations WHERE released_at IS NULL) AND sync_mode='direct' AND EXISTS (SELECT 1 FROM calendars source JOIN calendars target ON target.id=sync_rules.target_calendar_id
 		WHERE source.id=sync_rules.source_calendar_id AND source.enabled=TRUE AND target.enabled=TRUE))`), state, nextRunAt, updatedAt, id, state)
 	if err != nil {
 		return fmt.Errorf("set rule state: %w", err)

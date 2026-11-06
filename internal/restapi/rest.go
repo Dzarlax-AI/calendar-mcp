@@ -228,6 +228,10 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeLegacyMutationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, calendar.ErrWriteDispatchBlocked) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": calendar.ErrWriteDispatchBlocked.Error(), "code": calendar.ErrorConflict, "retryable": false})
+		return
+	}
 	var protected *calendar.ProviderMutationProtectionError
 	if errors.As(err, &protected) {
 		writeError(w, http.StatusInternalServerError, protected.Error())
