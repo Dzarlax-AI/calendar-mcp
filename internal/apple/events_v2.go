@@ -139,7 +139,7 @@ func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*cale
 
 func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
 	if err := validateAppleWrite(request.Event); err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	uid := request.Event.ICalUID
 	if uid == "" {
@@ -147,7 +147,7 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 	}
 	event, err := appleEventFromCreate(uid, request.Event)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	container := ical.NewCalendar()
 	container.Props.SetText(ical.PropVersion, "2.0")
@@ -155,7 +155,7 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 	container.Children = append(container.Children, event.Component)
 	path, err := appleObjectPath(request.CalendarID, uid)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	object, err := p.client.PutCalendarObject(ctx, path, container)
 	if err != nil {
@@ -167,34 +167,34 @@ func (p *Provider) CreateEventV2(ctx context.Context, request calendar.CreateEve
 
 func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
 	if request.PreviewOnly {
-		return nil, unsupportedApple("preview is not available for this provider mutation")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("preview is not available for this provider mutation"))
 	}
 	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
-		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("Apple V2 supports series and single-instance mutations"))
 	}
 	if request.ExpectedETag != "" {
-		return nil, unsupportedApple("Apple V2 optimistic locking is unavailable")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("Apple V2 optimistic locking is unavailable"))
 	}
 	if request.Patch.Attendees.Present || request.Patch.Reminders.Present || request.Patch.Attachments.Present || request.Patch.ColorID.Present || request.Patch.Conference.Present || request.Patch.GuestPermissions.Present || request.Patch.Google.Present {
-		return nil, unsupportedApple("the patch contains fields not supported safely by Apple V2")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("the patch contains fields not supported safely by Apple V2"))
 	}
 	eventID, original, err := splitAppleInstanceID(request.Ref.EventID)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	if request.Scope == calendar.ScopeSingle && original == nil {
-		return nil, invalidApple(fmt.Errorf("single-instance mutation requires an instance event id"))
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("single-instance mutation requires an instance event id")))
 	}
 	path, err := appleObjectPath(request.Ref.CalendarID, eventID)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	objects, err := p.client.MultiGetCalendar(ctx, request.Ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	if len(objects) == 0 {
-		return nil, notFoundApple(request.Ref)
+		return nil, calendar.DefinitiveNoDispatch(notFoundApple(request.Ref))
 	}
 	var master, selected *ical.Event
 	for _, value := range objects[0].Data.Events() {
@@ -207,7 +207,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		}
 	}
 	if master == nil {
-		return nil, notFoundApple(request.Ref)
+		return nil, calendar.DefinitiveNoDispatch(notFoundApple(request.Ref))
 	}
 	if request.Scope == calendar.ScopeSeries {
 		selected = master
@@ -217,27 +217,27 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 			selected.Props.Del(name)
 		}
 		if err := setAppleEventTimeV2(selected, ical.PropRecurrenceID, *original); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 		masterStart := appleEventTimeV2(master.Props.Get(ical.PropDateTimeStart))
 		masterEnd := appleEventTimeV2(master.Props.Get(ical.PropDateTimeEnd))
 		startInstant, err := masterStart.Instant()
 		if err != nil {
-			return nil, invalidApple(fmt.Errorf("parse master start: %w", err))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("parse master start: %w", err)))
 		}
 		endInstant, err := masterEnd.Instant()
 		if err != nil {
-			return nil, invalidApple(fmt.Errorf("parse master end: %w", err))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("parse master end: %w", err)))
 		}
 		originalInstant, err := original.Instant()
 		if err != nil {
-			return nil, invalidApple(fmt.Errorf("parse instance original start: %w", err))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("parse instance original start: %w", err)))
 		}
 		if err := setAppleEventTimeV2(selected, ical.PropDateTimeStart, *original); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 		if err := setAppleEventTimeV2(selected, ical.PropDateTimeEnd, appleTimeLikeMaster(originalInstant.Add(endInstant.Sub(startInstant)), masterEnd)); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 		objects[0].Data.Children = append(objects[0].Data.Children, selected.Component)
 	}
@@ -251,7 +251,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	}
 	if request.Patch.Start.Present || request.Patch.End.Present {
 		if err := calendar.ValidateEventTimeRangeV2(start, end); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 	}
 	applyAppleTextPatch(selected, ical.PropSummary, request.Patch.Title)
@@ -261,26 +261,26 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	applyAppleTextPatch(selected, ical.PropTransparency, request.Patch.Transparency)
 	if request.Patch.Start.Present {
 		if request.Patch.Start.Null {
-			return nil, invalidApple(fmt.Errorf("start cannot be null"))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("start cannot be null")))
 		}
 		if err := setAppleEventTimeV2(selected, ical.PropDateTimeStart, request.Patch.Start.Value); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 	}
 	if request.Patch.End.Present {
 		if request.Patch.End.Null {
-			return nil, invalidApple(fmt.Errorf("end cannot be null"))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("end cannot be null")))
 		}
 		if err := setAppleEventTimeV2(selected, ical.PropDateTimeEnd, request.Patch.End.Value); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 	}
 	if request.Patch.Recurrence.Present {
 		if request.Scope != calendar.ScopeSeries {
-			return nil, unsupportedApple("single Apple instances cannot carry recurrence rules")
+			return nil, calendar.DefinitiveNoDispatch(unsupportedApple("single Apple instances cannot carry recurrence rules"))
 		}
 		if err := setAppleRecurrence(selected, request.Patch.Recurrence.Value); err != nil {
-			return nil, invalidApple(err)
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 	}
 	object, err := p.client.PutCalendarObject(ctx, path, objects[0].Data)
@@ -300,24 +300,24 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 
 func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
 	if request.PreviewOnly {
-		return nil, unsupportedApple("preview is not available for this provider mutation")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("preview is not available for this provider mutation"))
 	}
 	if request.Scope != calendar.ScopeSeries && request.Scope != calendar.ScopeSingle {
-		return nil, unsupportedApple("Apple V2 supports series and single-instance mutations")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("Apple V2 supports series and single-instance mutations"))
 	}
 	if request.ExpectedETag != "" {
-		return nil, unsupportedApple("Apple V2 optimistic locking is unavailable")
+		return nil, calendar.DefinitiveNoDispatch(unsupportedApple("Apple V2 optimistic locking is unavailable"))
 	}
 	eventID, original, err := splitAppleInstanceID(request.Ref.EventID)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	if request.Scope == calendar.ScopeSingle && original == nil {
-		return nil, invalidApple(fmt.Errorf("single-instance deletion requires an instance event id"))
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("single-instance deletion requires an instance event id")))
 	}
 	path, err := appleObjectPath(request.Ref.CalendarID, eventID)
 	if err != nil {
-		return nil, invalidApple(err)
+		return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 	}
 	if request.Scope == calendar.ScopeSeries {
 		if err := p.client.RemoveAll(ctx, path); err != nil {
@@ -327,10 +327,10 @@ func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEve
 	}
 	objects, err := p.client.MultiGetCalendar(ctx, request.Ref.CalendarID, &caldav.CalendarMultiGet{Paths: []string{path}})
 	if err != nil {
-		return nil, err
+		return nil, calendar.DefinitiveNoDispatch(err)
 	}
 	if len(objects) == 0 {
-		return nil, notFoundApple(request.Ref)
+		return nil, calendar.DefinitiveNoDispatch(notFoundApple(request.Ref))
 	}
 	var master *ical.Event
 	children := objects[0].Data.Children[:0]
@@ -351,24 +351,24 @@ func (p *Provider) DeleteEventV2(ctx context.Context, request calendar.DeleteEve
 		}
 	}
 	if master == nil {
-		return nil, notFoundApple(request.Ref)
+		return nil, calendar.DefinitiveNoDispatch(notFoundApple(request.Ref))
 	}
 	exdate := ical.NewProp(ical.PropExceptionDates)
 	if original.IsAllDay() {
 		parsed, err := time.Parse(calendar.DateLayout, original.Date)
 		if err != nil {
-			return nil, invalidApple(fmt.Errorf("parse all-day exception date: %w", err))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("parse all-day exception date: %w", err)))
 		}
 		exdate.SetDate(parsed)
 	} else {
 		parsed, err := original.Instant()
 		if err != nil {
-			return nil, invalidApple(fmt.Errorf("parse exception date: %w", err))
+			return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("parse exception date: %w", err)))
 		}
 		if original.TimeZone != "UTC" {
 			location, err := time.LoadLocation(original.TimeZone)
 			if err != nil {
-				return nil, invalidApple(fmt.Errorf("load exception time zone: %w", err))
+				return nil, calendar.DefinitiveNoDispatch(invalidApple(fmt.Errorf("load exception time zone: %w", err)))
 			}
 			parsed = parsed.In(location)
 			exdate.Params.Set("TZID", original.TimeZone)

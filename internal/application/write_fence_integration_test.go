@@ -272,3 +272,74 @@ func TestWriteFenceCoversUIProjectionReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFollowingPreflightErrorsReleaseSharedReservation(t *testing.T) {
+	for _, operation := range []string{"update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			store := syntheticGuardStore(t)
+			p := &guardFollowingProvider{guardTestProvider: newGuardTestProvider()}
+			app := New(calendar.NewRegistry([]calendar.Provider{p}, calendar.RegistryOptions{WriteGuard: store}))
+			effective := calendar.EventTime{Date: "2026-11-05"}
+			var err error
+			if operation == "update" {
+				_, err = app.UpdateEvent(t.Context(), calendar.UpdateEventRequestV2{Ref: guardRef(), Scope: calendar.ScopeFollowing, EffectiveFrom: &effective, ExpectedETag: "stale"})
+			} else {
+				_, err = app.DeleteEvent(t.Context(), calendar.DeleteEventRequestV2{Ref: guardRef(), Scope: calendar.ScopeFollowing, EffectiveFrom: &effective, ExpectedETag: "stale"})
+			}
+			var apiErr *calendar.APIError
+			if !errors.As(err, &apiErr) || apiErr.Code != calendar.ErrorConflict || p.writes != 0 {
+				t.Fatalf("preflight err=%v writes=%d", err, p.writes)
+			}
+			if _, err = app.CreateEvent(t.Context(), calendar.CreateEventRequestV2{CalendarID: "google:source", Event: guardEvent()}); err != nil {
+				t.Fatalf("preflight left write fence held: %v", err)
+			}
+		})
+	}
+}
+
+// The following writer is currently disabled until series exceptions can be
+// verified. Its unsupported result is still a conclusive preflight outcome.
+func TestFollowingDisabledBeforeAnyWriteReleasesReservation(t *testing.T) {
+	for _, operation := range []string{"update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			store := syntheticGuardStore(t)
+			p := &guardFollowingProvider{guardTestProvider: newGuardTestProvider()}
+			app := New(calendar.NewRegistry([]calendar.Provider{p}, calendar.RegistryOptions{WriteGuard: store}))
+			effective := calendar.EventTime{Date: "2026-11-05"}
+			var err error
+			if operation == "update" {
+				_, err = app.UpdateEvent(t.Context(), calendar.UpdateEventRequestV2{Ref: guardRef(), Scope: calendar.ScopeFollowing, EffectiveFrom: &effective})
+			} else {
+				_, err = app.DeleteEvent(t.Context(), calendar.DeleteEventRequestV2{Ref: guardRef(), Scope: calendar.ScopeFollowing, EffectiveFrom: &effective})
+			}
+			var apiErr *calendar.APIError
+			if !errors.As(err, &apiErr) || apiErr.Code != calendar.ErrorUnsupportedCapability || p.writes != 0 {
+				t.Fatalf("err=%v writes=%d", err, p.writes)
+			}
+			if _, err = app.CreateEvent(t.Context(), calendar.CreateEventRequestV2{CalendarID: "google:source", Event: guardEvent()}); err != nil {
+				t.Fatalf("preflight left fence held: %v", err)
+			}
+		})
+	}
+}
+
+// Simulate a successful first step and a child preflight rejection in step two.
+// Real following dispatch remains disabled until series exceptions are verified.
+func TestFollowingChildNoDispatchAfterPriorWriteRetainsFence(t *testing.T) {
+	store := syntheticGuardStore(t)
+	writes := 0
+	_, err := calendar.GuardedWrite(t.Context(), store, []string{"google:source"}, func() (bool, error) {
+		writes++ // first provider mutation succeeded
+		childErr := calendar.DefinitiveNoDispatch(errors.New("second step preflight rejected"))
+		return false, followingOutcomeError(true, childErr)
+	}, func(v bool) bool { return v })
+	if writes != 1 || !errors.Is(err, calendar.ErrProviderMutationOutcomeUnknown) {
+		t.Fatalf("writes=%d err=%v", writes, err)
+	}
+	p := newGuardTestProvider()
+	app := New(calendar.NewRegistry([]calendar.Provider{p}, calendar.RegistryOptions{WriteGuard: store}))
+	_, err = app.CreateEvent(t.Context(), calendar.CreateEventRequestV2{CalendarID: "google:source", Event: guardEvent()})
+	if !errors.Is(err, calendar.ErrWriteDispatchBlocked) || p.writes != 0 {
+		t.Fatalf("next write err=%v writes=%d", err, p.writes)
+	}
+}

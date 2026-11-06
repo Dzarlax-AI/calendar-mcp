@@ -137,7 +137,7 @@ func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end 
 
 func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event calendar.EventCreate) (*calendar.Event, error) {
 	if len(event.Attendees) > 0 {
-		return nil, fmt.Errorf("microsoft attendee writes require an explicit notification policy")
+		return nil, calendar.DefinitiveNoDispatch(fmt.Errorf("microsoft attendee writes require an explicit notification policy"))
 	}
 	path := fmt.Sprintf("/me/calendars/%s/events", url.PathEscape(calendarID))
 	start := toGraphDateTime(event.Start)
@@ -171,7 +171,7 @@ func (p *Provider) CreateEvent(ctx context.Context, calendarID string, event cal
 
 func (p *Provider) UpdateEvent(ctx context.Context, calendarID, eventID string, event calendar.EventUpdate) (*calendar.Event, error) {
 	if event.Attendees != nil {
-		return nil, fmt.Errorf("microsoft attendee writes require an explicit notification policy")
+		return nil, calendar.DefinitiveNoDispatch(fmt.Errorf("microsoft attendee writes require an explicit notification policy"))
 	}
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
 	patch := make(map[string]any)

@@ -224,7 +224,6 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 		var err error
 		if request.Scope == calendar.ScopeFollowing {
 			result, err = s.updateFollowing(ctx, provider, request, prefixedCalendarID)
-			err = calendar.MaskNoDispatch(err)
 		} else {
 			result, err = v2.UpdateEventV2(ctx, request)
 		}
@@ -274,7 +273,6 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		var err error
 		if request.Scope == calendar.ScopeFollowing {
 			result, err = s.deleteFollowing(ctx, provider, request, prefixedCalendarID)
-			err = calendar.MaskNoDispatch(err)
 		} else {
 			result, err = v2.DeleteEventV2(ctx, request)
 		}
