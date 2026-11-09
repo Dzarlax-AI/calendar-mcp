@@ -11,6 +11,15 @@ import (
 )
 
 func TestPostgresProjectionFinalizerIncremental(t *testing.T) {
+	runPostgresProjectionFinalizerCase(t, false)
+}
+
+func TestPostgresProjectionFinalizerRepeatedObservations(t *testing.T) {
+	runPostgresProjectionFinalizerCase(t, true)
+}
+
+func runPostgresProjectionFinalizerCase(t *testing.T, repeated bool) {
+	t.Helper()
 	url := os.Getenv("TEST_POSTGRES_URL")
 	if url == "" {
 		t.Skip("TEST_POSTGRES_URL is not set")
@@ -40,7 +49,7 @@ func TestPostgresProjectionFinalizerIncremental(t *testing.T) {
 	if err = s.EnsureCalendarSyncStates(ctx, now, SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	runProjectionFinalizerIncremental(t, s, id, now)
+	runProjectionFinalizerIncrementalCase(t, s, id, now, repeated)
 }
 
 func TestPostgresProjectionFinalizerStaleLegacyPage(t *testing.T) {

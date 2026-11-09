@@ -51,9 +51,8 @@ func (s *Store) finalizeProjectionTxWithClock(ctx context.Context, tx *sql.Tx, s
 	if err != nil || len(payload) > maxProjectionSnapshotBytes {
 		return 0, ErrProjectionPageStage
 	}
-	// Keep every previous observation until a later, explicitly proven target
-	// reconciliation protocol can retire it. In particular, an upsert is not
-	// enough to erase a cancellation while a target delete may be in flight.
+	// Retain every distinct observation. Exact repetitions add no new evidence;
+	// an upsert alone must never erase a cancellation while a delete is in flight.
 	allRemovals := candidate.removals
 	if candidate.input.BaseRevision > 0 {
 		var previous []byte
@@ -72,6 +71,10 @@ func (s *Store) finalizeProjectionTxWithClock(ctx context.Context, tx *sql.Tx, s
 			}
 		}
 		allRemovals = append(retained, candidate.removals...)
+	}
+	allRemovals, err = uniqueProjectionObservations(allRemovals)
+	if err != nil {
+		return 0, ErrProjectionPageStage
 	}
 	observations, err := json.Marshal(allRemovals)
 	if err != nil || len(observations) > maxProjectionObservationBytes {
