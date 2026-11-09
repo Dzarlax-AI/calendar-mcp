@@ -28,6 +28,8 @@ const DetachedSeriesWarning = "Some recurring events are mirrored as individual 
 const IncompleteParticipantsWarning = "Some participant lists may be incomplete."
 const LegacyIncompleteParticipantsWarning = "Some participant lists are incomplete; existing descriptions were preserved until the full list is available."
 const SourceOnlyPreviewWarning = "Destination was not checked; this preview does not authorize synchronization."
+const UnresolvedCancellationsWarning = "Some source cancellations could not be matched; those records do not authorize deletion."
+const MissingMappingsWarning = "Some copied events are absent from the source window and were not deleted."
 
 type Failure struct {
 	Stage string
@@ -46,6 +48,7 @@ var ErrMissingSeriesMapping = errors.New("source series has no target mapping")
 type Result struct {
 	Created, Updated, Deleted, Skipped, Warnings, DetachedSeries int
 	ParticipantsIncomplete                                       int
+	UnresolvedCancellations, MissingMappings                     int
 	Preview                                                      *storage.SyncRunPreview
 }
 
@@ -682,6 +685,7 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 		// the mapping until a provider tombstone, explicit cancellation, or a
 		// separately requested full reconciliation proves deletion.
 		result.Warnings++
+		result.MissingMappings++
 	}
 	return result, nil
 }

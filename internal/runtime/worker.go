@@ -396,6 +396,12 @@ func runWarningsSummary(result syncengine.Result) string {
 	if result.ParticipantsIncomplete > 0 {
 		messages = append(messages, syncengine.IncompleteParticipantsWarning)
 	}
+	if result.UnresolvedCancellations > 0 {
+		messages = append(messages, syncengine.UnresolvedCancellationsWarning)
+	}
+	if result.MissingMappings > 0 {
+		messages = append(messages, syncengine.MissingMappingsWarning)
+	}
 	return strings.Join(messages, " ")
 }
 

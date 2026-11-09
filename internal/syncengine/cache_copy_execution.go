@@ -63,7 +63,7 @@ func (e *Engine) runCachedBatch(ctx context.Context, rule storage.Rule, batch ca
 		events = append(events, event)
 	}
 	cancelled := make(map[string]bool)
-	unresolved := 0
+	unresolved := make(map[string]struct{})
 	for _, observation := range batch.Removals {
 		if observation.Removal.Reason == calendar.EventSyncWindowEviction {
 			continue
@@ -75,7 +75,7 @@ func (e *Engine) runCachedBatch(ctx context.Context, rule storage.Rule, batch ca
 			// A sparse cancellation does not authorize any target deletion. Keep
 			// it in the source journal for later reconciliation, but let other
 			// independent events continue to synchronize.
-			unresolved++
+			unresolved[observation.Removal.ObjectID] = struct{}{}
 			continue
 		}
 		identity := observation.PreviousIdentity
@@ -98,7 +98,8 @@ func (e *Engine) runCachedBatch(ctx context.Context, rule storage.Rule, batch ca
 		events = append(events, calendar.EventV2{CalendarID: rule.SourceCalendarID, ID: id, Status: "cancelled", InstanceKind: "cache_instance"})
 	}
 	result, err := e.run(ctx, rule, dryRun, &events)
-	result.Warnings += unresolved
+	result.UnresolvedCancellations = len(unresolved)
+	result.Warnings += result.UnresolvedCancellations
 	return result, err
 }
 

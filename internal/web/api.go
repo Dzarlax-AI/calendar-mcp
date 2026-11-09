@@ -619,6 +619,8 @@ func safeRunSummary(run storage.Run) string {
 		{syncengine.DetachedSeriesWarning, syncengine.DetachedSeriesWarning},
 		{syncengine.IncompleteParticipantsWarning, syncengine.IncompleteParticipantsWarning},
 		{syncengine.LegacyIncompleteParticipantsWarning, syncengine.IncompleteParticipantsWarning},
+		{syncengine.UnresolvedCancellationsWarning, syncengine.UnresolvedCancellationsWarning},
+		{syncengine.MissingMappingsWarning, syncengine.MissingMappingsWarning},
 		{syncengine.SourceOnlyPreviewWarning, syncengine.SourceOnlyPreviewWarning},
 	} {
 		if remaining == item.stored || strings.HasPrefix(remaining, item.stored+" ") {
