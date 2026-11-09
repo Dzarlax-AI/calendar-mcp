@@ -9,7 +9,7 @@ import (
 )
 
 // releaseRetainedSourceCapacityTx removes only released, unreferenced pins and
-// older snapshot revisions whose complete observation multiset is already in
+// older snapshot revisions whose distinct observations are already in
 // the current candidate. It runs under the source and guard locks, so new
 // pins, checkpoints and target intents cannot race the decision.
 func (s *Store) releaseRetainedSourceCapacityTx(ctx context.Context, tx *sql.Tx, calendarID string, current int64, observations []calendarprojection.RemovalObservation) error {
@@ -43,7 +43,7 @@ func (s *Store) releaseRetainedSourceCapacityTx(ctx context.Context, tx *sql.Tx,
 	}
 	for _, candidate := range candidates {
 		var prior []calendarprojection.RemovalObservation
-		if len(candidate.raw) == 0 || len(candidate.raw) > maxProjectionObservationBytes || json.Unmarshal(candidate.raw, &prior) != nil || !observationMultisetContains(observations, prior) {
+		if len(candidate.raw) == 0 || len(candidate.raw) > maxProjectionObservationBytes || json.Unmarshal(candidate.raw, &prior) != nil || !observationSetContains(observations, prior) {
 			continue
 		}
 		if err = s.retireSourceSnapshotTx(ctx, tx, calendarID, candidate.revision); err != nil {
@@ -52,21 +52,40 @@ func (s *Store) releaseRetainedSourceCapacityTx(ctx context.Context, tx *sql.Tx,
 	}
 	return nil
 }
-func observationMultisetContains(all, prior []calendarprojection.RemovalObservation) bool {
-	counts := make(map[string]int, len(all))
+func uniqueProjectionObservations(in []calendarprojection.RemovalObservation) ([]calendarprojection.RemovalObservation, error) {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]calendarprojection.RemovalObservation, 0, len(in))
+	for _, v := range in {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[string(b)]; ok {
+			continue
+		}
+		seen[string(b)] = struct{}{}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func observationSetContains(all, prior []calendarprojection.RemovalObservation) bool {
+	seen := make(map[string]struct{}, len(all))
 	for _, v := range all {
 		b, err := json.Marshal(v)
 		if err != nil {
 			return false
 		}
-		counts[string(b)]++
+		seen[string(b)] = struct{}{}
 	}
 	for _, v := range prior {
 		b, err := json.Marshal(v)
-		if err != nil || counts[string(b)] == 0 {
+		if err != nil {
 			return false
 		}
-		counts[string(b)]--
+		if _, ok := seen[string(b)]; !ok {
+			return false
+		}
 	}
 	return true
 }

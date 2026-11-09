@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,15 @@ func TestProjectionFinalizerIncrementalSQLite(t *testing.T) {
 	ensureProjectionPageStagingSchema(t, s)
 	runProjectionFinalizerIncremental(t, s, "calendar", now)
 }
+func TestProjectionFinalizerRepeatedObservationsSQLite(t *testing.T) {
+	s, now := newEventCacheStore(t)
+	ensureProjectionPageStagingSchema(t, s)
+	runProjectionFinalizerIncrementalCase(t, s, "calendar", now, true)
+}
 func runProjectionFinalizerIncremental(t *testing.T, s *Store, id string, now time.Time) {
+	runProjectionFinalizerIncrementalCase(t, s, id, now, false)
+}
+func runProjectionFinalizerIncrementalCase(t *testing.T, s *Store, id string, now time.Time, repeated bool) {
 	t.Helper()
 	ctx := t.Context()
 	if _, err := s.db.ExecContext(ctx, s.query(`UPDATE calendars SET timezone=?,enabled=?,can_read=? WHERE id=?`), "UTC", true, true, id); err != nil {
@@ -32,6 +41,9 @@ func runProjectionFinalizerIncremental(t *testing.T, s *Store, id string, now ti
 	original := calendar.EventTime{DateTime: now.Add(-10 * time.Minute).Format(time.RFC3339), TimeZone: "UTC"}
 	moved := calendar.EventV2{ID: "moved", CalendarID: id, Provider: "google", RecurringEventID: "series", OriginalStart: &original, Start: original, End: calendar.EventTime{DateTime: now.Add(10 * time.Minute).Format(time.RFC3339), TimeZone: "UTC"}}
 	cancelled := calendar.EventV2{ID: "cancelled", CalendarID: id, Provider: "google", Start: original, End: calendar.EventTime{DateTime: now.Add(10 * time.Minute).Format(time.RFC3339), TimeZone: "UTC"}}
+	if repeated {
+		cancelled.ID = "cancelled-" + strings.Repeat("x", 1000)
+	}
 	for _, event := range []calendar.EventV2{moved, cancelled} {
 		if err = s.UpsertCachedEvent(ctx, event, now); err != nil {
 			t.Fatal(err)
@@ -50,7 +62,20 @@ func runProjectionFinalizerIncremental(t *testing.T, s *Store, id string, now ti
 		t.Fatal(err)
 	}
 	seedVerifiedProjectionSnapshot(t, s, id, 1)
-	prior, err := json.Marshal([]calendarprojection.RemovalObservation{{Removal: calendar.EventSyncRemoval{ObjectID: "earlier", Reason: calendar.EventSyncProviderCancellation}, Unresolved: true}})
+	item := calendarprojection.RemovalObservation{Removal: calendar.EventSyncRemoval{ObjectID: "earlier", Reason: calendar.EventSyncProviderCancellation}, Unresolved: true}
+	priorItems := []calendarprojection.RemovalObservation{item}
+	if repeated {
+		encoded, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		count := (maxProjectionObservationBytes - 512) / (len(encoded) + 1)
+		priorItems = make([]calendarprojection.RemovalObservation, count)
+		for i := range priorItems {
+			priorItems[i] = item
+		}
+	}
+	prior, err := json.Marshal(priorItems)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +230,11 @@ func runProjectionFinalizerIncremental(t *testing.T, s *Store, id string, now ti
 		t.Fatal(err)
 	}
 	thirdPage := calendar.EventSyncPage{SourceTimeZone: "UTC", Complete: true, NextCursor: "third-cursor"}
+	if repeated {
+		// Repeated provider pages must not grow the published journal again.
+		thirdPage.DeletedEventIDs = []string{"earlier"}
+		thirdPage.Removals = []calendar.EventSyncRemoval{{ObjectID: "earlier", Reason: calendar.EventSyncProviderCancellation}}
+	}
 	if _, err = s.finalizeSourceProjectionPage(ctx, *third, thirdAttempt.AttemptID, 0, "", "UTC", thirdPage, later, later.Add(time.Hour)); !errors.Is(err, ErrProjectionSnapshotLimit) {
 		t.Fatalf("active pin capacity: %v", err)
 	}
