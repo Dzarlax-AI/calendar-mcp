@@ -163,3 +163,19 @@ func TestUnresolvedCancellationDoesNotBlockIndependentEvent(t *testing.T) {
 		t.Fatalf("independent event: %+v %v", result, err)
 	}
 }
+
+func TestUnresolvedCancellationWarningsCountDistinctObjectsWithoutDeleting(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	target := &fakeV2Provider{name: "apple"}
+	mappings := &fakeMappings{values: map[string]storage.Mapping{}}
+	engine := testNew(calendar.NewRegistry([]calendar.Provider{target}), mappings)
+	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "apple:target", State: "paused", SyncMode: "cached_instances", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none"}
+	observation := func(id string) calendarprojection.RemovalObservation {
+		return calendarprojection.RemovalObservation{Removal: calendar.EventSyncRemoval{ObjectID: id, Reason: calendar.EventSyncProviderCancellation}, Unresolved: true}
+	}
+	batch := cacheExecutionBatch{Removals: []calendarprojection.RemovalObservation{observation("one"), observation("one"), observation("two")}, Timezone: "UTC", WindowStart: now, WindowEnd: now.Add(24 * time.Hour), HistoryComplete: true}
+	result, err := engine.runCachedBatch(t.Context(), rule, batch, false)
+	if err != nil || result.UnresolvedCancellations != 2 || result.Warnings != 2 || target.deleted != 0 {
+		t.Fatalf("result=%+v deleted=%d err=%v", result, target.deleted, err)
+	}
+}

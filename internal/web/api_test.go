@@ -32,6 +32,7 @@ func TestSafeRunSummaryShowsOnlyBoundedStandaloneWarning(t *testing.T) {
 		{"successful preview with stale error code", storage.Run{Outcome: "succeeded", ErrorCode: "sync_failed", ErrorSummary: syncengine.SourceOnlyPreviewWarning}, syncengine.SourceOnlyPreviewWarning},
 		{"injected suffix", storage.Run{Outcome: "succeeded", ErrorSummary: syncengine.SourceOnlyPreviewWarning + " secret"}, "Run completed; some details are unavailable."},
 		{"standalone", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: syncengine.DetachedSeriesWarning}, syncengine.DetachedSeriesWarning},
+		{"cancellation and missing mapping", storage.Run{Outcome: "succeeded", WarningCount: 2, ErrorSummary: syncengine.UnresolvedCancellationsWarning + " " + syncengine.MissingMappingsWarning}, syncengine.UnresolvedCancellationsWarning + " " + syncengine.MissingMappingsWarning},
 		{"untrusted summary", storage.Run{Outcome: "succeeded", WarningCount: 1, ErrorSummary: "provider payload secret"}, "Run completed; some details are unavailable."},
 		{"failed run", storage.Run{Outcome: "failed", ErrorSummary: syncengine.DetachedSeriesWarning}, "Run failed; inspect server logs for details."},
 		{"known failure", storage.Run{Outcome: "failed", ErrorCode: "sync_missing_series_mapping", ErrorSummary: "private-title token=secret"}, "A recurring event exception has no matching series in the sync mapping."},
