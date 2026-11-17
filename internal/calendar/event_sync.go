@@ -116,6 +116,10 @@ const (
 // while replacement-only adapters may intentionally leave NextCursor empty. A
 // reset page has ResetRequired=true and no mutations or continuation values.
 type EventSyncPage struct {
+	CredentialRevision string
+	CredentialDigest   [32]byte
+	AccessRole         string // Raw Google Events.List role.
+	RoleConfirmed      bool   // A successful Google response supplied this role observation, even if empty.
 	// SourceTimeZone is the provider-reported calendar zone for this page.
 	// It must be frozen and verified across a copy-safe sync attempt.
 	SourceTimeZone  string
@@ -232,6 +236,13 @@ func EventSyncPolicyCapability(provider Provider) (EventSyncPolicyProvider, bool
 // EventSyncErrorClass is a provider-safe failure category. Its string value,
 // rather than a provider response body, is persisted by the coordinator.
 type EventSyncErrorClass string
+
+// EventSyncAuthorityError reports a local closure failure after provider
+// evidence was received. Its cause may contain storage details.
+type EventSyncAuthorityError struct{ Cause error }
+
+func (e *EventSyncAuthorityError) Error() string { return "local event sync authority closure failed" }
+func (e *EventSyncAuthorityError) Unwrap() error { return e.Cause }
 
 const (
 	EventSyncTransient   EventSyncErrorClass = "transient"

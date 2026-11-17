@@ -1,0 +1,20 @@
+{
+  "sqlite_sql_median_ms": {
+    "current": 5428.54875,
+    "cursor-first": 4637.260708,
+    "late-project": 2740.774959,
+    "cursor-first+late-project": 1904.765666
+  },
+  "postgres_authority_median_ms": {
+    "single_query": 0.1847915,
+    "sixteen_queries": 0.8764795000000001
+  },
+  "method": "SQL-only warm runs: 1 warmup + 3 timed sequential walks/variant. Each walk includes one terminal empty SQL query (161 vs runtime160). No HTTP/authority/background. Count probes are separate untimed SQL. PostgreSQL: 10 timed queries/variant after warmup;20 authority rounds after warmup. No end-to-end optimized runtime measured.",
+  "limits": [
+    "SQLite plain timed corpus only for variant parity; mixed/all-day, malformed, jumbo and revocation correctness not established for variants.",
+    "Sequential SQL variants are not a randomized paired performance suite.",
+    "PostgreSQL authority microbenchmark exercises only valid16-source grants; rejection behavior must be tested before implementation.",
+    "Background speed workload is a synthetic5ms ticker, not measured production demand.",
+    "Residual timings cannot distinguish pure network vs SDK vs client validation."
+  ]
+}

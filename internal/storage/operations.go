@@ -151,10 +151,10 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 		q += " FOR UPDATE SKIP LOCKED"
 	}
 	var j Job
-	var claimed, finished sql.NullTime
+	available, claimed, created, finished := s.scanTime(), s.scanTime(), s.scanTime(), s.scanTime()
 	var claimedBy sql.NullString
-	err = tx.QueryRowContext(ctx, s.query(q), "pending", now, "running").Scan(&j.ID, &j.RuleID, &j.Kind, &j.State,
-		&j.AvailableAt, &claimed, &claimedBy, &j.Attempt, &j.CreatedAt, &finished)
+	err = tx.QueryRowContext(ctx, s.query(s.timeProjection(q, "candidate.available_at", "candidate.claimed_at", "candidate.created_at", "candidate.finished_at")), "pending", now, "running").Scan(&j.ID, &j.RuleID, &j.Kind, &j.State,
+		&available, &claimed, &claimedBy, &j.Attempt, &created, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -194,6 +194,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, now time.Time) (*
 	if !claimedAt.Add(JobLeaseDuration).After(now.Add(time.Since(started))) {
 		return nil, ErrJobLeaseLost
 	}
+	j.AvailableAt, j.CreatedAt = available.Time, created.Time
 	j.State, j.ClaimedAt, j.ClaimedBy, j.Attempt = "running", &claimedAt, workerID, j.Attempt+1
 	return &j, nil
 }
@@ -312,8 +313,8 @@ func (s *Store) renewJobLease(ctx context.Context, job Job, now time.Time, befor
 
 // lockJobLeaseForUpdate must precede a fresh clock check. SQLite takes its
 // write lock with a no-op update; PostgreSQL locks the matching job row.
-func (s *Store) lockJobLeaseForUpdate(ctx context.Context, tx *sql.Tx, job Job) (sql.NullTime, sql.NullTime, bool, error) {
-	var claimed, deadline sql.NullTime
+func (s *Store) lockJobLeaseForUpdate(ctx context.Context, tx *sql.Tx, job Job) (cachedStatusTime, cachedStatusTime, bool, error) {
+	claimed, deadline := s.scanTime(), s.scanTime()
 	if s.dialect == DialectSQLite {
 		if _, err := tx.ExecContext(ctx, s.query(`UPDATE sync_jobs SET state=state WHERE id=?`), job.ID); err != nil {
 			return claimed, deadline, false, err
@@ -323,7 +324,7 @@ func (s *Store) lockJobLeaseForUpdate(ctx context.Context, tx *sql.Tx, job Job) 
 	if s.dialect == DialectPostgres {
 		q += ` FOR UPDATE`
 	}
-	err := tx.QueryRowContext(ctx, s.query(q), job.ID, "running", job.ClaimedBy, job.Attempt).Scan(&claimed, &deadline)
+	err := tx.QueryRowContext(ctx, s.query(s.timeProjection(q, "claimed_at", "lease_until")), job.ID, "running", job.ClaimedBy, job.Attempt).Scan(&claimed, &deadline)
 	if errors.Is(err, sql.ErrNoRows) {
 		return claimed, deadline, false, nil
 	}
@@ -477,9 +478,13 @@ func (s *Store) ListRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, s.query(`SELECT r.id, r.job_id, r.rule_id, r.trigger_kind, r.outcome, r.started_at,
+	q := `SELECT r.id, r.job_id, r.rule_id, r.trigger_kind, r.outcome, r.started_at,
 		r.finished_at, r.created_count, r.updated_count, r.deleted_count, r.skipped_count, r.warning_count, r.error_code,
-		r.error_summary, r.dry_run, j.stop_requested FROM sync_runs r JOIN sync_jobs j ON j.id=r.job_id ORDER BY r.started_at DESC LIMIT ?`), limit)
+		r.error_summary, r.dry_run, j.stop_requested FROM sync_runs r JOIN sync_jobs j ON j.id=r.job_id ORDER BY r.started_at DESC LIMIT ?`
+	if s.dialect == DialectSQLite && s.sqliteTimeUnit != 0 {
+		q = strings.Replace(q, "ORDER BY r.started_at DESC", "ORDER BY "+s.sqliteInstantKey("r.started_at")+" DESC", 1)
+	}
+	rows, err := s.db.QueryContext(ctx, s.query(s.timeProjection(q, "r.started_at", "r.finished_at")), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
@@ -487,12 +492,13 @@ func (s *Store) ListRuns(ctx context.Context, limit int) ([]Run, error) {
 	var result []Run
 	for rows.Next() {
 		var r Run
-		var finished sql.NullTime
+		started, finished := s.scanTime(), s.scanTime()
 		var code, summary sql.NullString
-		if err := rows.Scan(&r.ID, &r.JobID, &r.RuleID, &r.Trigger, &r.Outcome, &r.StartedAt, &finished,
+		if err := rows.Scan(&r.ID, &r.JobID, &r.RuleID, &r.Trigger, &r.Outcome, &started, &finished,
 			&r.CreatedCount, &r.UpdatedCount, &r.DeletedCount, &r.SkippedCount, &r.WarningCount, &code, &summary, &r.DryRun, &r.StopRequested); err != nil {
 			return nil, err
 		}
+		r.StartedAt = started.Time
 		if finished.Valid {
 			r.FinishedAt = &finished.Time
 		}
@@ -563,9 +569,9 @@ func (s *Store) UpsertMapping(ctx context.Context, m Mapping) error {
 }
 
 func (s *Store) ListMappings(ctx context.Context, ruleID string) ([]Mapping, error) {
-	rows, err := s.db.QueryContext(ctx, s.query(`SELECT id, rule_id, object_kind, source_event_id, source_series_id,
-		original_start, target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state, version,incarnation,target_etag
-		FROM event_mappings WHERE rule_id=? ORDER BY source_event_id, original_start`), ruleID)
+	rows, err := s.db.QueryContext(ctx, s.query(s.timeProjection(`SELECT id, rule_id, object_kind, source_event_id, source_series_id,
+		original_start, target_event_id, target_series_id, content_hash, last_seen_at, reconciliation_state, version, incarnation, target_etag
+		FROM event_mappings WHERE rule_id=? ORDER BY source_event_id, original_start`, "last_seen_at")), ruleID)
 	if err != nil {
 		return nil, fmt.Errorf("list mappings: %w", err)
 	}
@@ -573,10 +579,12 @@ func (s *Store) ListMappings(ctx context.Context, ruleID string) ([]Mapping, err
 	var result []Mapping
 	for rows.Next() {
 		var m Mapping
+		lastSeen := s.scanTime()
 		if err := rows.Scan(&m.ID, &m.RuleID, &m.ObjectKind, &m.SourceEventID, &m.SourceSeriesID, &m.OriginalStart,
-			&m.TargetEventID, &m.TargetSeriesID, &m.ContentHash, &m.LastSeenAt, &m.ReconciliationState, &m.Version, &m.Incarnation, &m.TargetETag); err != nil {
+			&m.TargetEventID, &m.TargetSeriesID, &m.ContentHash, &lastSeen, &m.ReconciliationState, &m.Version, &m.Incarnation, &m.TargetETag); err != nil {
 			return nil, err
 		}
+		m.LastSeenAt = lastSeen.Time
 		result = append(result, m)
 	}
 	return result, rows.Err()
@@ -606,16 +614,17 @@ func (s *Store) ConsumeOAuthAttempt(ctx context.Context, stateHash string, now t
 	}
 	defer func() { _ = tx.Rollback() }()
 	var a OAuthAttempt
-	var consumed sql.NullTime
+	expires, consumed := s.scanTime(), s.scanTime()
 	var connectionID sql.NullString
-	err = tx.QueryRowContext(ctx, s.query(`SELECT state_hash, provider, connection_id, mode, encrypted_verifier, return_path, expires_at, consumed_at
-		FROM oauth_attempts WHERE state_hash=?`), stateHash).Scan(&a.StateHash, &a.Provider, &connectionID, &a.Mode, &a.EncryptedVerifier, &a.ReturnPath, &a.ExpiresAt, &consumed)
+	err = tx.QueryRowContext(ctx, s.query(s.timeProjection(`SELECT state_hash, provider, connection_id, mode, encrypted_verifier, return_path, expires_at, consumed_at
+		FROM oauth_attempts WHERE state_hash=?`, "expires_at", "consumed_at")), stateHash).Scan(&a.StateHash, &a.Provider, &connectionID, &a.Mode, &a.EncryptedVerifier, &a.ReturnPath, &expires, &consumed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrOAuthNotConsumable
 	}
 	if err != nil {
 		return a, fmt.Errorf("read oauth attempt: %w", err)
 	}
+	a.ExpiresAt = expires.Time
 	if consumed.Valid || !a.ExpiresAt.After(now) {
 		return a, ErrOAuthNotConsumable
 	}

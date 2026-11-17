@@ -6,12 +6,13 @@ import (
 	"calendar-mcp/internal/calendar"
 )
 
-const SchemaVersion = 28
+const SchemaVersion = 29
 
 type Connection struct {
 	ID, Provider, AccountFingerprint, DisplayName, Status string
 	EncryptedCredentials                                  []byte
 	CredentialVersion                                     int
+	AuthorizationRevision                                 string
 	ScopesJSON                                            string
 	LastVerifiedAt                                        *time.Time
 	LastErrorCode                                         string
@@ -23,6 +24,7 @@ type Calendar struct {
 	CanRead, CanWrite, SupportsRecurrence                bool
 	GooglePrimary                                        bool
 	Enabled                                              bool
+	DetailReceipt                                        string
 	DiscoveredAt                                         time.Time
 }
 
@@ -225,4 +227,5 @@ type CachedSourceStatus struct {
 	NextSyncAt                              *time.Time
 	WindowStart, WindowEnd                  time.Time
 	Stale                                   bool
+	GooglePrimary                           bool
 }

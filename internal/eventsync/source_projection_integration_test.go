@@ -2,6 +2,7 @@ package eventsync
 
 import (
 	"context"
+	"crypto/sha256"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,11 +32,7 @@ func runBackgroundSyncPublishesCacheCopySource(t *testing.T, s *storage.Store) {
 	if err = s.CreateConnection(ctx, storage.Connection{ID: "connection", Provider: "google", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"google:source"} {
-		if err = s.UpsertCalendar(ctx, storage.Calendar{ID: id, ConnectionID: "connection", ProviderCalendarID: id, Name: id, Timezone: "UTC", CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	binding := authorizeProjectionSource(t, s, "connection", "google:source", "UTC", now)
 	window := storage.SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
 	if err = s.EnsureCalendarSyncStates(ctx, now, window); err != nil {
 		t.Fatal(err)
@@ -59,7 +56,7 @@ func runBackgroundSyncPublishesCacheCopySource(t *testing.T, s *storage.Store) {
 	event := calendar.EventV2{ID: "event", CalendarID: "provider-local", Provider: "google", Start: calendar.EventTime{DateTime: now.Format(time.RFC3339), TimeZone: "UTC"}, End: calendar.EventTime{DateTime: now.Add(time.Minute).Format(time.RFC3339), TimeZone: "UTC"}}
 	provider := &fakeProvider{providerName: "google", pages: []calendar.EventSyncPage{{SourceTimeZone: "UTC", NextPageToken: "page-2", Upserts: []calendar.EventSyncUpsert{{Object: calendar.SyncObject{ObjectID: event.ID}, Event: event}}}, {SourceTimeZone: "UTC", Complete: true, NextCursor: "replica-cursor"}, {SourceTimeZone: "UTC", Complete: true, NextCursor: "next-cursor", DeletedEventIDs: []string{"event"}, Removals: []calendar.EventSyncRemoval{{ObjectID: "event", Reason: calendar.EventSyncProviderCancellation}}}}}
 	clock := next
-	svc := NewService(s, fakeResolver{provider: provider, rawID: "source"}, nil)
+	svc := NewService(s, fakeResolver{provider: &authorizedProjectionProvider{fakeProvider: provider, snapshot: binding}, rawID: "source"}, nil)
 	svc.Now = func() time.Time { return clock }
 	state, err := s.ClaimDueCalendarSync(ctx, "source-worker", clock, clock.Add(time.Hour))
 	if err != nil || state == nil || state.CalendarID != "google:source" {
@@ -130,11 +127,7 @@ func runBackgroundSyncLearnsMissingSourceTimezone(t *testing.T, s *storage.Store
 	if err := s.CreateConnection(ctx, storage.Connection{ID: "timezone-connection", Provider: "google", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: `[]`, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"google:tz-source"} {
-		if err := s.UpsertCalendar(ctx, storage.Calendar{ID: id, ConnectionID: "timezone-connection", ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	binding := authorizeProjectionSource(t, s, "timezone-connection", "google:tz-source", "", now)
 	window := storage.SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
 	if err := s.EnsureCalendarSyncStates(ctx, now, window); err != nil {
 		t.Fatal(err)
@@ -165,7 +158,7 @@ func runBackgroundSyncLearnsMissingSourceTimezone(t *testing.T, s *storage.Store
 		{SourceTimeZone: "Europe/Belgrade", Complete: true, NextCursor: "cursor-3"},
 		{SourceTimeZone: "Europe/Belgrade", Complete: true, NextCursor: "bootstrap"},
 	}}
-	svc := NewService(s, fakeResolver{provider: provider, rawID: "source"}, nil)
+	svc := NewService(s, fakeResolver{provider: &authorizedProjectionProvider{fakeProvider: provider, snapshot: binding}, rawID: "source"}, nil)
 	clock := next
 	svc.Now = func() time.Time { return clock }
 	for i := 0; i < 4; i++ {
@@ -198,4 +191,37 @@ func runBackgroundSyncLearnsMissingSourceTimezone(t *testing.T, s *storage.Store
 	if err != nil || result.Snapshot.Cursor != "bootstrap" {
 		t.Fatalf("snapshot: %v", err)
 	}
+}
+
+// Copy-safe projection fixtures use the same authorization evidence as the live worker.
+func authorizeProjectionSource(t *testing.T, store *storage.Store, connectionID, calendarID, timezone string, now time.Time) storage.CredentialSnapshot {
+	t.Helper()
+	snapshot, err := store.BeginAuthorization(t.Context(), connectionID, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := storage.DiscoveredDetailCalendar{
+		Calendar:   storage.Calendar{ID: calendarID, ConnectionID: connectionID, ProviderCalendarID: calendarID, Name: calendarID, Timezone: timezone},
+		AccessRole: "owner",
+	}
+	if err := store.CompleteGoogleAuthorization(t.Context(), snapshot, []storage.DiscoveredDetailCalendar{source}, now); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+type authorizedProjectionProvider struct {
+	*fakeProvider
+	snapshot storage.CredentialSnapshot
+}
+
+func (p *authorizedProjectionProvider) SyncEvents(ctx context.Context, request calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
+	page, err := p.fakeProvider.SyncEvents(ctx, request)
+	if err == nil {
+		page.RoleConfirmed = true
+		page.AccessRole = "owner"
+		page.CredentialRevision = p.snapshot.AuthorizationRevision
+		page.CredentialDigest = sha256.Sum256(p.snapshot.EncryptedCredentials)
+	}
+	return page, err
 }

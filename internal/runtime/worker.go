@@ -35,6 +35,16 @@ type providerBuilder interface {
 	Build(context.Context) ([]calendar.Provider, error)
 }
 
+func workerCalendarRegistry(providers []calendar.Provider, factory providerBuilder, selection calendar.CalendarSelection) *calendar.Registry {
+	registry := calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: selection})
+	if refresher, ok := factory.(interface {
+		RefreshProvider(context.Context, calendar.Provider) (calendar.Provider, error)
+	}); ok {
+		registry.SetProviderRefresh(refresher.RefreshProvider)
+	}
+	return registry
+}
+
 func Worker(ctx context.Context) error {
 	cfg := config.Load()
 	if cfg.DatabaseURL == "" {
@@ -125,6 +135,15 @@ func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory
 	if err := store.ExpireSyncRunPreviews(ctx, now); err != nil {
 		return err
 	}
+	if cfg.EventReadModelEnabled {
+		if bootstrap, ok := factory.(interface {
+			BootstrapOneLegacyGoogle(context.Context, time.Time) error
+		}); ok {
+			if err := bootstrap.BootstrapOneLegacyGoogle(ctx, now); err != nil {
+				log.Printf("calendar legacy verification failed: category=%T", err)
+			}
+		}
+	}
 	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
 		// EventSyncError.Error exposes only bounded provider status/reason fields;
 		// it deliberately excludes response bodies, cursors, tokens, and payloads.
@@ -170,7 +189,7 @@ func runOneEventSync(ctx context.Context, store *storage.Store, factory provider
 		finishErr := store.FailCalendarSync(ctx, *state, "provider_build_failed", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
 		return errors.Join(err, finishErr)
 	}
-	registry := calendar.NewRegistry(providers)
+	registry := workerCalendarRegistry(providers, factory, nil)
 	service := eventsync.NewService(store, registry, eventSyncPolicyFor(cfg))
 	return runClaimedEventSync(ctx, store, service, *state)
 }
@@ -333,7 +352,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 				providers, err = factory.Build(syncCtx)
 			}
 			if err == nil {
-				engine := syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true })
+				engine := syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true })
 				result, err = engine.RunCacheCopy(syncCtx, store, rule, time.Now().UTC(), 15*time.Minute)
 			} else {
 				err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
@@ -343,7 +362,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		var providers []calendar.Provider
 		providers, err = factory.Build(syncCtx)
 		if err == nil {
-			result, err = syncengine.New(calendar.NewRegistry(providers, calendar.RegistryOptions{Selection: store}), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true }).Run(syncCtx, rule, run.DryRun)
+			result, err = syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true }).Run(syncCtx, rule, run.DryRun)
 		} else if !errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
 			err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
 		}

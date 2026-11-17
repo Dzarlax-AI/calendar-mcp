@@ -42,8 +42,17 @@ func TestPostgresConflictingVersion28FailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if err = s.Migrate(t.Context()); err != nil {
-		t.Fatal(err)
+	for next := 1; next <= 28; next++ {
+		script, err := migrations.ReadFile(fmt.Sprintf("migrations/postgres/%03d_%s.sql", next, migrationName(next)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.db.ExecContext(t.Context(), string(script)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.db.ExecContext(t.Context(), `INSERT INTO schema_migrations(version,applied_at) VALUES($1,$2)`, next, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err = s.db.ExecContext(t.Context(), `ALTER TABLE sync_jobs DROP COLUMN stop_requested`); err != nil {
 		t.Fatal(err)

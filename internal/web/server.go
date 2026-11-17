@@ -53,8 +53,10 @@ type Config struct {
 	EventReadModelEnabled *bool
 	// EventReadModelWindow is the valid projection window used to initialize a
 	// newly eligible calendar when refresh happens before the worker's first tick.
-	EventReadModelWindow storage.SyncWindow
-	OnProvidersChanged   func([]calendar.Provider)
+	EventReadModelWindow       storage.SyncWindow
+	OnProvidersChanged         func([]calendar.Provider)
+	BuildGoogleVerification    func(storage.CredentialSnapshot) (calendar.Provider, error)
+	BuildNonGoogleVerification func(storage.CredentialSnapshot) (calendar.Provider, error)
 }
 
 type Server struct {
@@ -454,13 +456,19 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	labels := map[string]string{"google": "Google Calendar", "microsoft": "Microsoft 365"}
 	id := completion.ConnectionID
-	if completion.Mode == "reconnect" {
-		err = s.connections.ReconnectOAuth(r.Context(), id, provider, completion.Token)
+	var snapshot storage.CredentialSnapshot
+	reconnect := completion.Mode == "reconnect"
+	if reconnect {
+		snapshot, err = s.connections.ReconnectOAuthSnapshot(r.Context(), id, provider, completion.Token)
 	} else {
 		id, err = s.connections.ConnectOAuth(r.Context(), provider, labels[provider], completion.Token, nil)
 	}
 	if err == nil {
-		err = s.verifyConnection(r.Context(), id, provider)
+		if reconnect {
+			err = s.verifyReconnectSnapshot(r.Context(), snapshot)
+		} else {
+			err = s.verifyConnection(r.Context(), id, provider)
+		}
 	}
 	if err != nil {
 		log.Printf("save or verify %s connection: %v", provider, err)
@@ -472,26 +480,31 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) connectApple(w http.ResponseWriter, r *http.Request) {
 	username, password := r.FormValue("username"), r.FormValue("app_password")
-	provider, err := apple.New(username, password, s.config.AppleCalDAVURL)
-	if err == nil {
-		_, err = provider.ListCalendars(r.Context())
-	}
-	if err != nil {
-		log.Printf("verify Apple connection failed: category=%T", err)
-		http.Redirect(w, r, "/connections?status=verification_failed", http.StatusSeeOther)
-		return
-	}
+	var err error
 	id := r.FormValue("connection_id")
-	if id == "" {
+	var snapshot storage.CredentialSnapshot
+	reconnect := id != ""
+	if !reconnect {
+		// Preserve initial credential validation before persisting a new account.
+		provider, preflightErr := apple.New(username, password, s.config.AppleCalDAVURL)
+		if preflightErr == nil {
+			_, preflightErr = provider.ListCalendars(r.Context())
+		}
+		if preflightErr != nil {
+			log.Printf("verify Apple connection failed: category=%T", preflightErr)
+			http.Redirect(w, r, "/connections?status=verification_failed", http.StatusSeeOther)
+			return
+		}
 		id, err = s.connections.ConnectApple(r.Context(), "Apple Calendar", username, password)
 	} else {
-		err = s.connections.ReconnectApple(r.Context(), id, username, password)
+		snapshot, err = s.connections.ReconnectAppleSnapshot(r.Context(), id, username, password)
 	}
 	if err == nil {
-		err = s.connections.VerifyAndDiscover(r.Context(), id, provider)
-	}
-	if err == nil {
-		err = s.refreshProviders(r.Context())
+		if reconnect {
+			err = s.verifyReconnectSnapshot(r.Context(), snapshot)
+		} else {
+			err = s.verifyConnection(r.Context(), id, "apple")
+		}
 	}
 	if err != nil {
 		log.Printf("save Apple connection: %v", err)
@@ -546,19 +559,32 @@ func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) verifyConnection(ctx context.Context, id, name string) error {
-	providers, err := s.providers(ctx)
+	if name == "google" {
+		if s.config.BuildGoogleVerification == nil {
+			return errors.New("snapshot-bound Google verification unavailable")
+		}
+		if err := s.connections.VerifyGoogle(ctx, id, s.config.BuildGoogleVerification); err != nil {
+			return err
+		}
+		return s.refreshProviders(ctx)
+	}
+	if err := s.connections.VerifyNonGoogle(ctx, id, s.config.BuildNonGoogleVerification); err != nil {
+		return err
+	}
+	return s.refreshProviders(ctx)
+}
+
+func (s *Server) verifyReconnectSnapshot(ctx context.Context, snapshot storage.CredentialSnapshot) error {
+	var err error
+	if snapshot.Provider == "google" {
+		err = s.connections.VerifyGoogleSnapshot(ctx, snapshot, s.config.BuildGoogleVerification)
+	} else {
+		err = s.connections.VerifyNonGoogleSnapshot(ctx, snapshot, s.config.BuildNonGoogleVerification)
+	}
 	if err != nil {
 		return err
 	}
-	for _, provider := range providers {
-		if provider.Name() == name && calendar.ProviderRouteName(provider) == name+"@"+id {
-			if err := s.connections.VerifyAndDiscover(ctx, id, provider); err != nil {
-				return err
-			}
-			return s.refreshProviders(ctx)
-		}
-	}
-	return errors.New("connected provider was not built")
+	return s.refreshProviders(ctx)
 }
 
 func (s *Server) refreshProviders(ctx context.Context) error {

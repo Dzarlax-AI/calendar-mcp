@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -208,8 +209,8 @@ func (s *Store) ScheduleEventSyncObjectRepair(ctx context.Context, calendarID, o
 	}
 	// A parked/future calendar is otherwise invisible to ClaimDueCalendarSync.
 	// Do not disturb an active lease; the current worker owns its schedule.
-	if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET next_sync_at=?, updated_at=?
-		WHERE calendar_id=? AND next_sync_at>? AND (lease_owner IS NULL OR lease_until IS NULL OR lease_until<=?)`), now, now, calendarID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET next_sync_at=?, updated_at=?
+		WHERE calendar_id=? AND next_sync_at>? AND (lease_owner IS NULL OR lease_until IS NULL OR lease_until<=?)`)), now, now, calendarID, now, now); err != nil {
 		return false, fmt.Errorf("wake calendar for event sync repair: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -371,7 +372,7 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 	}
 	rows, err := tx.QueryContext(ctx, s.query(`SELECT c.id, conn.provider, EXISTS(SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=c.id AND r.sync_mode=? AND r.state<>'archived')
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`), "cached_instances", true, true, "connected")
+		WHERE c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY conn.id,c.id`), "cached_instances", true, true, "connected")
 	if err != nil {
 		return fmt.Errorf("list readable calendars: %w", err)
 	}
@@ -399,6 +400,9 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 		if value.copySource && !fenced {
 			continue
 		}
+		if err := lockCalendarConnection(ctx, s, tx, value.id); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, s.query(`INSERT INTO calendar_sync_state(calendar_id, strategy, cursor, window_start, window_end, generation, status, next_sync_at, updated_at)
 			VALUES (?, ?, '', ?, ?, 0, 'pending', ?, ?) ON CONFLICT(calendar_id) DO NOTHING`), value.id, value.provider, window.Start, window.End, now, now); err != nil {
 			return fmt.Errorf("create calendar sync state: %w", err)
@@ -410,13 +414,13 @@ func (s *Store) EnsureCalendarSyncStates(ctx context.Context, now time.Time, win
 		if state.WindowStart.Equal(window.Start) && state.WindowEnd.Equal(window.End) {
 			continue
 		}
-		res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+		res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 			SET strategy=?, cursor='', window_start=?, window_end=?, generation=generation+1,
 				status=CASE WHEN status='parked' THEN status ELSE ? END,
 				next_sync_at=CASE WHEN status='parked' THEN next_sync_at ELSE ? END,
 				last_error_code=CASE WHEN status='parked' THEN last_error_code ELSE NULL END,
 				lease_owner=NULL, lease_until=NULL, updated_at=?
-			WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)`), value.provider, window.Start, window.End,
+			WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)`)), value.provider, window.Start, window.End,
 			"pending", now, now, value.id, now)
 		if err != nil {
 			return fmt.Errorf("reset calendar sync window: %w", err)
@@ -468,19 +472,29 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 			AND conn.status=? AND c.can_read=? AND c.enabled=? AND ss.next_sync_at<=? AND (ss.lease_until IS NULL OR ss.lease_until<=?)
 			AND (? OR NOT EXISTS (SELECT 1 FROM sync_rules r WHERE r.source_calendar_id=ss.calendar_id AND r.sync_mode='cached_instances' AND r.state<>'archived'))
 		ORDER BY ss.next_sync_at, ss.calendar_id LIMIT 1`
-	if s.dialect == DialectPostgres {
-		q += " FOR UPDATE SKIP LOCKED"
+	if s.dialect == DialectSQLite && s.sqliteTimeUnit != 0 {
+		q = strings.Replace(q, "ORDER BY ss.next_sync_at,", "ORDER BY "+s.sqliteInstantKey("ss.next_sync_at")+",", 1)
 	}
-	state, err := scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), "pending", "ready", "failed", "degraded", "syncing", "connected", true, true, now, now, fenced))
+	state, err := s.scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(s.eventSyncTimeComparisons(s.timeProjection(q, "ss.window_start", "ss.window_end", "ss.next_sync_at", "ss.last_started_at", "ss.last_success_at", "ss.lease_until"))), "pending", "ready", "failed", "degraded", "syncing", "connected", true, true, now, now, fenced))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("select due calendar sync: %w", err)
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
-		SET generation=generation+1, status=?, lease_owner=?, lease_until=?, last_started_at=?, updated_at=?
-		WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)`), "syncing", workerID, leaseUntil, now, now, state.CalendarID, now)
+	// Lock the connection before the selected state, matching authority changes.
+	state, err = selectCalendarSyncStateForUpdate(ctx, s, tx, state.CalendarID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
+  SET generation=generation+1,status=?,lease_owner=?,lease_until=?,last_started_at=?,updated_at=?
+  WHERE calendar_id=? AND generation=? AND next_sync_at<=? AND (lease_until IS NULL OR lease_until<=?)
+   AND (status IN (?,?,?,?,?) OR (status='parked' AND last_error_code='auth' AND EXISTS(SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=calendar_sync_state.calendar_id AND conn.provider='apple')))
+   AND EXISTS(SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=calendar_sync_state.calendar_id AND conn.status=? AND c.can_read=? AND c.enabled=TRUE)`)), "syncing", workerID, leaseUntil, now, now, state.CalendarID, state.Generation, now, now, "pending", "ready", "failed", "degraded", "syncing", "connected", true)
 	if err != nil {
 		return nil, fmt.Errorf("claim calendar sync: %w", err)
 	}
@@ -518,8 +532,8 @@ func (s *Store) RenewCalendarSyncLease(ctx context.Context, state CalendarSyncSt
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET lease_until=?, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>? AND lease_until<?`), leaseUntil, now,
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET lease_until=?, updated_at=?
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>? AND lease_until<?`)), leaseUntil, now,
 		state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now, leaseUntil)
 	if err != nil {
 		return fmt.Errorf("renew calendar sync lease: %w", err)
@@ -721,9 +735,9 @@ func (s *Store) applyEventSyncPageTx(ctx context.Context, tx *sql.Tx, state Cale
 			}
 		}
 		if finalDegraded {
-			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+			res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 				SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), state.Cursor, "degraded", nextSyncAt, syncedAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+				WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), state.Cursor, "degraded", nextSyncAt, syncedAt, degradedCode, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 			if err != nil {
 				return fmt.Errorf("degrade calendar sync: %w", err)
 			}
@@ -735,9 +749,9 @@ func (s *Store) applyEventSyncPageTx(ctx context.Context, tx *sql.Tx, state Cale
 				return ErrCalendarSyncLeaseLost
 			}
 		} else {
-			res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+			res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 			SET cursor=?, status=?, next_sync_at=?, last_success_at=?, last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
-			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), batch.NextCursor, "ready", nextSyncAt, syncedAt, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), batch.NextCursor, "ready", nextSyncAt, syncedAt, syncedAt, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 			if err != nil {
 				return fmt.Errorf("finish calendar sync: %w", err)
 			}
@@ -767,9 +781,9 @@ func (s *Store) FailCalendarSync(ctx context.Context, state CalendarSyncState, c
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 		SET status=?, next_sync_at=?, last_error_code=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "failed", next, nullString(code), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), "failed", next, nullString(code), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 	if err != nil {
 		return fmt.Errorf("fail calendar sync: %w", err)
 	}
@@ -807,14 +821,14 @@ func (s *Store) ParkCalendarSync(ctx context.Context, state CalendarSyncState, c
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 		SET status=?, last_error_code=?,
 			next_sync_at=CASE WHEN ?='auth' AND EXISTS (
 				SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
 				WHERE c.id=calendar_sync_state.calendar_id AND conn.provider='apple'
 			) THEN ? ELSE next_sync_at END,
 			lease_owner=NULL, lease_until=NULL, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), "parked", code, code, now.Add(AppleAuthRecheckInterval), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), "parked", code, code, now.Add(AppleAuthRecheckInterval), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 	if err != nil {
 		return fmt.Errorf("park calendar sync: %w", err)
 	}
@@ -837,13 +851,13 @@ func (s *Store) ScheduleCalendarSync(ctx context.Context, calendarID string, now
 	if calendarID == "" {
 		return ErrNotFound
 	}
-	res, err := s.db.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+	res, err := s.db.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 		SET status=?, next_sync_at=?, cursor=CASE WHEN ? THEN '' ELSE cursor END,
 			generation=CASE WHEN ? THEN generation+1 ELSE generation END,
 			last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
 		WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)
 			AND EXISTS (SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
-				WHERE c.id=calendar_sync_state.calendar_id AND c.can_read=? AND c.enabled=? AND conn.status=?)`), "pending", now, resetCursor, resetCursor, now, calendarID, now, true, true, "connected")
+				WHERE c.id=calendar_sync_state.calendar_id AND c.can_read=? AND c.enabled=? AND conn.status=?)`)), "pending", now, resetCursor, resetCursor, now, calendarID, now, true, true, "connected")
 	if err != nil {
 		return fmt.Errorf("schedule calendar sync: %w", err)
 	}
@@ -887,9 +901,9 @@ func (s *Store) ResetCalendarSync(ctx context.Context, state CalendarSyncState, 
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return nil, err
 	}
-	res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 		SET cursor='', generation=generation+1, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 	if err != nil {
 		return nil, fmt.Errorf("reset calendar sync: %w", err)
 	}
@@ -909,6 +923,16 @@ func (s *Store) ResetCalendarSync(ctx context.Context, state CalendarSyncState, 
 }
 
 func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, start, end time.Time) ([]calendar.EventV2, []CachedSourceStatus, error) {
+	return s.listCachedEvents(ctx, calendarIDs, start, end, false)
+}
+
+// ListVisibleCachedEvents returns the projection after revalidating source
+// grants. Mutation reconciliation uses ListCachedEvents and its writer tickets.
+func (s *Store) ListVisibleCachedEvents(ctx context.Context, calendarIDs []string, start, end time.Time) ([]calendar.EventV2, []CachedSourceStatus, error) {
+	return s.listCachedEvents(ctx, calendarIDs, start, end, true)
+}
+
+func (s *Store) listCachedEvents(ctx context.Context, calendarIDs []string, start, end time.Time, checkGrants bool) ([]calendar.EventV2, []CachedSourceStatus, error) {
 	if !end.After(start) {
 		return nil, nil, errors.New("cached event range end must be after start")
 	}
@@ -925,42 +949,184 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 		allDayEnd = allDayEnd.AddDate(0, 0, 1)
 	}
 	eventArgs := append(append([]any{}, args...), true, true, "connected", false, end, start, allDayEnd.Format(calendar.DateLayout), start.UTC().Format(calendar.DateLayout))
-	q := fmt.Sprintf(`SELECT e.payload_json FROM cached_events e
+	columns := "e.payload_json"
+	if checkGrants {
+		columns += ", e.calendar_id"
+	}
+	q := fmt.Sprintf(`SELECT %s FROM cached_events e
 		JOIN calendars c ON c.id=e.calendar_id
 		JOIN connections conn ON conn.id=c.connection_id
 		WHERE e.calendar_id IN (%s) AND c.can_read=? AND c.enabled=? AND conn.status=? AND e.deleted=? AND (
 			(start_at IS NOT NULL AND start_at<? AND end_at>?) OR
 			(start_date IS NOT NULL AND start_date<? AND end_date>?)
-		) ORDER BY e.start_at IS NULL, e.start_at, e.start_date, e.event_id`, placeholders)
-	rows, err := s.db.QueryContext(ctx, s.query(q), eventArgs...)
+		) ORDER BY e.start_at IS NULL, e.start_at, e.start_date, e.event_id`, columns, placeholders)
+	if s.dialect == DialectSQLite {
+		// The default SQLite driver stores time.Time as time.String(). Current
+		// writers use UTC; older writers retained the source offset. Keep the
+		// indexed range bounded, then check legacy candidates by exact instant.
+		// Go's RFC3339 parser admits offsets up to 25 hours.
+		lower, upper := start.UTC().Add(-26*time.Hour), end.UTC().Add(26*time.Hour)
+		lowerBound, upperBound := lower.Format("2006-01-02"), upper.Format("2006-01-02")+"~"
+		if lower.Year() < 0 {
+			lowerBound = "0000"
+		}
+		if upper.Year() > 9999 {
+			upperBound = "9999~"
+		}
+		q = sqliteCachedEventsRangeQuery(placeholders, checkGrants)
+		if s.sqliteTimeUnit != 0 {
+			q = sqliteIntegerCachedEventsRangeQuery(placeholders, checkGrants)
+		}
+		eventArgs = append(append([]any{}, args...), true, "connected", upperBound, lowerBound, end.UTC().String(), start.UTC().String())
+		if s.sqliteTimeUnit != 0 {
+			upperTick, err := sqliteTimeTick(end, s.sqliteTimeUnit, true)
+			if err != nil {
+				return nil, nil, err
+			}
+			lowerTick, err := sqliteTimeTick(start, s.sqliteTimeUnit, false)
+			if err != nil {
+				return nil, nil, err
+			}
+			eventArgs = append(eventArgs, args...)
+			eventArgs = append(eventArgs, true, "connected", upperTick, lowerTick)
+		}
+		eventArgs = append(eventArgs, args...)
+		eventArgs = append(eventArgs, true, "connected", allDayEnd.Format(calendar.DateLayout), start.UTC().Format(calendar.DateLayout))
+	}
+	var initial map[string]cachedSourceGrant
+	query := s.db.QueryContext
+	var tx *sql.Tx
+	if checkGrants {
+		options := &sql.TxOptions{ReadOnly: true}
+		if s.dialect == DialectPostgres {
+			options.Isolation = sql.LevelRepeatableRead
+		}
+		var err error
+		tx, err = s.db.BeginTx(ctx, options)
+		if err != nil {
+			return nil, nil, fmt.Errorf("begin cached event snapshot: %w", err)
+		}
+		defer tx.Rollback()
+		initial, err = s.captureCachedSourceGrants(ctx, tx, placeholders, args)
+		if err != nil {
+			return nil, nil, err
+		}
+		query = tx.QueryContext
+	}
+	rows, err := query(ctx, s.query(q), eventArgs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list cached events: %w", err)
 	}
 	defer rows.Close()
 	events := make([]calendar.EventV2, 0)
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			return nil, nil, fmt.Errorf("scan cached event: %w", err)
+	decode := func(payload []byte, sourceID string) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		var event calendar.EventV2
 		if err := json.Unmarshal(payload, &event); err != nil {
-			return nil, nil, fmt.Errorf("decode cached event: %w", err)
+			return fmt.Errorf("decode cached event: %w", err)
 		}
-		// The browser contract is recurrence-expanded. Some adapters retain a
-		// series master in the projection for reconciliation, but returning it
-		// alongside its first expanded occurrence renders that occurrence twice.
-		if event.InstanceKind == "seriesMaster" {
-			continue
+		// Recurrence-expanded clients must not receive series masters.
+		if event.InstanceKind != "seriesMaster" {
+			if checkGrants {
+				event.CalendarID = sourceID
+			}
+			events = append(events, event)
 		}
-		events = append(events, event)
+		return nil
+	}
+	const maxRawBytes = 8 << 20
+	const maxRawRows = 8192
+	type rawEvent struct {
+		payload  []byte
+		sourceID string
+	}
+	var buffered []rawEvent
+	rawBytes := 0
+	streaming := s.dialect != DialectSQLite
+	flush := func() error {
+		for i := range buffered {
+			row := buffered[i]
+			buffered[i] = rawEvent{}
+			if err := decode(row.payload, row.sourceID); err != nil {
+				return err
+			}
+		}
+		buffered = nil
+		rawBytes = 0
+		return nil
+	}
+	var payload []byte
+	var legacyTimes sql.NullString
+	scanArgs := []any{&payload}
+	if s.dialect == DialectSQLite {
+		scanArgs = append(scanArgs, &legacyTimes)
+	}
+	var sourceID string
+	if checkGrants {
+		scanArgs = append(scanArgs, &sourceID)
+	}
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if err := rows.Scan(scanArgs...); err != nil {
+			return nil, nil, fmt.Errorf("scan cached event: %w", err)
+		}
+		if legacyTimes.Valid {
+			legacyStart, legacyEnd, _ := strings.Cut(legacyTimes.String, "|")
+			legacyStartAt, err := parseLegacySQLiteInstant(legacyStart, s.sqliteTimeLocation)
+			if err != nil {
+				return nil, nil, fmt.Errorf("parse cached event start: %w", err)
+			}
+			legacyEndAt, err := parseLegacySQLiteInstant(legacyEnd, s.sqliteTimeLocation)
+			if err != nil {
+				return nil, nil, fmt.Errorf("parse cached event end: %w", err)
+			}
+			if !legacyStartAt.Before(end) || !legacyEndAt.After(start) {
+				continue
+			}
+		}
+		if !streaming && (len(buffered) == maxRawRows || len(payload) > maxRawBytes-rawBytes) {
+			if err := flush(); err != nil {
+				return nil, nil, err
+			}
+			streaming = true
+		}
+		if streaming {
+			if err := decode(payload, sourceID); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			buffered = append(buffered, rawEvent{payload, sourceID})
+			rawBytes += len(payload)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	statusRows, err := s.db.QueryContext(ctx, s.query(fmt.Sprintf(`SELECT c.id, conn.provider, ss.status, ss.last_success_at, ss.last_error_code, ss.next_sync_at, ss.window_start, ss.window_end
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	if tx != nil {
+		// Release SQLite before decoding when the result fits in the buffer.
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("close cached event snapshot: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := flush(); err != nil {
+		return nil, nil, err
+	}
+	if checkGrants {
+		return s.filterCachedSourceGrants(ctx, placeholders, args, initial, events)
+	}
+	statusRows, err := s.db.QueryContext(ctx, s.query(fmt.Sprintf(`SELECT c.id, conn.provider, ss.status, %s, ss.last_error_code, %s, %s, %s
 		FROM calendars c JOIN connections conn ON conn.id=c.connection_id JOIN calendar_sync_state ss ON ss.calendar_id=c.id
-		WHERE c.id IN (%s) AND c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`, placeholders)), append(args, true, true, "connected")...)
+		WHERE c.id IN (%s) AND c.can_read=? AND c.enabled=? AND conn.status=? ORDER BY c.id`, s.cachedStatusTime("ss.last_success_at"), s.cachedStatusTime("ss.next_sync_at"), s.cachedStatusTime("ss.window_start"), s.cachedStatusTime("ss.window_end"), placeholders)), append(args, true, true, "connected")...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list cached source status: %w", err)
 	}
@@ -968,24 +1134,125 @@ func (s *Store) ListCachedEvents(ctx context.Context, calendarIDs []string, star
 	sources := make([]CachedSourceStatus, 0, len(calendarIDs))
 	for statusRows.Next() {
 		var status CachedSourceStatus
-		var lastSuccess sql.NullTime
+		statusTime := cachedStatusTime{unit: s.sqliteTimeUnit, location: s.sqliteTimeLocation}
+		lastSuccess := statusTime
 		var errorCode sql.NullString
-		var nextSync time.Time
-		if err := statusRows.Scan(&status.CalendarID, &status.Provider, &status.Status, &lastSuccess, &errorCode, &nextSync, &status.WindowStart, &status.WindowEnd); err != nil {
+		nextSync, windowStart, windowEnd := statusTime, statusTime, statusTime
+		if err := statusRows.Scan(&status.CalendarID, &status.Provider, &status.Status, &lastSuccess, &errorCode, &nextSync, &windowStart, &windowEnd); err != nil {
 			return nil, nil, fmt.Errorf("scan cached source status: %w", err)
 		}
 		if lastSuccess.Valid {
 			status.LastSuccessAt = &lastSuccess.Time
 		}
-		status.NextSyncAt = &nextSync
+		status.NextSyncAt = &nextSync.Time
+		status.WindowStart, status.WindowEnd = windowStart.Time, windowEnd.Time
 		status.ErrorCode = errorCode.String
-		status.Stale = status.LastSuccessAt == nil || nextSync.Before(time.Now().UTC())
+		status.Stale = status.LastSuccessAt == nil || nextSync.Time.Before(time.Now().UTC())
 		sources = append(sources, status)
 	}
 	if err := statusRows.Err(); err != nil {
 		return nil, nil, err
 	}
 	return events, sources, nil
+}
+
+// sqliteCachedEventsRangeQuery keeps both range branches eligible for their indexes.
+func sqliteCachedEventsRangeQuery(placeholders string, checkGrants bool) string {
+	canonical := `(substr(e.start_at, -10)=' +0000 UTC' AND substr(e.end_at, -10)=' +0000 UTC')`
+	output, selection := "", ""
+	if checkGrants {
+		output, selection = ", selected.calendar_id", ", e.calendar_id"
+	}
+	// Sort the row keys before fetching the payload once by rowid. The
+	// unbounded LIMIT/OFFSET keeps SQLite from flattening the ordered scan.
+	return fmt.Sprintf(`SELECT
+			(SELECT payload_json FROM cached_events WHERE rowid=selected.event_row_id),
+			selected.legacy_times%s
+		FROM (
+			SELECT e.rowid AS event_row_id,
+			CASE WHEN NOT %s THEN e.start_at || '|' || e.end_at END AS legacy_times,
+			0 AS all_day, e.start_at, e.start_date, e.event_id%s
+			FROM cached_events e JOIN calendars c ON c.id=e.calendar_id
+			JOIN connections conn ON conn.id=c.connection_id
+			WHERE e.calendar_id IN (%s) AND c.can_read=? AND c.enabled=TRUE AND conn.status=? AND e.deleted=0
+			AND e.start_at<? AND e.end_at>=?
+			AND ((e.start_at<? AND e.end_at>?) OR NOT %s)
+			UNION ALL
+			SELECT e.rowid, NULL, 1, e.start_at, e.start_date, e.event_id%s
+			FROM cached_events e JOIN calendars c ON c.id=e.calendar_id
+			JOIN connections conn ON conn.id=c.connection_id
+			WHERE e.calendar_id IN (%s) AND c.can_read=? AND c.enabled=TRUE AND conn.status=? AND e.deleted=0
+			AND e.start_at IS NULL AND e.start_date<? AND e.end_date>?
+			ORDER BY all_day, start_at, start_date, event_id LIMIT -1 OFFSET 0
+		) selected`, output, canonical, selection, placeholders, canonical, selection, placeholders)
+}
+
+// sqliteIntegerCachedEventsRangeQuery adds a disjoint integer branch while
+// retaining the legacy text and all-day index scans.
+func sqliteIntegerCachedEventsRangeQuery(placeholders string, checkGrants bool) string {
+	q := sqliteCachedEventsRangeQuery(placeholders, checkGrants)
+	// SQLite sorts INTEGER before TEXT. Bound both sides in the index so
+	// this branch skips even future integer rows before applying the type check.
+	q = strings.Replace(q, "AND e.start_at<? AND e.end_at>=?", "AND e.start_at>='' AND e.start_at<? AND e.end_at>=? AND typeof(e.start_at)='text'", 1)
+	selection := ""
+	if checkGrants {
+		selection = ", e.calendar_id"
+	}
+	arm := fmt.Sprintf(`UNION ALL
+ SELECT e.rowid, NULL, 0, e.start_at, e.start_date, e.event_id%s
+ FROM cached_events e JOIN calendars c ON c.id=e.calendar_id
+ JOIN connections conn ON conn.id=c.connection_id
+ WHERE e.calendar_id IN (%s) AND c.can_read=? AND c.enabled=TRUE AND conn.status=? AND e.deleted=0
+ AND typeof(e.start_at)='integer' AND typeof(e.end_at)='integer' AND e.start_at<? AND e.end_at>?
+			`, selection, placeholders)
+	return strings.Replace(q, "UNION ALL", arm+"UNION ALL", 1)
+}
+
+// sqliteTimeTick calculates a mathematical floor or ceiling without overflowing.
+func sqliteTimeTick(t time.Time, unit int64, ceil bool) (int64, error) {
+	n := new(big.Int).Mul(big.NewInt(t.Unix()), big.NewInt(unit))
+	nanosPerTick := int64(time.Second) / unit
+	n.Add(n, big.NewInt(int64(t.Nanosecond())/nanosPerTick))
+	if ceil && int64(t.Nanosecond())%nanosPerTick != 0 {
+		n.Add(n, big.NewInt(1))
+	}
+	if !n.IsInt64() {
+		return 0, errors.New("cached event range overflows configured SQLite timestamp unit")
+	}
+	return n.Int64(), nil
+}
+
+// parseLegacySQLiteInstant reads the default modernc time.Time binding. Its
+// zone name can itself be numeric, which Go's MST layout cannot parse.
+func parseLegacySQLiteInstant(value string, location *time.Location) (time.Time, error) {
+	// The driver's optional sqlite and datetime formats, and RFC3339-style
+	// values, have no separate zone-name field. Offset-free values use the
+	// connection's configured timezone, which defaults to UTC.
+	if location == nil {
+		location = time.UTC
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05.999999999", "2006-01-02T15:04:05.999999999"} {
+		if instant, err := time.ParseInLocation(layout, value, location); err == nil {
+			return instant, nil
+		}
+	}
+	parts := strings.Fields(value)
+	if len(parts) != 4 || len(parts[2]) != 5 || (parts[2][0] != '+' && parts[2][0] != '-') {
+		return time.Time{}, fmt.Errorf("invalid SQLite time %q", value)
+	}
+	wall, err := time.Parse("2006-01-02 15:04:05.999999999", parts[0]+" "+parts[1])
+	if err != nil {
+		return time.Time{}, err
+	}
+	var hours, minutes int
+	if _, err := fmt.Sscanf(parts[2][1:], "%2d%2d", &hours, &minutes); err != nil || hours > 25 || minutes > 59 {
+		return time.Time{}, fmt.Errorf("invalid SQLite time offset %q", parts[2])
+	}
+	offset := time.Duration(hours*60+minutes) * time.Minute
+	if parts[2][0] == '-' {
+		offset = -offset
+	}
+	return wall.Add(-offset), nil
 }
 
 func (s *Store) UpsertCachedEvent(ctx context.Context, event calendar.EventV2, syncedAt time.Time) error {
@@ -1052,13 +1319,26 @@ func upsertCachedEvent(ctx context.Context, s *Store, db execer, event calendar.
 	if event.Start.IsAllDay() {
 		startDate, endDate = event.Start.Date, event.End.Date
 	} else {
-		startAt, err = event.Start.Instant()
-		if err != nil {
-			return fmt.Errorf("parse cached event start: %w", err)
+		startInstant, parseErr := event.Start.Instant()
+		if parseErr != nil {
+			return fmt.Errorf("parse cached event start: %w", parseErr)
 		}
-		endAt, err = event.End.Instant()
-		if err != nil {
-			return fmt.Errorf("parse cached event end: %w", err)
+		endInstant, parseErr := event.End.Instant()
+		if parseErr != nil {
+			return fmt.Errorf("parse cached event end: %w", parseErr)
+		}
+		startAt, endAt = startInstant.UTC(), endInstant.UTC()
+		if s.sqliteTimeUnit != 0 {
+			// Bind checked integer scalars directly: modernc's UnixNano
+			// conversion would silently wrap times outside the int64 range.
+			startAt, parseErr = sqliteTimeTick(startInstant, s.sqliteTimeUnit, false)
+			if parseErr != nil {
+				return fmt.Errorf("encode cached event start: %w", parseErr)
+			}
+			endAt, parseErr = sqliteTimeTick(endInstant, s.sqliteTimeUnit, false)
+			if parseErr != nil {
+				return fmt.Errorf("encode cached event end: %w", parseErr)
+			}
 		}
 	}
 	q := `INSERT INTO cached_events(calendar_id, event_id, source_object_id, etag, payload_json, start_at, end_at,
@@ -1220,14 +1500,32 @@ func clearEventSyncQuarantine(ctx context.Context, s *Store, tx *sql.Tx, calenda
 	return nil
 }
 
+// lockCalendarConnection establishes connection -> sync-state order across
+// authority transitions and projection writers.
+func lockCalendarConnection(ctx context.Context, s *Store, tx *sql.Tx, calendarID string) error {
+	if s.dialect == DialectSQLite {
+		_, err := tx.ExecContext(ctx, s.query(`UPDATE connections SET updated_at=updated_at WHERE id=(SELECT connection_id FROM calendars WHERE id=?)`), calendarID)
+		return err
+	}
+	var id string
+	err := tx.QueryRowContext(ctx, s.query(`SELECT conn.id FROM connections conn JOIN calendars c ON c.connection_id=conn.id WHERE c.id=? FOR UPDATE OF conn`), calendarID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
 func lockCalendarSyncLease(ctx context.Context, s *Store, tx *sql.Tx, state CalendarSyncState, now time.Time) error {
+	if err := lockCalendarConnection(ctx, s, tx, state.CalendarID); err != nil {
+		return err
+	}
 	q := `SELECT calendar_id FROM calendar_sync_state
 		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE"
 	}
 	var calendarID string
-	err := tx.QueryRowContext(ctx, s.query(q), state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now).Scan(&calendarID)
+	err := tx.QueryRowContext(ctx, s.query(s.eventSyncTimeComparisons(q)), state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now).Scan(&calendarID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrCalendarSyncLeaseLost
 	}
@@ -1237,8 +1535,8 @@ func lockCalendarSyncLease(ctx context.Context, s *Store, tx *sql.Tx, state Cale
 	if s.dialect == DialectSQLite {
 		// A matched no-op write acquires SQLite's writer lock before pages can
 		// touch projection rows, serializing this lease with a reclaim attempt.
-		res, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET updated_at=updated_at
-			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`), state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET updated_at=updated_at
+			WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 		if err != nil {
 			return fmt.Errorf("serialize calendar sync lease: %w", err)
 		}
@@ -1254,6 +1552,9 @@ func lockCalendarSyncLease(ctx context.Context, s *Store, tx *sql.Tx, state Cale
 }
 
 func selectCalendarSyncStateForUpdate(ctx context.Context, s *Store, tx *sql.Tx, calendarID string) (CalendarSyncState, error) {
+	if err := lockCalendarConnection(ctx, s, tx, calendarID); err != nil {
+		return CalendarSyncState{}, err
+	}
 	if s.dialect == DialectSQLite {
 		// SQLite has no row-level FOR UPDATE. Taking a no-op writer lock before
 		// reading prevents a concurrent lease completion from racing a window
@@ -1268,7 +1569,7 @@ func selectCalendarSyncStateForUpdate(ctx context.Context, s *Store, tx *sql.Tx,
 	if s.dialect == DialectPostgres {
 		q += " FOR UPDATE"
 	}
-	return scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(q), calendarID))
+	return s.scanCalendarSyncState(tx.QueryRowContext(ctx, s.query(s.timeProjection(q, "window_start", "window_end", "next_sync_at", "last_started_at", "last_success_at", "lease_until")), calendarID))
 }
 
 func safeCalendarSyncCode(code string) bool {
@@ -1285,17 +1586,18 @@ func safeCalendarSyncCode(code string) bool {
 
 type scanner interface{ Scan(...any) error }
 
-func scanCalendarSyncState(row scanner) (CalendarSyncState, error) {
+func (s *Store) scanCalendarSyncState(row scanner) (CalendarSyncState, error) {
 	var state CalendarSyncState
-	var started, success, until sql.NullTime
+	start, end, next, started, success, until := s.scanTime(), s.scanTime(), s.scanTime(), s.scanTime(), s.scanTime(), s.scanTime()
 	var errorCode, owner sql.NullString
-	if err := row.Scan(&state.CalendarID, &state.Strategy, &state.Cursor, &state.WindowStart, &state.WindowEnd,
-		&state.Generation, &state.Status, &state.NextSyncAt, &started, &success, &errorCode, &owner, &until); err != nil {
+	if err := row.Scan(&state.CalendarID, &state.Strategy, &state.Cursor, &start, &end,
+		&state.Generation, &state.Status, &next, &started, &success, &errorCode, &owner, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return state, ErrNotFound
 		}
 		return state, err
 	}
+	state.WindowStart, state.WindowEnd, state.NextSyncAt = start.Time, end.Time, next.Time
 	if started.Valid {
 		state.LastStartedAt = &started.Time
 	}

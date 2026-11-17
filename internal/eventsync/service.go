@@ -90,7 +90,19 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 	if !state.WindowEnd.After(state.WindowStart) {
 		return s.fail(ctx, state, s.policy(nil), calendar.EventSyncProtocol, 0, ErrInvalidPage)
 	}
-	provider, providerCalendarID, err := s.Resolver.Resolve(state.CalendarID)
+	var provider calendar.Provider
+	var providerCalendarID string
+	var err error
+	if resolver, ok := s.Resolver.(interface {
+		ResolveContext(context.Context, string) (calendar.Provider, string, error)
+	}); ok {
+		provider, providerCalendarID, err = resolver.ResolveContext(ctx, state.CalendarID)
+	} else {
+		provider, providerCalendarID, err = s.Resolver.Resolve(state.CalendarID)
+	}
+	if errors.Is(err, storage.ErrAuthorityChanged) {
+		return err
+	}
 	if err != nil {
 		return s.fail(ctx, state, s.policy(nil), calendar.EventSyncProtocol, 0, ErrProviderFailure)
 	}
@@ -112,6 +124,23 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			return true, deferErr
 		}
 		return true, nil
+	}
+	var authority storage.AuthorityTicket
+	var observer interface {
+		CaptureWriterTicket(context.Context, string) (storage.AuthorityTicket, error)
+		ObserveGoogleRole(context.Context, storage.AuthorityTicket, string, [32]byte, string, time.Time) error
+	}
+	if provider.Name() == "google" {
+		observer, _ = s.Store.(interface {
+			CaptureWriterTicket(context.Context, string) (storage.AuthorityTicket, error)
+			ObserveGoogleRole(context.Context, storage.AuthorityTicket, string, [32]byte, string, time.Time) error
+		})
+		if observer != nil {
+			authority, err = observer.CaptureWriterTicket(ctx, state.CalendarID)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if err := s.repairOne(ctx, state, provider, providerCalendarID, policy); err != nil {
 		return err
@@ -181,6 +210,11 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 		if pages >= policy.MaxPages {
 			return s.fail(ctx, state, policy, calendar.EventSyncTransient, 0, ErrPageLimit)
 		}
+		var credentialRevision string
+		var credentialDigest [32]byte
+		if bound, ok := provider.(interface{ CredentialBinding() (string, [32]byte) }); ok {
+			credentialRevision, credentialDigest = bound.CredentialBinding()
+		}
 		page, callErr := syncer.SyncEvents(ctx, calendar.EventSyncRequest{
 			CalendarID: providerCalendarID,
 			Window:     calendar.EventSyncWindow{Start: state.WindowStart, End: state.WindowEnd},
@@ -189,12 +223,56 @@ func (s *Service) RunOne(ctx context.Context, state storage.CalendarSyncState) e
 			Generation: state.Generation,
 			Mode:       mode,
 		})
-		if err := ctx.Err(); err != nil {
-			return err
+		var authorityErr *calendar.EventSyncAuthorityError
+		if errors.As(callErr, &authorityErr) {
+			return authorityErr
+		}
+		if observer != nil && (page.RoleConfirmed || (callErr == nil && !page.ResetRequired)) {
+			observeCtx := ctx
+			cancel := func() {}
+			if page.AccessRole == "" || page.AccessRole != storage.DetailReceiptRole(authority.DetailReceipt) {
+				observeCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			}
+			err := observer.ObserveGoogleRole(observeCtx, authority, page.CredentialRevision, page.CredentialDigest, page.AccessRole, s.now())
+			cancel()
+			if err != nil {
+				return err
+			}
 		}
 		if callErr != nil {
+			if err := ctx.Err(); err != nil {
+				if !errors.Is(callErr, context.Canceled) && !errors.Is(callErr, context.DeadlineExceeded) {
+					return callErr
+				}
+				return err
+			}
+			if observer != nil {
+				var syncErr *calendar.EventSyncError
+				if errors.As(callErr, &syncErr) {
+					switch {
+					case syncErr.Class == calendar.EventSyncAuth:
+						if closer, ok := s.Store.(interface {
+							CloseGoogleAccountIfCurrent(context.Context, storage.AuthorityTicket, string, [32]byte, time.Time) error
+						}); ok {
+							if err := closer.CloseGoogleAccountIfCurrent(ctx, authority, credentialRevision, credentialDigest, s.now()); err != nil {
+								return err
+							}
+							return providerFailureResult(callErr)
+						}
+					case syncErr.Class == calendar.EventSyncPermission || syncErr.ProviderStatus == 404:
+						if err := observer.ObserveGoogleRole(ctx, authority, credentialRevision, credentialDigest, "", s.now()); err != nil && !errors.Is(err, storage.ErrAuthorityChanged) {
+							return err
+						}
+						return providerFailureResult(callErr)
+					}
+				}
+			}
 			class, retryAfter := classify(callErr)
 			return s.fail(ctx, state, policy, class, retryAfter, providerFailureResult(callErr))
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if err := validatePage(mode, page); err != nil {
 			return s.fail(ctx, state, policy, calendar.EventSyncProtocol, 0, ErrInvalidPage)
@@ -442,6 +520,9 @@ func (s *Service) repairObject(ctx context.Context, state storage.CalendarSyncSt
 		return err
 	}
 	if repairErr != nil {
+		if errors.Is(repairErr, storage.ErrAuthorityChanged) {
+			return repairErr
+		}
 		class, retryAfter := classify(repairErr)
 		if class == calendar.EventSyncAuth || class == calendar.EventSyncPermission || class == calendar.EventSyncUnsupported {
 			return s.fail(ctx, state, policy, class, retryAfter, providerFailureResult(repairErr))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,11 @@ type Registry struct {
 	providers       []Provider
 	byName          map[string]Provider
 	excludeIDs      map[string]struct{} // prefixed IDs to skip in fan-out
-	includeImported bool                // if false, skip google:*@import.calendar.google.com in fan-out
+	refresh         func(context.Context, Provider) (Provider, error)
+	discover        func(context.Context, string, map[string]bool) ([]Provider, error)
+	googleOwner     func(context.Context, string) (connectionID, revision string, err error)
+	generation      uint64
+	includeImported bool // if false, skip google:*@import.calendar.google.com in fan-out
 	selection       CalendarSelection
 	writeGuard      WriteDispatchGuard
 }
@@ -63,8 +68,20 @@ func (r *Registry) CalendarEnabled(ctx context.Context, provider Provider, rawID
 }
 
 func (r *Registry) DiscoveredCalendarEnabled(ctx context.Context, provider Provider, discovered Calendar) (bool, error) {
+	route := ProviderRouteName(provider)
+	if bound, ok := provider.(interface{ CredentialBinding() (string, [32]byte) }); ok && route != provider.Name() {
+		if discovery, ok := r.selection.(interface {
+			RegisterDiscoveredCalendarWithRevision(context.Context, string, Calendar, string) error
+		}); ok {
+			revision, _ := bound.CredentialBinding()
+			if err := discovery.RegisterDiscoveredCalendarWithRevision(ctx, route, discovered, revision); err != nil {
+				return false, err
+			}
+			return r.CalendarEnabled(ctx, provider, discovered.ID)
+		}
+	}
 	if discovery, ok := r.selection.(CalendarDiscovery); ok {
-		if err := discovery.RegisterDiscoveredCalendar(ctx, ProviderRouteName(provider), discovered); err != nil {
+		if err := discovery.RegisterDiscoveredCalendar(ctx, route, discovered); err != nil {
 			return false, err
 		}
 	}
@@ -72,9 +89,23 @@ func (r *Registry) DiscoveredCalendarEnabled(ctx context.Context, provider Provi
 }
 
 func (r *Registry) ResolveEnabled(ctx context.Context, id string) (Provider, string, error) {
-	provider, raw, err := r.resolve(id)
+	provider, raw, err := r.ResolveContext(ctx, id)
 	if err != nil {
 		return nil, "", err
+	}
+	if raw == "primary" && provider.Name() == "google" {
+		accountID, scoped := strings.CutPrefix(ProviderRouteName(provider), "google@")
+		bound, boundOK := provider.(interface{ CredentialBinding() (string, [32]byte) })
+		primary, primaryOK := r.selection.(interface {
+			ResolveGooglePrimaryCalendarID(context.Context, string, string) (string, error)
+		})
+		if scoped && boundOK && primaryOK {
+			revision, _ := bound.CredentialBinding()
+			raw, err = primary.ResolveGooglePrimaryCalendarID(ctx, accountID, revision)
+			if err != nil {
+				return nil, "", fmt.Errorf("%w: %w", ErrCalendarSelectionUnavailable, err)
+			}
+		}
 	}
 	enabled, err := r.CalendarEnabled(ctx, provider, raw)
 	if err != nil {
@@ -84,6 +115,171 @@ func (r *Registry) ResolveEnabled(ctx context.Context, id string) (Provider, str
 		return nil, "", fmt.Errorf("calendar is disabled or unavailable")
 	}
 	return provider, raw, nil
+}
+
+// SetGoogleOwnerLookup installs the durable platform short-ID owner lookup.
+func (r *Registry) SetGoogleOwnerLookup(lookup func(context.Context, string) (connectionID, revision string, err error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.googleOwner = lookup
+}
+
+// SetProviderDiscovery installs metadata-only discovery for missing routes.
+func (r *Registry) SetProviderDiscovery(discover func(context.Context, string, map[string]bool) ([]Provider, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.discover = discover
+}
+
+func (r *Registry) discoverProviders(ctx context.Context, id string) error {
+	r.mu.RLock()
+	discover, generation := r.discover, r.generation
+	known := make(map[string]bool, len(r.byName))
+	for name := range r.byName {
+		known[name] = true
+	}
+	r.mu.RUnlock()
+	if discover == nil {
+		return nil
+	}
+	candidates, err := discover(ctx, id, known)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.generation != generation {
+		return nil
+	}
+	for _, p := range candidates {
+		route := ProviderRouteName(p)
+		if id != "" && route != "google@"+id {
+			continue
+		}
+		if _, exists := r.byName[route]; exists {
+			continue
+		}
+		r.byName[route] = p
+		r.providers = append(r.providers, p)
+	}
+	return nil
+}
+
+// ProvidersContext discovers newly ready routes before a list or fan-out.
+func (r *Registry) ProvidersContext(ctx context.Context) ([]Provider, error) {
+	if err := r.discoverProviders(ctx, ""); err != nil {
+		return nil, err
+	}
+	return r.Providers(), nil
+}
+
+// SetProviderRefresh installs a snapshot check for platform providers.
+func (r *Registry) SetProviderRefresh(refresh func(context.Context, Provider) (Provider, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refresh = refresh
+}
+
+func sameProvider(a, b Provider) bool {
+	return a != nil && b != nil && reflect.TypeOf(a) == reflect.TypeOf(b) && reflect.ValueOf(a).Comparable() && a == b
+}
+
+// RefreshProvider conditionally replaces only the observed route, preserving all
+// other registry entries. A concurrent replacement wins without replaying I/O.
+func (r *Registry) RefreshProvider(ctx context.Context, old Provider) (Provider, error) {
+	r.mu.RLock()
+	refresh := r.refresh
+	r.mu.RUnlock()
+	if refresh == nil {
+		return old, nil
+	}
+	next, err := refresh(ctx, old)
+	if err != nil {
+		return nil, err
+	}
+	if sameProvider(next, old) {
+		r.mu.RLock()
+		current := r.byName[ProviderRouteName(old)]
+		r.mu.RUnlock()
+		if !sameProvider(current, old) {
+			return nil, fmt.Errorf("provider route changed during refresh")
+		}
+		return old, nil
+	}
+	route := ProviderRouteName(old)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.byName[route]
+	if !sameProvider(current, old) {
+		return nil, fmt.Errorf("provider route changed during refresh")
+	}
+	if ProviderRouteName(next) != route {
+		return nil, fmt.Errorf("refreshed provider route mismatch")
+	}
+	r.byName[route] = next
+	for i, p := range r.providers {
+		if sameProvider(p, old) {
+			r.providers[i] = next
+			break
+		}
+	}
+	return next, nil
+}
+func (r *Registry) ResolveContext(ctx context.Context, id string) (Provider, string, error) {
+	name, tail := splitPrefix(id)
+	account, raw, scoped := strings.Cut(tail, ":")
+	r.mu.RLock()
+	discovery := r.discover != nil
+	ownerLookup := r.googleOwner
+	r.mu.RUnlock()
+	var p Provider
+	var err error
+	var ownerRevision string
+	var ownerSelected bool
+	if name == "google" && !scoped && ownerLookup != nil {
+		owner, revision, lookupErr := ownerLookup(ctx, tail)
+		if lookupErr != nil {
+			return nil, "", lookupErr
+		}
+		if owner == "" {
+			return nil, "", fmt.Errorf("unknown provider or calendar: %s", name)
+		}
+		account, raw, scoped, ownerRevision = owner, tail, true, revision
+		ownerSelected = true
+	}
+	if (discovery || ownerSelected) && name == "google" && scoped && account != "" {
+		route := "google@" + account
+		r.mu.RLock()
+		p = r.byName[route]
+		r.mu.RUnlock()
+		if p == nil && discovery {
+			if err = r.discoverProviders(ctx, account); err != nil {
+				return nil, "", err
+			}
+			r.mu.RLock()
+			p = r.byName[route]
+			r.mu.RUnlock()
+		}
+		if p == nil {
+			return nil, "", fmt.Errorf("unknown provider or calendar: %s", name)
+		}
+	} else {
+		p, raw, err = r.resolve(id)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	p, err = r.RefreshProvider(ctx, p)
+	if err != nil || !ownerSelected {
+		return p, raw, err
+	}
+	if bound, ok := p.(interface{ CredentialBinding() (string, [32]byte) }); ok {
+		if revision, _ := bound.CredentialBinding(); revision == ownerRevision {
+			return p, raw, nil
+		}
+	}
+	return nil, "", fmt.Errorf("calendar authority changed during route resolution")
 }
 
 // skipInFanOut reports whether a prefixed calendar ID should be dropped from
@@ -104,7 +300,10 @@ func (r *Registry) SkipInFanOut(prefixedID string) bool {
 }
 
 func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
-	providers := r.Providers()
+	providers, err := r.ProvidersContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	type result struct {
 		calendars []Calendar
 		err       error
@@ -121,7 +320,12 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 					results[i].err = err
 					continue
 				}
-				cals, err := providers[i].ListCalendars(ctx)
+				provider, err := r.RefreshProvider(ctx, providers[i])
+				if err != nil {
+					results[i].err = err
+					continue
+				}
+				cals, err := provider.ListCalendars(ctx)
 				if err != nil {
 					results[i].err = err
 					continue
@@ -129,7 +333,7 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 				// Providers may retain their raw slice; canonicalize only our own copy.
 				copied := append([]Calendar(nil), cals...)
 				for j := range copied {
-					enabled, selectionErr := r.DiscoveredCalendarEnabled(ctx, providers[i], copied[j])
+					enabled, selectionErr := r.DiscoveredCalendarEnabled(ctx, provider, copied[j])
 					if selectionErr != nil {
 						results[i].err = selectionErr
 						break
@@ -138,8 +342,8 @@ func (r *Registry) ListCalendars(ctx context.Context) ([]Calendar, error) {
 						copied[j].ID = ""
 						continue
 					}
-					copied[j].ID = CanonicalCalendarID(providers[i], copied[j].ID)
-					copied[j].Provider = providers[i].Name()
+					copied[j].ID = CanonicalCalendarID(provider, copied[j].ID)
+					copied[j].Provider = provider.Name()
 				}
 				results[i].calendars = copied
 			}
@@ -182,13 +386,21 @@ func (r *Registry) GetEvents(ctx context.Context, calendarID string, start, end 
 		events []Event
 		errs   []error
 	}
-	providers := r.Providers()
+	providers, err := r.ProvidersContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ch := make(chan result, len(providers))
 	var wg sync.WaitGroup
 	for _, p := range providers {
 		wg.Add(1)
 		go func(p Provider) {
 			defer wg.Done()
+			p, err := r.RefreshProvider(ctx, p)
+			if err != nil {
+				ch <- result{errs: []error{err}}
+				return
+			}
 			cals, err := p.ListCalendars(ctx)
 			if err != nil {
 				ch <- result{errs: []error{fmt.Errorf("%s: %w", p.Name(), err)}}
@@ -359,6 +571,7 @@ func (r *Registry) ReplaceProviders(providers []Provider) {
 	}
 	r.mu.Lock()
 	r.providers = append([]Provider(nil), providers...)
+	r.generation++
 	r.byName = byName
 	r.mu.Unlock()
 }

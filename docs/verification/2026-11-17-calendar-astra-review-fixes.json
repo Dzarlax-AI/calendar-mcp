@@ -1,0 +1,751 @@
+{
+  "status": "verified_locally",
+  "scope": "Calendar MCP Astra 6.2 repair plan, P1 and P2",
+  "synthetic_only": true,
+  "verification": {
+    "go_race_named_results": {
+      "pass": 743,
+      "skip": 1
+    },
+    "postgres_integration_named_results": {
+      "pass": 111
+    },
+    "vet": "passed",
+    "server_build": "passed",
+    "first_page_slo": [
+      {
+        "scenario": "sqlite-ordinary-s1-c1-p25",
+        "p95_first_ms": 3.293417,
+        "limit_ms": 50,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-ordinary-s1-c1-p50",
+        "p95_first_ms": 4.128209,
+        "limit_ms": 50,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-ordinary-s1-c4-p25",
+        "p95_first_ms": 8.309417,
+        "limit_ms": 100,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-ordinary-s1-c4-p50",
+        "p95_first_ms": 9.850041,
+        "limit_ms": 100,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-wide-s16-c1-p25",
+        "p95_first_ms": 5.177666,
+        "limit_ms": 50,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-wide-s16-c1-p50",
+        "p95_first_ms": 5.523,
+        "limit_ms": 50,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-wide-s16-c4-p25",
+        "p95_first_ms": 14.24175,
+        "limit_ms": 100,
+        "passed": true
+      },
+      {
+        "scenario": "sqlite-wide-s16-c4-p50",
+        "p95_first_ms": 15.710417,
+        "limit_ms": 100,
+        "passed": true
+      },
+      {
+        "scenario": "postgres-wide-s16-c1-p25",
+        "p95_first_ms": 3.221041,
+        "limit_ms": 50,
+        "passed": true
+      }
+    ],
+    "sqlite_final_range_explain": "timed and date index upper bounds, on 10,000 far-future fixture rows",
+    "ui_native_http": "equivalent narrow RFC3339 ranges in Z, +02:00 and -05:30 return identical cached items",
+    "buffer_limit_bytes": 8388608,
+    "buffer_limit_rows": 8192,
+    "sqlite_max_open_connections": 1,
+    "unchanged_against_frozen_baseline": [
+      "internal/storage/event_pages.go",
+      "internal/storage/store.go"
+    ]
+  },
+  "method": {
+    "sdk": "Three alternating fresh-process pairs per corpus and checkpoint with the same synthetic SQLite fixture. Actual modern SDK, 16 sources, 4,000 stored rows, page size 25, 512-byte descriptions, 5 ms UI read and sync write loop. Candidates use a rolling window and synthetic request clock. Baseline and candidate runs in a pair use separate copies of the same database.",
+    "ui": "Same synthetic 16-source SQLite fixture with 2 KiB descriptions. Four reads in each parallel group, three measured warm groups per fresh process and three alternating pairs. Used Store.ListCachedEvents; wall time excludes digest generation.",
+    "first_page": "Twenty warm paired rounds per SLO case with existing synthetic background. SQLite ordinary/wide at concurrency 1/4 and page size 25/50, plus one 16-source PostgreSQL control.",
+    "p1": "Measured after the page window fix. Subsequent P1 review edits were in live OAuth/Google authority paths outside the timed SDK and cached UI calls."
+  },
+  "comparisons": {
+    "p1": {
+      "sdk": {
+        "synthetic_only": true,
+        "binaries": {
+          "baseline": "fd099c1590a40c7ac97eb0f66e51e2e3e02330b6653bacfdcda7b03e41ab215f",
+          "p1": "167bdff984f3d3c775a999c4e454bfb5606ad00c3a118c249fc721147d784bcd"
+        },
+        "cases": {
+          "ordinary": {
+            "stored": 4000,
+            "returned": 4000,
+            "master_rows": 0,
+            "unicode_master_rows": 0,
+            "same_order_count_and_digests": true,
+            "with_background": true,
+            "variants": {
+              "baseline": {
+                "median_wall_ms": 5295.949458,
+                "median_sql_ms": 2505.504912,
+                "runs": [
+                  {
+                    "wall_ms": 5295.949458,
+                    "first_ms": 34.708708,
+                    "sql_ms": 2505.504912,
+                    "pages": 334,
+                    "background_reads": 151,
+                    "background_writes": 151,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5343.02275,
+                    "first_ms": 30.887792,
+                    "sql_ms": 2524.948114,
+                    "pages": 334,
+                    "background_reads": 153,
+                    "background_writes": 153,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5166.023584,
+                    "first_ms": 28.93775,
+                    "sql_ms": 2495.731311,
+                    "pages": 334,
+                    "background_reads": 153,
+                    "background_writes": 153,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  }
+                ]
+              },
+              "p1": {
+                "median_wall_ms": 5336.426542,
+                "median_sql_ms": 2524.224614,
+                "runs": [
+                  {
+                    "wall_ms": 5336.426542,
+                    "first_ms": 40.081292,
+                    "sql_ms": 2517.28606,
+                    "pages": 334,
+                    "background_reads": 156,
+                    "background_writes": 156,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5410.032833,
+                    "first_ms": 28.962708,
+                    "sql_ms": 2563.869505,
+                    "pages": 334,
+                    "background_reads": 151,
+                    "background_writes": 151,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5279.31925,
+                    "first_ms": 30.267625,
+                    "sql_ms": 2524.224614,
+                    "pages": 334,
+                    "background_reads": 156,
+                    "background_writes": 156,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  }
+                ]
+              }
+            }
+          },
+          "masters": {
+            "stored": 4000,
+            "returned": 3600,
+            "master_rows": 400,
+            "unicode_master_rows": 200,
+            "same_order_count_and_digests": true,
+            "with_background": true,
+            "variants": {
+              "baseline": {
+                "median_wall_ms": 4787.128416,
+                "median_sql_ms": 2304.99181,
+                "runs": [
+                  {
+                    "wall_ms": 4761.044208,
+                    "first_ms": 29.026708,
+                    "sql_ms": 2289.635754,
+                    "pages": 300,
+                    "background_reads": 139,
+                    "background_writes": 139,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4787.128416,
+                    "first_ms": 30.297875,
+                    "sql_ms": 2319.790426,
+                    "pages": 300,
+                    "background_reads": 140,
+                    "background_writes": 140,
+                    "max_sdk_bytes": 16286,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4803.37875,
+                    "first_ms": 27.964208,
+                    "sql_ms": 2304.99181,
+                    "pages": 300,
+                    "background_reads": 141,
+                    "background_writes": 141,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  }
+                ]
+              },
+              "p1": {
+                "median_wall_ms": 4750.657125,
+                "median_sql_ms": 2298.714425,
+                "runs": [
+                  {
+                    "wall_ms": 4732.820625,
+                    "first_ms": 28.517417,
+                    "sql_ms": 2298.714425,
+                    "pages": 300,
+                    "background_reads": 138,
+                    "background_writes": 138,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 5155.865167,
+                    "first_ms": 28.753917,
+                    "sql_ms": 2399.771126,
+                    "pages": 300,
+                    "background_reads": 144,
+                    "background_writes": 144,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4750.657125,
+                    "first_ms": 29.081458,
+                    "sql_ms": 2289.253727,
+                    "pages": 300,
+                    "background_reads": 141,
+                    "background_writes": 141,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "rounds": 3,
+        "stored": 4000,
+        "events": 3599,
+        "sources": 16,
+        "concurrency": 4,
+        "description_bytes": 2048,
+        "reads_per_process": 12,
+        "synthetic_only": true,
+        "digest": "58e7437115c6de371d0b46eabb4fcadfdb9532354ff1c97243257c4dd6f61f35",
+        "measurement": "Store.ListCachedEvents wall time excluding digest, same preseeded SQLite file, each process has four warmups followed by three groups of four overlapping requests",
+        "variants": {
+          "baseline": {
+            "median_ms": 241.29110400000002,
+            "runs": [
+              {
+                "median_ms": 257.2270625,
+                "self_max_rss_bytes": 114180096,
+                "samples_ms": [
+                  181.767834,
+                  181.898167,
+                  182.033584,
+                  248.368,
+                  256.985083,
+                  257.153,
+                  257.416667,
+                  257.301125,
+                  262.667833,
+                  262.821416,
+                  263.116583,
+                  262.99875
+                ]
+              },
+              {
+                "median_ms": 241.29110400000002,
+                "self_max_rss_bytes": 95748096,
+                "samples_ms": [
+                  197.359208,
+                  197.101792,
+                  259.119292,
+                  259.245666,
+                  127.156416,
+                  249.80725,
+                  249.988417,
+                  250.540917,
+                  119.970791,
+                  241.232042,
+                  241.076625,
+                  241.350166
+                ]
+              },
+              {
+                "median_ms": 236.441437,
+                "self_max_rss_bytes": 97468416,
+                "samples_ms": [
+                  185.985583,
+                  244.991833,
+                  244.857875,
+                  245.127208,
+                  176.50375,
+                  236.377291,
+                  236.505583,
+                  236.622958,
+                  177.712333,
+                  178.134875,
+                  177.974416,
+                  236.567583
+                ]
+              }
+            ]
+          },
+          "p1": {
+            "median_ms": 244.41075,
+            "runs": [
+              {
+                "median_ms": 214.98510399999998,
+                "self_max_rss_bytes": 92635136,
+                "samples_ms": [
+                  123.498875,
+                  123.343709,
+                  247.23375,
+                  247.088333,
+                  121.197708,
+                  121.306125,
+                  243.872458,
+                  243.990833,
+                  185.95075,
+                  186.09775,
+                  247.285084,
+                  247.41225
+                ]
+              },
+              {
+                "median_ms": 244.81437499999998,
+                "self_max_rss_bytes": 94076928,
+                "samples_ms": [
+                  249.92675,
+                  250.13125,
+                  392.042041,
+                  392.210625,
+                  180.766375,
+                  180.892167,
+                  239.576375,
+                  239.702,
+                  146.720792,
+                  146.893083,
+                  281.300042,
+                  281.189458
+                ]
+              },
+              {
+                "median_ms": 244.41075,
+                "self_max_rss_bytes": 109854720,
+                "samples_ms": [
+                  244.021958,
+                  244.144917,
+                  244.49375,
+                  244.32775,
+                  187.856541,
+                  279.000125,
+                  279.138292,
+                  279.259,
+                  188.765041,
+                  188.639166,
+                  249.846959,
+                  249.697875
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "p1_and_p2": {
+      "sdk": {
+        "synthetic_only": true,
+        "binaries": {
+          "baseline": "fd099c1590a40c7ac97eb0f66e51e2e3e02330b6653bacfdcda7b03e41ab215f",
+          "accepted": "565a8ab6828702bdc40756241dc020f788b9fc4e93c0c92cc3868a04cf242b89"
+        },
+        "cases": {
+          "ordinary": {
+            "stored": 4000,
+            "returned": 4000,
+            "master_rows": 0,
+            "unicode_master_rows": 0,
+            "same_order_count_and_digests": true,
+            "with_background": true,
+            "variants": {
+              "baseline": {
+                "median_wall_ms": 5507.63275,
+                "median_sql_ms": 2518.740123,
+                "runs": [
+                  {
+                    "wall_ms": 5661.163167,
+                    "first_ms": 31.746584,
+                    "sql_ms": 2620.327816,
+                    "pages": 334,
+                    "background_reads": 152,
+                    "background_writes": 152,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5236.694417,
+                    "first_ms": 29.563667,
+                    "sql_ms": 2518.740123,
+                    "pages": 334,
+                    "background_reads": 150,
+                    "background_writes": 150,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 5507.63275,
+                    "first_ms": 31.303,
+                    "sql_ms": 2500.187326,
+                    "pages": 334,
+                    "background_reads": 152,
+                    "background_writes": 152,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  }
+                ]
+              },
+              "accepted": {
+                "median_wall_ms": 4839.84625,
+                "median_sql_ms": 2479.924596,
+                "runs": [
+                  {
+                    "wall_ms": 4903.102125,
+                    "first_ms": 34.038166,
+                    "sql_ms": 2502.570709,
+                    "pages": 334,
+                    "background_reads": 155,
+                    "background_writes": 155,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 4834.225084,
+                    "first_ms": 26.817709,
+                    "sql_ms": 2479.924596,
+                    "pages": 334,
+                    "background_reads": 152,
+                    "background_writes": 152,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  },
+                  {
+                    "wall_ms": 4839.84625,
+                    "first_ms": 26.693833,
+                    "sql_ms": 2470.906655,
+                    "pages": 334,
+                    "background_reads": 151,
+                    "background_writes": 151,
+                    "max_sdk_bytes": 16288,
+                    "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+                    "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+                    "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+                  }
+                ]
+              }
+            }
+          },
+          "masters": {
+            "stored": 4000,
+            "returned": 3600,
+            "master_rows": 400,
+            "unicode_master_rows": 200,
+            "same_order_count_and_digests": true,
+            "with_background": true,
+            "variants": {
+              "baseline": {
+                "median_wall_ms": 4763.359,
+                "median_sql_ms": 2296.30639,
+                "runs": [
+                  {
+                    "wall_ms": 4763.359,
+                    "first_ms": 30.703583,
+                    "sql_ms": 2293.768821,
+                    "pages": 300,
+                    "background_reads": 141,
+                    "background_writes": 141,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4759.233917,
+                    "first_ms": 29.630292,
+                    "sql_ms": 2296.30639,
+                    "pages": 300,
+                    "background_reads": 141,
+                    "background_writes": 141,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4896.096209,
+                    "first_ms": 29.812834,
+                    "sql_ms": 2353.941284,
+                    "pages": 300,
+                    "background_reads": 142,
+                    "background_writes": 142,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  }
+                ]
+              },
+              "accepted": {
+                "median_wall_ms": 4385.301125,
+                "median_sql_ms": 2270.771979,
+                "runs": [
+                  {
+                    "wall_ms": 4355.283625,
+                    "first_ms": 27.489459,
+                    "sql_ms": 2251.673349,
+                    "pages": 300,
+                    "background_reads": 137,
+                    "background_writes": 137,
+                    "max_sdk_bytes": 16284,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4385.301125,
+                    "first_ms": 27.121291,
+                    "sql_ms": 2270.771979,
+                    "pages": 300,
+                    "background_reads": 138,
+                    "background_writes": 138,
+                    "max_sdk_bytes": 16288,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  },
+                  {
+                    "wall_ms": 4392.660584,
+                    "first_ms": 27.307459,
+                    "sql_ms": 2277.500369,
+                    "pages": 300,
+                    "background_reads": 136,
+                    "background_writes": 136,
+                    "max_sdk_bytes": 16284,
+                    "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+                    "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+                    "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "rounds": 3,
+        "stored": 4000,
+        "events": 3599,
+        "sources": 16,
+        "concurrency": 4,
+        "description_bytes": 2048,
+        "reads_per_process": 12,
+        "synthetic_only": true,
+        "digest": "58e7437115c6de371d0b46eabb4fcadfdb9532354ff1c97243257c4dd6f61f35",
+        "measurement": "Store.ListCachedEvents wall time excluding digest, same preseeded SQLite file, each process has four warmups followed by three groups of four overlapping requests",
+        "variants": {
+          "baseline": {
+            "median_ms": 243.8991455,
+            "runs": [
+              {
+                "median_ms": 249.9200625,
+                "self_max_rss_bytes": 115736576,
+                "samples_ms": [
+                  199.814875,
+                  259.224458,
+                  259.395792,
+                  259.539167,
+                  249.822,
+                  250.018125,
+                  250.604584,
+                  250.182084,
+                  242.427916,
+                  242.576458,
+                  242.825084,
+                  242.713791
+                ]
+              },
+              {
+                "median_ms": 240.3115215,
+                "self_max_rss_bytes": 108216320,
+                "samples_ms": [
+                  122.09975,
+                  122.19675,
+                  243.784417,
+                  243.891167,
+                  239.806166,
+                  240.00625,
+                  240.221209,
+                  240.401834,
+                  190.181167,
+                  250.266625,
+                  250.430458,
+                  250.56475
+                ]
+              },
+              {
+                "median_ms": 243.8991455,
+                "self_max_rss_bytes": 113541120,
+                "samples_ms": [
+                  243.820833,
+                  243.977458,
+                  244.176875,
+                  244.282792,
+                  188.673708,
+                  250.488417,
+                  250.602209,
+                  250.72325,
+                  240.455042,
+                  240.612917,
+                  240.902541,
+                  240.760708
+                ]
+              }
+            ]
+          },
+          "accepted": {
+            "median_ms": 194.123646,
+            "runs": [
+              {
+                "median_ms": 193.770354,
+                "self_max_rss_bytes": 112525312,
+                "samples_ms": [
+                  146.002541,
+                  145.87975,
+                  194.061292,
+                  194.227292,
+                  193.383458,
+                  193.499917,
+                  193.691333,
+                  193.849375,
+                  98.29775,
+                  195.754,
+                  195.940083,
+                  196.046208
+                ]
+              },
+              {
+                "median_ms": 196.5193125,
+                "self_max_rss_bytes": 96419840,
+                "samples_ms": [
+                  148.995542,
+                  197.705958,
+                  197.904167,
+                  198.0305,
+                  147.086084,
+                  146.907333,
+                  196.4345,
+                  196.604125,
+                  100.502541,
+                  100.610291,
+                  199.84675,
+                  199.991458
+                ]
+              },
+              {
+                "median_ms": 194.123646,
+                "self_max_rss_bytes": 94191616,
+                "samples_ms": [
+                  144.962791,
+                  145.167458,
+                  192.718958,
+                  192.601166,
+                  96.565,
+                  195.642,
+                  195.528334,
+                  195.782125,
+                  148.078792,
+                  195.585666,
+                  195.732834,
+                  195.829292
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

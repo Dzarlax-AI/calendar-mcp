@@ -1,0 +1,30 @@
+{
+  "status": "implemented_verified_local",
+  "paired_cases": 34,
+  "full_walk_method": "3 alternating paired rounds;1 for memory4000-c4-p50",
+  "runtime_source_changed_during_final_checks": [],
+  "go_race_named_pass": 711,
+  "storage_named_pass": 102,
+  "explicit_postgres_tests": 11,
+  "first_page_slo_cases": 16,
+  "all_parity": true,
+  "new_caches": false,
+  "pool_changed": false,
+  "sql_phase_median_ms": {
+    "before": 5437.441499,
+    "after": 1923.223743
+  },
+  "sql_phase_speedup": 2.8272537289489983,
+  "runtime_files": [
+    "internal/storage/event_pages.go",
+    "internal/storage/event_authority.go"
+  ],
+  "deployment": false,
+  "temporary_postgres_stopped": true,
+  "limits": [
+    "Three full-walk rounds are not p95 evidence.",
+    "One stress round is not a latency distribution.",
+    "Sampled RSS is not a hard SQL-executor memory bound.",
+    "PostgreSQL single-source is effectively unchanged; some cases slightly slower."
+  ]
+}

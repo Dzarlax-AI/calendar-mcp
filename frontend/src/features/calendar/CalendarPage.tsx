@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode, TouchEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import FullCalendar from "@fullcalendar/react";
@@ -11,21 +11,23 @@ import type { EventResizeDoneArg } from "@fullcalendar/interaction";
 import { AlignLeft, CalendarDays, ChevronLeft, ChevronRight, Clock3, ListFilter, MapPin, MoreHorizontal, Plus, RefreshCw, Video, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useBootstrapData } from "../../app/App";
+import { useSourceAuthority } from "../../app/sourceAuthority";
 import { APIError, createEvent, deleteEvent, getEvents, isSessionExpiredError, navigateToApp, refreshCalendars, updateEvent } from "../../lib/api";
 import { type EventStatusSummary, EVENT_STATUS_POLL_MAX_ATTEMPTS, calendarEventKey, canWriteEvent, currentTimeScrollTime, eventStatusPollInterval, filterDeclinedEvents, formatEventDate, formatEventTime, hasActiveEventSync, selectedReadableCalendarIds, sortCalendarIds, summarizeEventSources, toCalendarEvent, toCreatePayload, toEventDraft, toLocalInputValue, toReschedulePayload, toUpdatePayload, toggleAllDayDraft, withMutationScope } from "../../lib/calendar";
-import type { CalendarRecord, EventDraft, EventRecord } from "../../lib/types";
+import type { CalendarRecord, EventCreateRequest, EventDraft, EventRecord } from "../../lib/types";
 import { ErrorState, EmptyState, LoadingState } from "../../components/AsyncState";
 import { HtmlDescription } from "../../components/HtmlDescription";
 
 type ViewName = "timeGridDay" | "timeGridWeek" | "dayGridMonth" | "listWeek";
 type Range = { start: string; end: string } | null;
 type ScopeAction = "reschedule" | "edit" | "delete";
+type EventAction = { event: EventRecord; epoch: number };
 type Surface =
   | { kind: "none" }
   | { kind: "filters" }
-  | { kind: "event"; event: EventRecord }
+  | ({ kind: "event" } & EventAction)
   | { kind: "create"; preset?: Partial<EventDraft> }
-  | { kind: "scope"; event: EventRecord; action: ScopeAction };
+  | ({ kind: "scope"; action: ScopeAction } & EventAction);
 type ScopePayload = { revert?: () => void; payload?: ReturnType<typeof toReschedulePayload> | ReturnType<typeof toUpdatePayload> };
 type Notice = { message: string; intent: "success" | "warning" | "error" } | null;
 type MonthDay = { date: Date; key: string; events: EventRecord[] };
@@ -135,19 +137,27 @@ export default function CalendarPage() {
   const phoneCalendarLayout = useMediaQuery(PHONE_CALENDAR_QUERY);
   const [surface, setSurface] = useState<Surface>({ kind: "none" });
   const scopePayloadRef = useRef<ScopePayload | null>(null);
-  const [editEvent, setEditEvent] = useState<EventRecord | null>(null);
+  const [editEvent, setEditEvent] = useState<EventAction | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [showUpdatedStatus, setShowUpdatedStatus] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState<EventRecord | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<EventAction | null>(null);
   const lastPolledDataUpdatedAtRef = useRef(0);
   const [pollingAttempts, setPollingAttempts] = useState(0);
   const refreshStartedAtRef = useRef(0);
   const [pollingCapped, setPollingCapped] = useState(false);
   const sortedSelectedCalendarIds = useMemo(() => sortCalendarIds(selectedCalendarIds), [selectedCalendarIds]);
 
+  const sourceAuthority = useSourceAuthority();
+  const authorityVersion = useSyncExternalStore(sourceAuthority.subscribe, sourceAuthority.getSnapshot, sourceAuthority.getSnapshot);
   const eventsQuery = useQuery({
     queryKey: ["events", range?.start, range?.end, sortedSelectedCalendarIds],
-    queryFn: () => getEvents(range!.start, range!.end, sortedSelectedCalendarIds),
+    queryFn: async () => {
+      const authorityOrder = sourceAuthority.nextOrder();
+      const response = await getEvents(range!.start, range!.end, sortedSelectedCalendarIds);
+      // A range request may finish after its page has unmounted.
+      sourceAuthority.observe(authorityOrder, response.sources ?? []);
+      return { ...response, authorityOrder };
+    },
     enabled: Boolean(range && sortedSelectedCalendarIds.length),
     retry: (failureCount, error) => !isSessionExpiredError(error) && failureCount < 1,
     placeholderData: (previous) => previous,
@@ -156,8 +166,39 @@ export default function CalendarPage() {
     },
     refetchIntervalInBackground: false,
   });
-  const events = useMemo(() => filterDeclinedEvents(eventsQuery.data?.items ?? [], settings.hideDeclinedEvents === true), [eventsQuery.data?.items, settings.hideDeclinedEvents]);
-  const baseEventStatus = eventsQuery.data ? summarizeEventSources(eventsQuery.data) : null;
+  const responseOrder = eventsQuery.data?.authorityOrder ?? 0;
+  const { unavailableIds, disabledIds, staleIds } = useMemo(() => sourceAuthority.selection(responseOrder), [sourceAuthority, authorityVersion, responseOrder]);
+  const events = useMemo(() => filterDeclinedEvents((eventsQuery.data?.items ?? []).filter((event) => !unavailableIds.has(event.calendarId) && !staleIds.has(event.calendarId)), settings.hideDeclinedEvents === true), [eventsQuery.data, unavailableIds, staleIds, settings.hideDeclinedEvents]);
+  useEffect(() => {
+    setSurface((current) => {
+      if ((current.kind === "event" || current.kind === "scope") && !sourceAuthority.isCurrent(current.event.calendarId, current.epoch)) {
+        if (current.kind === "scope") scopePayloadRef.current = null;
+        return { kind: "none" };
+      }
+      return current;
+    });
+    setEditEvent((current) => current && !sourceAuthority.isCurrent(current.event.calendarId, current.epoch) ? null : current);
+    setDeleteConfirm((current) => current && !sourceAuthority.isCurrent(current.event.calendarId, current.epoch) ? null : current);
+  }, [sourceAuthority, authorityVersion]);
+  const displayedSourceStatus = useMemo(() => {
+    const response = eventsQuery.data;
+    if (!response) return null;
+    const selected = new Set(sortedSelectedCalendarIds);
+    const sources = response.sources?.filter((source) => selected.has(source.calendar_id));
+    const complete = sources && sources.length !== response.sources?.length
+      ? sources.every((source) => source.complete)
+      : response.complete;
+    const hidden = sortedSelectedCalendarIds.filter((id) => unavailableIds.has(id) || staleIds.has(id));
+    if (!hidden.length) return { sources, complete };
+    const visibleSources = new Map(sources?.map((source) => [source.calendar_id, source]));
+    for (const calendar_id of hidden) {
+      const disabled = disabledIds.has(calendar_id);
+      visibleSources.set(calendar_id, { calendar_id, provider: "", status: disabled ? "disabled" : "unavailable", complete: disabled, stale: !disabled });
+    }
+    const projected = [...visibleSources.values()];
+    return { sources: projected, complete: (complete || visibleSources.size === selected.size) && projected.every((source) => source.complete) };
+  }, [eventsQuery.data, sortedSelectedCalendarIds, unavailableIds, disabledIds, staleIds]);
+  const baseEventStatus = displayedSourceStatus ? summarizeEventSources(displayedSourceStatus) : null;
   const eventStatus = baseEventStatus?.kind === "syncing" && pollingCapped ? { ...baseEventStatus, kind: "stale" as const, label: "Sync paused; refresh to try again" } : baseEventStatus;
   const visibleEventStatus = eventStatus?.kind === "updated" && !showUpdatedStatus ? null : eventStatus;
   const hasPendingSources = hasActiveEventSync(eventsQuery.data?.sources);
@@ -220,19 +261,44 @@ export default function CalendarPage() {
     return () => window.clearTimeout(timeout);
   }, [eventStatus?.kind, eventsQuery.dataUpdatedAt, showUpdatedStatus]);
   const createMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof createEvent>[1]) => createEvent(csrfToken, payload),
-    onSuccess: (event) => { setSurface({ kind: "none" }); setNotice(mutationNotice("Event created", event.warnings)); invalidateEvents(); },
-    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
+    mutationFn: ({ payload, epoch }: { payload: EventCreateRequest; epoch: number }) => {
+      if (!sourceAuthority.isCurrent(payload.calendar_id, epoch)) throw new Error("Calendar access changed");
+      return createEvent(csrfToken, payload);
+    },
+    onSuccess: (event, { payload, epoch }) => {
+      if (!sourceAuthority.isCurrent(payload.calendar_id, epoch)) return;
+      setSurface({ kind: "none" });
+      setNotice(mutationNotice("Event created", event.warnings));
+      invalidateEvents();
+    },
+    onError: (error, { payload, epoch }) => {
+      if (!sourceAuthority.isCurrent(payload.calendar_id, epoch)) return;
+      if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" });
+    },
   });
+  function isCurrentAction(event: EventRecord, epoch: number) {
+    return sourceAuthority.isCurrent(event.calendarId, epoch);
+  }
+  function actionForDisplayedEvent(event: EventRecord): EventAction | null {
+    const epoch = sourceAuthority.epoch(event.calendarId);
+    if (sourceAuthority.isUnavailable(event.calendarId) || (epoch && responseOrder <= epoch)) return null;
+    return { event, epoch };
+  }
   const updateMutation = useMutation({
-    mutationFn: (args: { event: EventRecord; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload),
-    onSuccess: (event) => { setSurface((current) => current.kind === "event" ? { kind: "event", event } : current); setEditEvent(null); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
-    onError: (error, variables) => { variables.revert?.(); if (isSessionExpiredError(error)) navigateToApp(); else if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
+    mutationFn: (args: { event: EventRecord; epoch: number; payload: Parameters<typeof updateEvent>[3]; revert?: () => void }) => {
+      if (!isCurrentAction(args.event, args.epoch)) throw new Error("Calendar access changed");
+      return updateEvent(csrfToken, args.event.calendarId, args.event.id, args.payload);
+    },
+    onSuccess: (event, variables) => { if (!isCurrentAction(variables.event, variables.epoch)) return; setSurface((current) => current.kind === "event" && calendarEventKey(current.event) === calendarEventKey(variables.event) ? { kind: "event", event, epoch: variables.epoch } : current); setEditEvent((current) => current && calendarEventKey(current.event) === calendarEventKey(variables.event) ? null : current); setNotice(mutationNotice("Event updated", event.warnings)); invalidateEvents(); },
+    onError: (error, variables) => { if (!isCurrentAction(variables.event, variables.epoch)) return; variables.revert?.(); if (isSessionExpiredError(error)) navigateToApp(); else if (error instanceof APIError && error.status === 409) { setNotice({ message: "This event changed elsewhere. We refreshed it; please try again.", intent: "error" }); void queryClient.invalidateQueries({ queryKey: ["events"] }); } else setNotice({ message: safeError(error), intent: "error" }); },
   });
   const deleteMutation = useMutation({
-    mutationFn: (args: { event: EventRecord; scope?: "single" | "following" | "series" }) => deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined }),
-    onSuccess: (result) => { scopePayloadRef.current = null; setSurface({ kind: "none" }); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
-    onError: (error) => { if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
+    mutationFn: (args: { event: EventRecord; epoch: number; scope?: "single" | "following" | "series" }) => {
+      if (!isCurrentAction(args.event, args.epoch)) throw new Error("Calendar access changed");
+      return deleteEvent(csrfToken, args.event.calendarId, args.event.id, { scope: args.scope ?? "single", expected_etag: args.event.etag, effective_from: args.scope === "following" ? args.event.originalStart : undefined });
+    },
+    onSuccess: (result, variables) => { if (!isCurrentAction(variables.event, variables.epoch)) return; setSurface((current) => (current.kind === "event" || current.kind === "scope") && calendarEventKey(current.event) === calendarEventKey(variables.event) ? { kind: "none" } : current); setNotice(mutationNotice("Event deleted", result.warnings)); invalidateEvents(); },
+    onError: (error, variables) => { if (!isCurrentAction(variables.event, variables.epoch)) return; if (isSessionExpiredError(error)) navigateToApp(); else setNotice({ message: safeError(error), intent: "error" }); },
   });
   useEffect(() => {
     if (isSessionExpiredError(eventsQuery.error)) navigateToApp();
@@ -263,10 +329,11 @@ export default function CalendarPage() {
     });
   }
   function openCreate(preset?: Partial<EventDraft>) { setSurface({ kind: "create", preset }); }
-  function openEdit(event: EventRecord) {
-    if (!canWriteEvent(event, calendarById.get(event.calendarId))) return;
+  function openEdit(action: EventAction) {
+    const { event, epoch } = action;
+    if (!isCurrentAction(event, epoch) || !canWriteEvent(event, calendarById.get(event.calendarId))) return;
     setSurface({ kind: "none" });
-    setEditEvent(event);
+    setEditEvent({ event, epoch });
   }
   function handleSelect(selection: DateSelectArg) {
     const start = selection.allDay ? selection.startStr : toLocalInputValue(selection.start.toISOString());
@@ -275,38 +342,51 @@ export default function CalendarPage() {
   }
   function handleEventClick(info: EventClickArg) {
     const event = eventsById.get(info.event.id) ?? info.event.extendedProps.event as EventRecord | undefined;
-    if (event) setSurface({ kind: "event", event });
+    if (event) selectEvent(event);
+  }
+  function selectEvent(event: EventRecord) {
+    const action = actionForDisplayedEvent(event);
+    if (action) setSurface({ kind: "event", ...action });
   }
   function handleMove(info: EventDropArg | EventResizeDoneArg) {
     const event = eventsById.get(info.event.id) ?? info.event.extendedProps.event as EventRecord | undefined;
-    if (!event || !canWriteEvent(event, calendarById.get(event.calendarId)) || !info.event.start || !info.event.end) { info.revert(); return; }
+    if (!event) { info.revert(); return; }
+    const action = actionForDisplayedEvent(event);
+    if (!action) return;
+    if (!canWriteEvent(event, calendarById.get(event.calendarId)) || !info.event.start || !info.event.end) { info.revert(); return; }
     const payload = toReschedulePayload(event, info.event.start, info.event.end);
     if (event.recurrence?.isRecurring) {
       scopePayloadRef.current = { revert: info.revert, payload };
-      setSurface({ kind: "scope", event, action: "reschedule" });
+      setSurface({ kind: "scope", ...action, action: "reschedule" });
     } else {
-      updateMutation.mutate({ event, payload, revert: info.revert });
+      updateMutation.mutate({ ...action, payload, revert: info.revert });
     }
   }
   function confirmScope(scope: "single" | "following" | "series") {
     if (surface.kind !== "scope") return;
-    const { event, action } = surface;
+    const { event, action, epoch } = surface;
+    if (!isCurrentAction(event, epoch)) return;
     const { revert, payload } = scopePayloadRef.current ?? {};
     scopePayloadRef.current = null;
     setSurface({ kind: "none" });
-    if (action === "delete") deleteMutation.mutate({ event, scope });
-    else if ((action === "reschedule" || action === "edit") && payload) updateMutation.mutate({ event, payload: withMutationScope(event, payload, scope), revert });
+    if (action === "delete") deleteMutation.mutate({ event, epoch, scope });
+    else if ((action === "reschedule" || action === "edit") && payload) updateMutation.mutate({ event, epoch, payload: withMutationScope(event, payload, scope), revert });
   }
-  function askDelete(event: EventRecord) {
-    if (event.recurrence?.isRecurring) setSurface({ kind: "scope", event, action: "delete" });
-    else { setSurface({ kind: "none" }); setDeleteConfirm(event); }
+  function askDelete(action: EventAction) {
+    const { event, epoch } = action;
+    if (!isCurrentAction(event, epoch)) return;
+    if (event.recurrence?.isRecurring) setSurface({ kind: "scope", event, epoch, action: "delete" });
+    else { setSurface({ kind: "none" }); setDeleteConfirm({ event, epoch }); }
   }
   function saveDraft(draft: EventDraft, calendarId: string) {
-    if (surface.kind === "create") createMutation.mutate(toCreatePayload(calendarId, draft));
-    else if (editEvent) {
-      const payload = toUpdatePayload(editEvent, draft);
-      if (editEvent.recurrence?.isRecurring) { scopePayloadRef.current = { payload }; setSurface({ kind: "scope", event: editEvent, action: "edit" }); setEditEvent(null); }
-      else updateMutation.mutate({ event: editEvent, payload });
+    if (surface.kind === "create") {
+      if (sourceAuthority.isUnavailable(calendarId)) return;
+      createMutation.mutate({ payload: toCreatePayload(calendarId, draft), epoch: sourceAuthority.epoch(calendarId) });
+    }
+    else if (editEvent && isCurrentAction(editEvent.event, editEvent.epoch)) {
+      const payload = toUpdatePayload(editEvent.event, draft);
+      if (editEvent.event.recurrence?.isRecurring) { scopePayloadRef.current = { payload }; setSurface({ kind: "scope", ...editEvent, action: "edit" }); setEditEvent(null); }
+      else updateMutation.mutate({ ...editEvent, payload });
     }
   }
   function refreshCalendarIds(candidateIds: string[]) {
@@ -320,16 +400,23 @@ export default function CalendarPage() {
   }
 
   function refreshSelectedCalendars() {
-    refreshCalendarIds(sortedSelectedCalendarIds);
+    const refreshable = sortedSelectedCalendarIds.filter((id) => !sourceAuthority.isUnavailable(id));
+    if (refreshable.length) refreshCalendarIds(refreshable);
+    else void eventsQuery.refetch();
+  }
+
+  function refreshAffectedCalendars(ids: string[]) {
+    refreshCalendarIds(ids.filter((id) => sortedSelectedCalendarIds.includes(id) &&
+      !sourceAuthority.isUnavailable(id) && responseOrder > sourceAuthority.epoch(id)));
   }
 
   function resumeParkedCalendars() {
-    refreshCalendarIds(eventStatus?.resumeCalendarIds ?? []);
+    refreshAffectedCalendars(eventStatus?.resumeCalendarIds ?? []);
   }
 
   function refreshDegradedCalendars() {
     const degraded = eventStatus?.kind === "degraded" ? eventStatus.degradedCalendarIds ?? [] : [];
-    refreshCalendarIds(degraded);
+    refreshAffectedCalendars(degraded);
   }
 
   function showAllCalendars() {
@@ -354,15 +441,15 @@ export default function CalendarPage() {
       {!selectedCalendarIds.length ? <EmptyState title="No calendars selected" message="Choose at least one calendar from the sidebar to see your events." action={<button className="button button-secondary" onClick={showAllCalendars}>Show all calendars</button>} /> : <div className={`calendar-canvas-wrap ${narrowCalendarLayout && !phoneCalendarLayout && view === "timeGridWeek" ? "is-narrow-week" : ""} ${phoneCalendarLayout && view === "timeGridWeek" ? "is-phone-week" : ""} ${showMobileMonth ? "has-mobile-month" : ""}`}>
         {eventsQuery.isPending && !eventsQuery.data && <div className="calendar-overlay"><LoadingState label="Loading events" /></div>}
         {eventsQuery.isError && !events.length && <div className="calendar-overlay"><ErrorState message={safeError(eventsQuery.error)} retry={() => void eventsQuery.refetch()} /></div>}
-        {showMobileMonth && <MobileMonth visibleDate={miniCalendarDate} events={events} calendars={calendarById} onNavigate={navigate} onSelectDay={(date) => { calendarRef.current?.getApi().gotoDate(date); changeView("timeGridDay"); }} onSelectEvent={(event) => setSurface({ kind: "event", event })} onCreate={() => openCreate()} onFilters={() => setSurface({ kind: "filters" })} />}
+        {showMobileMonth && <MobileMonth visibleDate={miniCalendarDate} events={events} calendars={calendarById} onNavigate={navigate} onSelectDay={(date) => { calendarRef.current?.getApi().gotoDate(date); changeView("timeGridDay"); }} onSelectEvent={selectEvent} onCreate={() => openCreate()} onFilters={() => setSurface({ kind: "filters" })} />}
         <FullCalendar ref={calendarRef} plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]} initialView={phoneCalendarLayout && view === "timeGridWeek" ? "mobileThreeDay" : view} initialDate={usingCalendarMocks ? "2026-08-25" : undefined} firstDay={1} scrollTime={initialScrollTime} headerToolbar={false} height="100%" expandRows selectable selectMirror editable eventStartEditable eventDurationEditable nowIndicator slotEventOverlap={false} dayMaxEventRows={3} moreLinkClick="popover" views={{ mobileThreeDay: { type: "timeGrid", duration: { days: 3 } } }} events={calendarEvents} select={handleSelect} eventClick={handleEventClick} eventDrop={handleMove} eventResize={handleMove} datesSet={(arg: DatesSetArg) => { setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() }); setMiniCalendarDate(arg.view.calendar.getDate()); }} eventContent={(arg) => <CalendarEventContent arg={arg} />} />
       </div>}
     </main>
-    {surface.kind === "event" && (compactLayout ? <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></SurfaceSheet> : <aside className="event-drawer is-open" aria-label="Event details"><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface.event)} onDelete={() => askDelete(surface.event)} /></aside>)}
-    {surface.kind === "create" && <EventModal mode="create" preset={surface.preset} calendars={calendars} onClose={() => setSurface({ kind: "none" })} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
-    {editEvent && <EventModal mode="edit" event={editEvent} calendars={calendars} onClose={() => setEditEvent(null)} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
-    {surface.kind === "scope" && <ScopeDialog event={surface.event} action={surface.action} scopes={calendarById.get(surface.event.calendarId)?.capability.recurrenceScopes} onCancel={() => { scopePayloadRef.current?.revert?.(); scopePayloadRef.current = null; setSurface({ kind: "none" }); }} onConfirm={confirmScope} />}
-    {deleteConfirm && <ConfirmDialog event={deleteConfirm} busy={deleteMutation.isPending} onCancel={() => setDeleteConfirm(null)} onConfirm={() => { const event = deleteConfirm; setDeleteConfirm(null); deleteMutation.mutate({ event }); }} />}
+    {surface.kind === "event" && isCurrentAction(surface.event, surface.epoch) && (compactLayout ? <SurfaceSheet className="event-drawer" labelledBy="event-details-title" onClose={() => setSurface({ kind: "none" })}><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface)} onDelete={() => askDelete(surface)} /></SurfaceSheet> : <aside className="event-drawer is-open" aria-label="Event details"><EventDrawer event={surface.event} calendar={calendarById.get(surface.event.calendarId)} onClose={() => setSurface({ kind: "none" })} onEdit={() => openEdit(surface)} onDelete={() => askDelete(surface)} /></aside>)}
+    {surface.kind === "create" && <EventModal mode="create" preset={surface.preset} calendars={calendars.filter((calendar) => !unavailableIds.has(calendar.id))} onClose={() => setSurface({ kind: "none" })} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
+    {editEvent && isCurrentAction(editEvent.event, editEvent.epoch) && <EventModal mode="edit" event={editEvent.event} calendars={calendars} onClose={() => setEditEvent(null)} onSave={saveDraft} busy={createMutation.isPending || updateMutation.isPending} />}
+    {surface.kind === "scope" && isCurrentAction(surface.event, surface.epoch) && <ScopeDialog event={surface.event} action={surface.action} scopes={calendarById.get(surface.event.calendarId)?.capability.recurrenceScopes} onCancel={() => { if (isCurrentAction(surface.event, surface.epoch)) scopePayloadRef.current?.revert?.(); scopePayloadRef.current = null; setSurface({ kind: "none" }); }} onConfirm={confirmScope} />}
+    {deleteConfirm && isCurrentAction(deleteConfirm.event, deleteConfirm.epoch) && <ConfirmDialog event={deleteConfirm.event} busy={deleteMutation.isPending} onCancel={() => setDeleteConfirm(null)} onConfirm={() => { setDeleteConfirm(null); if (isCurrentAction(deleteConfirm.event, deleteConfirm.epoch)) deleteMutation.mutate(deleteConfirm); }} />}
   </div>;
 }
 
@@ -431,7 +518,7 @@ function SurfaceSheet({ children, className, labelledBy, onClose }: { children: 
 export function EventSyncStatus({ summary, onResume, onRepair, refreshing }: { summary: EventStatusSummary; onResume: () => void; onRepair: () => void; refreshing: boolean }) {
   return <div className={`event-status-strip event-status-row event-status-row--${summary.kind}`} role={summary.kind === "failed" ? "alert" : "status"} aria-live="polite">
     <span>{summary.label}</span>
-    {(summary.kind === "failed" || summary.kind === "degraded") && <span className="event-status-detail">Cached events remain visible. {summary.recoveryDetail}</span>}
+    {summary.recoveryDetail && <span className="event-status-detail">{summary.recoveryDetail}</span>}
     {summary.kind === "failed" && Boolean(summary.resumeCalendarIds?.length) && <button className="status-action" type="button" onClick={onResume} disabled={refreshing}>{refreshing ? "Scheduling…" : "Resume sync"}</button>}
     {summary.kind === "degraded" && <button className="status-action" type="button" onClick={onRepair} disabled={refreshing}>Refresh affected calendars</button>}
   </div>;
@@ -630,12 +717,13 @@ function Dialog({ children, onClose, labelledBy, role = "dialog", className = ""
 function EventModal({ mode, event, preset, calendars, onClose, onSave, busy }: { mode: "create" | "edit"; event?: EventRecord; preset?: Partial<EventDraft>; calendars: CalendarRecord[]; onClose: () => void; onSave: (draft: EventDraft, calendarId: string) => void; busy: boolean }) {
   const initial = { ...toEventDraft(event), ...preset };
   const [draft, setDraft] = useState<EventDraft>(initial);
-  const [calendarId, setCalendarId] = useState(event?.calendarId ?? calendars.find((calendar) => calendar.capability.create)?.id ?? "");
   const writableCalendars = calendars.filter((calendar) => (event ? calendar.capability.write : calendar.capability.create) && !calendar.readOnly);
+  const [selectedCalendarId, setCalendarId] = useState(event?.calendarId ?? writableCalendars[0]?.id ?? "");
+  const calendarId = mode === "edit" || writableCalendars.some((calendar) => calendar.id === selectedCalendarId) ? selectedCalendarId : "";
   function update<K extends keyof EventDraft>(key: K, value: EventDraft[K]) { setDraft((current) => ({ ...current, [key]: value })); }
   function changeAllDay(allDay: boolean) { setDraft((current) => toggleAllDayDraft(current, allDay)); }
   const valid = draft.title.trim().length > 0 && draft.start && draft.end && new Date(draft.end).getTime() > new Date(draft.start).getTime();
-  return <Dialog onClose={onClose} labelledBy="event-modal-title" className="event-modal"><div className="modal-header"><h2 id="event-modal-title">{mode === "create" ? "New event" : "Edit event"}</h2><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={20} /></button></div><form onSubmit={(e) => { e.preventDefault(); if (valid && calendarId) onSave(draft, calendarId); }}><label className="field"><span>Title</span><input value={draft.title} onChange={(e) => update("title", e.target.value)} placeholder="Add a title" /></label><label className="field"><span>Calendar</span><select value={calendarId} onChange={(e) => setCalendarId(e.target.value)} disabled={mode === "edit"}>{writableCalendars.length ? writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name} ({providerLabel(calendar.provider)})</option>) : <option value="">No writable calendars</option>}</select></label><label className="toggle-field"><span>All day</span><input type="checkbox" checked={draft.allDay} onChange={(e) => changeAllDay(e.target.checked)} /><span className="toggle" /></label><div className="field-row"><label className="field"><span>Starts</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.start} onChange={(e) => update("start", e.target.value)} /></label><label className="field"><span>Ends</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.end} onChange={(e) => update("end", e.target.value)} /></label></div><label className="field"><span>Location <em>Optional</em></span><input value={draft.location} onChange={(e) => update("location", e.target.value)} placeholder="Add a location" /></label><label className="field"><span>Description <em>Optional</em></span><textarea value={draft.description} onChange={(e) => update("description", e.target.value)} placeholder="Add a description" rows={4} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={!valid || !calendarId || busy}>{busy ? "Saving…" : mode === "create" ? "Create event" : "Save changes"}</button></div></form></Dialog>;
+  return <Dialog onClose={onClose} labelledBy="event-modal-title" className="event-modal"><div className="modal-header"><h2 id="event-modal-title">{mode === "create" ? "New event" : "Edit event"}</h2><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={20} /></button></div><form onSubmit={(e) => { e.preventDefault(); if (valid && calendarId) onSave(draft, calendarId); }}><label className="field"><span>Title</span><input value={draft.title} onChange={(e) => update("title", e.target.value)} placeholder="Add a title" /></label><label className="field"><span>Calendar</span><select value={calendarId} onChange={(e) => setCalendarId(e.target.value)} disabled={mode === "edit"}>{!calendarId && <option value="" disabled>{writableCalendars.length ? "Choose a calendar" : "No writable calendars"}</option>}{writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name} ({providerLabel(calendar.provider)})</option>)}</select></label><label className="toggle-field"><span>All day</span><input type="checkbox" checked={draft.allDay} onChange={(e) => changeAllDay(e.target.checked)} /><span className="toggle" /></label><div className="field-row"><label className="field"><span>Starts</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.start} onChange={(e) => update("start", e.target.value)} /></label><label className="field"><span>Ends</span><input type={draft.allDay ? "date" : "datetime-local"} value={draft.end} onChange={(e) => update("end", e.target.value)} /></label></div><label className="field"><span>Location <em>Optional</em></span><input value={draft.location} onChange={(e) => update("location", e.target.value)} placeholder="Add a location" /></label><label className="field"><span>Description <em>Optional</em></span><textarea value={draft.description} onChange={(e) => update("description", e.target.value)} placeholder="Add a description" rows={4} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={!valid || !calendarId || busy}>{busy ? "Saving…" : mode === "create" ? "Create event" : "Save changes"}</button></div></form></Dialog>;
 }
 
 function ScopeDialog({ event, action, scopes: supportedScopes, onCancel, onConfirm }: { event: EventRecord; action: "reschedule" | "edit" | "delete"; scopes?: Array<"single" | "following" | "series">; onCancel: () => void; onConfirm: (scope: "single" | "following" | "series") => void }) {

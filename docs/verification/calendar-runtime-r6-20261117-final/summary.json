@@ -1,0 +1,3083 @@
+{
+  "status": "verified_with_documented_baseline_guard_failures",
+  "test_suite_counts": {
+    "root_race_named_passes": 706,
+    "storage_integration_suite_named_passes": 97,
+    "explicit_postgres_named_cases": 11,
+    "frontend_passes": 26,
+    "skips": 0
+  },
+  "failures": [],
+  "baseline_guard_failures": [
+    {
+      "backend": "sqlite",
+      "case": "events4000-p25-c4-baseline",
+      "sampled_rss_bytes": 328794112,
+      "exit_code": -15
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p50-c4-baseline",
+      "sampled_rss_bytes": 384139264,
+      "exit_code": -15
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p25-c4-baseline",
+      "sampled_rss_bytes": 408223744,
+      "exit_code": -15
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p50-c4-baseline",
+      "sampled_rss_bytes": 467730432,
+      "exit_code": -15
+    }
+  ],
+  "speed_cases": [
+    {
+      "backend": "sqlite",
+      "case": "ordinary25-c1-speed",
+      "scenario": "ordinary",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 8.565083,
+        "first_p95_ms": 9.067291,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 121.662375,
+        "walk_p50_ms": 116.037459
+      },
+      "baseline": {
+        "first_p50_ms": 13.522333,
+        "first_p95_ms": 14.055792,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.345459,
+        "walk_p50_ms": 19.413292
+      },
+      "max_sdk_bytes": 15948,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 254786,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "ordinary25-c4-speed",
+      "scenario": "ordinary",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 25.702167,
+        "first_p95_ms": 28.879916,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 324.212834,
+        "walk_p50_ms": 313.154334
+      },
+      "baseline": {
+        "first_p50_ms": 21.834417,
+        "first_p95_ms": 24.91625,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 31.911875,
+        "walk_p50_ms": 28.9935
+      },
+      "max_sdk_bytes": 15952,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 254804,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "ordinary50-c1-speed",
+      "scenario": "ordinary",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 8.459708,
+        "first_p95_ms": 9.400125,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 117.705167,
+        "walk_p50_ms": 116.791541
+      },
+      "baseline": {
+        "first_p50_ms": 13.068917,
+        "first_p95_ms": 13.714875,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.490208,
+        "walk_p50_ms": 18.68675
+      },
+      "max_sdk_bytes": 15948,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 254778,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "ordinary50-c4-speed",
+      "scenario": "ordinary",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 23.706042,
+        "first_p95_ms": 30.75175,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 339.358875,
+        "walk_p50_ms": 314.3365
+      },
+      "baseline": {
+        "first_p50_ms": 22.091416,
+        "first_p95_ms": 37.968,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 30.326833,
+        "walk_p50_ms": 27.023667
+      },
+      "max_sdk_bytes": 15952,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 254800,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide25-s16-c1-speed",
+      "scenario": "wide",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 9.243917,
+        "first_p95_ms": 9.825292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 276.567959,
+        "walk_p50_ms": 273.300083
+      },
+      "baseline": {
+        "first_p50_ms": 13.411333,
+        "first_p95_ms": 13.860209,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.695292,
+        "walk_p50_ms": 19.0835
+      },
+      "max_sdk_bytes": 16288,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16448,
+      "first_candidate_sdk_bytes": 16284,
+      "candidate_full_sdk_bytes": 548576,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide25-s16-c4-speed",
+      "scenario": "wide",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 24.001917,
+        "first_p95_ms": 32.913125,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 776.271417,
+        "walk_p50_ms": 748.309042
+      },
+      "baseline": {
+        "first_p50_ms": 22.275333,
+        "first_p95_ms": 24.099,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 29.820666,
+        "walk_p50_ms": 28.993333
+      },
+      "max_sdk_bytes": 16288,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16446,
+      "first_candidate_sdk_bytes": 16282,
+      "candidate_full_sdk_bytes": 548592,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide50-s16-c1-speed",
+      "scenario": "wide",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 9.612041,
+        "first_p95_ms": 10.245958,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 297.126875,
+        "walk_p50_ms": 281.764209
+      },
+      "baseline": {
+        "first_p50_ms": 13.527417,
+        "first_p95_ms": 14.183625,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.561916,
+        "walk_p50_ms": 19.771209
+      },
+      "max_sdk_bytes": 16284,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16448,
+      "first_candidate_sdk_bytes": 16284,
+      "candidate_full_sdk_bytes": 548568,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide50-s16-c4-speed",
+      "scenario": "wide",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 24.641917,
+        "first_p95_ms": 33.7525,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 800.307083,
+        "walk_p50_ms": 773.669875
+      },
+      "baseline": {
+        "first_p50_ms": 22.286917,
+        "first_p95_ms": 24.085625,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 29.608208,
+        "walk_p50_ms": 27.413875
+      },
+      "max_sdk_bytes": 16288,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16448,
+      "first_candidate_sdk_bytes": 16284,
+      "candidate_full_sdk_bytes": 548592,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "sqlite",
+      "case": "dense4000-c1-speed",
+      "scenario": "dense",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 78.338958,
+        "first_p95_ms": 86.439708,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 9805.424375,
+        "walk_p50_ms": 9805.3175
+      },
+      "baseline": {
+        "first_p50_ms": 137.603375,
+        "first_p95_ms": 142.634292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 195.47,
+        "walk_p50_ms": 183.307458
+      },
+      "max_sdk_bytes": 15952,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 2551248,
+      "baseline_full_sdk_bytes": 6808062
+    },
+    {
+      "backend": "sqlite",
+      "case": "sparse4000-c1-speed",
+      "scenario": "sparse",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 4.275459,
+        "first_p95_ms": 4.697792,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 4.694834,
+        "walk_p50_ms": 4.375917
+      },
+      "baseline": {
+        "first_p50_ms": 4.655167,
+        "first_p95_ms": 5.171583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 5.139583,
+        "walk_p50_ms": 5.084459
+      },
+      "max_sdk_bytes": 15576,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 15733,
+      "first_candidate_sdk_bytes": 15576,
+      "candidate_full_sdk_bytes": 15576,
+      "baseline_full_sdk_bytes": 42612
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-c1-speed",
+      "scenario": "jumbo",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 9.047792,
+        "first_p95_ms": 9.807334,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 121.417458,
+        "walk_p50_ms": 120.247708
+      },
+      "baseline": {
+        "first_p50_ms": 14.558875,
+        "first_p95_ms": 15.115458,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 21.459583,
+        "walk_p50_ms": 20.778875
+      },
+      "max_sdk_bytes": 15948,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 15989,
+      "first_candidate_sdk_bytes": 15832,
+      "candidate_full_sdk_bytes": 254670,
+      "baseline_full_sdk_bytes": 768804
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-master-c1-speed",
+      "scenario": "jumbo-master",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 8.682084,
+        "first_p95_ms": 9.351959,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 119.838375,
+        "walk_p50_ms": 119.525083
+      },
+      "baseline": {
+        "first_p50_ms": 13.841833,
+        "first_p95_ms": 14.078583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.357042,
+        "walk_p50_ms": 19.41325
+      },
+      "max_sdk_bytes": 15952,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 16112,
+      "first_candidate_sdk_bytes": 15948,
+      "candidate_full_sdk_bytes": 254208,
+      "baseline_full_sdk_bytes": 679160
+    },
+    {
+      "backend": "postgres",
+      "case": "ordinary25-c1-speed",
+      "scenario": "ordinary",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.182167,
+        "first_p95_ms": 3.024333,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 40.4515,
+        "walk_p50_ms": 36.395542
+      },
+      "baseline": {
+        "first_p50_ms": 11.66275,
+        "first_p95_ms": 11.987542,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.319708,
+        "walk_p50_ms": 18.111
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16086,
+      "first_candidate_sdk_bytes": 15922,
+      "candidate_full_sdk_bytes": 254438,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "ordinary25-c4-speed",
+      "scenario": "ordinary",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 6.215875,
+        "first_p95_ms": 8.115542,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 74.136625,
+        "walk_p50_ms": 66.797292
+      },
+      "baseline": {
+        "first_p50_ms": 18.00675,
+        "first_p95_ms": 20.026375,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 26.429625,
+        "walk_p50_ms": 24.129125
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16088,
+      "first_candidate_sdk_bytes": 15924,
+      "candidate_full_sdk_bytes": 254442,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "ordinary50-c1-speed",
+      "scenario": "ordinary",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.391458,
+        "first_p95_ms": 2.935583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 38.448042,
+        "walk_p50_ms": 36.527083
+      },
+      "baseline": {
+        "first_p50_ms": 11.846292,
+        "first_p95_ms": 12.375208,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.470334,
+        "walk_p50_ms": 17.668916
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16088,
+      "first_candidate_sdk_bytes": 15924,
+      "candidate_full_sdk_bytes": 254430,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "ordinary50-c4-speed",
+      "scenario": "ordinary",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 6.813625,
+        "first_p95_ms": 9.900583,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 84.511959,
+        "walk_p50_ms": 76.131917
+      },
+      "baseline": {
+        "first_p50_ms": 18.11575,
+        "first_p95_ms": 20.111542,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 26.073,
+        "walk_p50_ms": 25.448625
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16088,
+      "first_candidate_sdk_bytes": 15924,
+      "candidate_full_sdk_bytes": 254444,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "wide25-s16-c1-speed",
+      "scenario": "wide",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.605958,
+        "first_p95_ms": 3.188875,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 96.202334,
+        "walk_p50_ms": 92.192625
+      },
+      "baseline": {
+        "first_p50_ms": 11.712375,
+        "first_p95_ms": 12.667791,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.117916,
+        "walk_p50_ms": 17.849792
+      },
+      "max_sdk_bytes": 16264,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16426,
+      "first_candidate_sdk_bytes": 16262,
+      "candidate_full_sdk_bytes": 547778,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "wide25-s16-c4-speed",
+      "scenario": "wide",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 7.287334,
+        "first_p95_ms": 10.275834,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 214.343125,
+        "walk_p50_ms": 190.310458
+      },
+      "baseline": {
+        "first_p50_ms": 17.622166,
+        "first_p95_ms": 19.932708,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 25.549333,
+        "walk_p50_ms": 23.530084
+      },
+      "max_sdk_bytes": 16264,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16424,
+      "first_candidate_sdk_bytes": 16260,
+      "candidate_full_sdk_bytes": 547788,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "wide50-s16-c1-speed",
+      "scenario": "wide",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.813625,
+        "first_p95_ms": 3.306542,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 97.59225,
+        "walk_p50_ms": 94.533833
+      },
+      "baseline": {
+        "first_p50_ms": 11.550208,
+        "first_p95_ms": 12.140583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.0635,
+        "walk_p50_ms": 17.891375
+      },
+      "max_sdk_bytes": 16264,
+      "parity": true,
+      "target_ms": 50,
+      "first_candidate_http_received_bytes": 16424,
+      "first_candidate_sdk_bytes": 16260,
+      "candidate_full_sdk_bytes": 547784,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "wide50-s16-c4-speed",
+      "scenario": "wide",
+      "concurrency": 4,
+      "candidate": {
+        "first_p50_ms": 7.873084,
+        "first_p95_ms": 10.221416,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 227.088666,
+        "walk_p50_ms": 201.788167
+      },
+      "baseline": {
+        "first_p50_ms": 18.02575,
+        "first_p95_ms": 20.598167,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 25.515209,
+        "walk_p50_ms": 23.873708
+      },
+      "max_sdk_bytes": 16264,
+      "parity": true,
+      "target_ms": 100,
+      "first_candidate_http_received_bytes": 16422,
+      "first_candidate_sdk_bytes": 16258,
+      "candidate_full_sdk_bytes": 547788,
+      "baseline_full_sdk_bytes": 680862
+    },
+    {
+      "backend": "postgres",
+      "case": "dense4000-c1-speed",
+      "scenario": "dense",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 3.497584,
+        "first_p95_ms": 3.774292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 767.612584,
+        "walk_p50_ms": 761.224667
+      },
+      "baseline": {
+        "first_p50_ms": 108.445583,
+        "first_p95_ms": 109.86475,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 169.024292,
+        "walk_p50_ms": 167.532875
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 16088,
+      "first_candidate_sdk_bytes": 15924,
+      "candidate_full_sdk_bytes": 2547424,
+      "baseline_full_sdk_bytes": 6808062
+    },
+    {
+      "backend": "postgres",
+      "case": "sparse4000-c1-speed",
+      "scenario": "sparse",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 1.755416,
+        "first_p95_ms": 2.042417,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 1.902083,
+        "walk_p50_ms": 1.87725
+      },
+      "baseline": {
+        "first_p50_ms": 1.115291,
+        "first_p95_ms": 1.387833,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 1.640417,
+        "walk_p50_ms": 1.361583
+      },
+      "max_sdk_bytes": 15580,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 15733,
+      "first_candidate_sdk_bytes": 15576,
+      "candidate_full_sdk_bytes": 15576,
+      "baseline_full_sdk_bytes": 42612
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-c1-speed",
+      "scenario": "jumbo",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.339,
+        "first_p95_ms": 2.7495,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 34.420709,
+        "walk_p50_ms": 33.394458
+      },
+      "baseline": {
+        "first_p50_ms": 13.169708,
+        "first_p95_ms": 13.813833,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.733625,
+        "walk_p50_ms": 19.550166
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 15961,
+      "first_candidate_sdk_bytes": 15804,
+      "candidate_full_sdk_bytes": 254296,
+      "baseline_full_sdk_bytes": 768804
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-master-c1-speed",
+      "scenario": "jumbo-master",
+      "concurrency": 1,
+      "candidate": {
+        "first_p50_ms": 2.17775,
+        "first_p95_ms": 2.664583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 34.9745,
+        "walk_p50_ms": 34.714083
+      },
+      "baseline": {
+        "first_p50_ms": 12.244625,
+        "first_p95_ms": 12.566042,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.034125,
+        "walk_p50_ms": 17.755167
+      },
+      "max_sdk_bytes": 15928,
+      "parity": true,
+      "target_ms": null,
+      "first_candidate_http_received_bytes": 16088,
+      "first_candidate_sdk_bytes": 15924,
+      "candidate_full_sdk_bytes": 253850,
+      "baseline_full_sdk_bytes": 679160
+    }
+  ],
+  "memory_cases": [
+    {
+      "backend": "sqlite",
+      "case": "events400-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 57507840,
+      "self_max_rss_bytes": 57507840,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782768,
+          "HeapInuse": 3833856,
+          "TotalAlloc": 4200480,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 21643264,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 15650424,
+          "HeapInuse": 17506304,
+          "TotalAlloc": 53915728,
+          "Sys": 36280600,
+          "SelfMaxRSSBytes": 46809088,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 14452808,
+          "HeapInuse": 16285696,
+          "TotalAlloc": 100330696,
+          "Sys": 44947736,
+          "SelfMaxRSSBytes": 54755328,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 14470384,
+          "HeapInuse": 16252928,
+          "TotalAlloc": 146709584,
+          "Sys": 44947736,
+          "SelfMaxRSSBytes": 57507840,
+          "NumGC": 21
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 35553280,
+      "self_max_rss_bytes": 35897344,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2821944,
+          "HeapInuse": 3850240,
+          "TotalAlloc": 4200264,
+          "Sys": 17139976,
+          "SelfMaxRSSBytes": 22102016,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3660464,
+          "HeapInuse": 5906432,
+          "TotalAlloc": 17326784,
+          "Sys": 19695880,
+          "SelfMaxRSSBytes": 34701312,
+          "NumGC": 9
+        },
+        {
+          "HeapAlloc": 2982392,
+          "HeapInuse": 5087232,
+          "TotalAlloc": 28005248,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 34930688,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 4011448,
+          "HeapInuse": 6266880,
+          "TotalAlloc": 38742336,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 35897344,
+          "NumGC": 22
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 105594880,
+      "self_max_rss_bytes": 106659840,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2787920,
+          "HeapInuse": 3866624,
+          "TotalAlloc": 4200032,
+          "Sys": 17680648,
+          "SelfMaxRSSBytes": 22069248,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 31362720,
+          "HeapInuse": 34807808,
+          "TotalAlloc": 195525064,
+          "Sys": 78780696,
+          "SelfMaxRSSBytes": 87769088,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 27479488,
+          "HeapInuse": 30621696,
+          "TotalAlloc": 376771832,
+          "Sys": 91363608,
+          "SelfMaxRSSBytes": 104546304,
+          "NumGC": 26
+        },
+        {
+          "HeapAlloc": 17298400,
+          "HeapInuse": 20037632,
+          "TotalAlloc": 556535696,
+          "Sys": 91379992,
+          "SelfMaxRSSBytes": 106659840,
+          "NumGC": 36
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 39960576,
+      "self_max_rss_bytes": 40075264,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2788048,
+          "HeapInuse": 3850240,
+          "TotalAlloc": 4205760,
+          "Sys": 17680648,
+          "SelfMaxRSSBytes": 22052864,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3965112,
+          "HeapInuse": 6684672,
+          "TotalAlloc": 53609760,
+          "Sys": 23922952,
+          "SelfMaxRSSBytes": 38125568,
+          "NumGC": 36
+        },
+        {
+          "HeapAlloc": 3039384,
+          "HeapInuse": 5521408,
+          "TotalAlloc": 101018368,
+          "Sys": 23939336,
+          "SelfMaxRSSBytes": 39108608,
+          "NumGC": 70
+        },
+        {
+          "HeapAlloc": 3681728,
+          "HeapInuse": 6479872,
+          "TotalAlloc": 147997704,
+          "Sys": 23939336,
+          "SelfMaxRSSBytes": 40075264,
+          "NumGC": 102
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 53952512,
+      "self_max_rss_bytes": 55001088,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2777392,
+          "HeapInuse": 3923968,
+          "TotalAlloc": 4195104,
+          "Sys": 17750296,
+          "SelfMaxRSSBytes": 21692416,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 8895488,
+          "HeapInuse": 10682368,
+          "TotalAlloc": 54644616,
+          "Sys": 39950616,
+          "SelfMaxRSSBytes": 50888704,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15663912,
+          "HeapInuse": 17604608,
+          "TotalAlloc": 94856184,
+          "Sys": 39967000,
+          "SelfMaxRSSBytes": 53903360,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 15678840,
+          "HeapInuse": 17596416,
+          "TotalAlloc": 142515032,
+          "Sys": 40229144,
+          "SelfMaxRSSBytes": 55001088,
+          "NumGC": 21
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 35160064,
+      "self_max_rss_bytes": 35225600,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2787688,
+          "HeapInuse": 3850240,
+          "TotalAlloc": 4205400,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 21610496,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 2781232,
+          "HeapInuse": 4849664,
+          "TotalAlloc": 19715456,
+          "Sys": 19695880,
+          "SelfMaxRSSBytes": 34684928,
+          "NumGC": 11
+        },
+        {
+          "HeapAlloc": 2957256,
+          "HeapInuse": 5013504,
+          "TotalAlloc": 33073992,
+          "Sys": 19695880,
+          "SelfMaxRSSBytes": 35143680,
+          "NumGC": 19
+        },
+        {
+          "HeapAlloc": 3071848,
+          "HeapInuse": 5373952,
+          "TotalAlloc": 46437192,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 35225600,
+          "NumGC": 27
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 100237312,
+      "self_max_rss_bytes": 100712448,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2878832,
+          "HeapInuse": 3940352,
+          "TotalAlloc": 4205920,
+          "Sys": 17926408,
+          "SelfMaxRSSBytes": 22118400,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 59513448,
+          "HeapInuse": 62300160,
+          "TotalAlloc": 191701944,
+          "Sys": 74778888,
+          "SelfMaxRSSBytes": 89178112,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 35110816,
+          "HeapInuse": 37871616,
+          "TotalAlloc": 384922072,
+          "Sys": 83515672,
+          "SelfMaxRSSBytes": 95092736,
+          "NumGC": 26
+        },
+        {
+          "HeapAlloc": 20896776,
+          "HeapInuse": 23339008,
+          "TotalAlloc": 561003008,
+          "Sys": 87709976,
+          "SelfMaxRSSBytes": 100712448,
+          "NumGC": 36
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events400-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 39337984,
+      "self_max_rss_bytes": 39469056,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2873408,
+          "HeapInuse": 3973120,
+          "TotalAlloc": 4200496,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 22200320,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3351472,
+          "HeapInuse": 5980160,
+          "TotalAlloc": 63149480,
+          "Sys": 24709384,
+          "SelfMaxRSSBytes": 38535168,
+          "NumGC": 42
+        },
+        {
+          "HeapAlloc": 3907792,
+          "HeapInuse": 6963200,
+          "TotalAlloc": 120513408,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 39403520,
+          "NumGC": 81
+        },
+        {
+          "HeapAlloc": 4637416,
+          "HeapInuse": 7725056,
+          "TotalAlloc": 177028616,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 39469056,
+          "NumGC": 117
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 258605056,
+      "self_max_rss_bytes": 258654208,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782608,
+          "HeapInuse": 3817472,
+          "TotalAlloc": 4200320,
+          "Sys": 13486344,
+          "SelfMaxRSSBytes": 21708800,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 138176152,
+          "HeapInuse": 141410304,
+          "TotalAlloc": 486384120,
+          "Sys": 213055800,
+          "SelfMaxRSSBytes": 206602240,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 138193056,
+          "HeapInuse": 141426688,
+          "TotalAlloc": 924500288,
+          "Sys": 264096072,
+          "SelfMaxRSSBytes": 256507904,
+          "NumGC": 22
+        },
+        {
+          "HeapAlloc": 136340304,
+          "HeapInuse": 139517952,
+          "TotalAlloc": 1421854616,
+          "Sys": 264112456,
+          "SelfMaxRSSBytes": 258654208,
+          "NumGC": 32
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 37519360,
+      "self_max_rss_bytes": 37617664,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782752,
+          "HeapInuse": 3833856,
+          "TotalAlloc": 4200464,
+          "Sys": 13224200,
+          "SelfMaxRSSBytes": 22102016,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4225160,
+          "HeapInuse": 6160384,
+          "TotalAlloc": 116340912,
+          "Sys": 19974408,
+          "SelfMaxRSSBytes": 37044224,
+          "NumGC": 73
+        },
+        {
+          "HeapAlloc": 3888128,
+          "HeapInuse": 5971968,
+          "TotalAlloc": 225195784,
+          "Sys": 19990792,
+          "SelfMaxRSSBytes": 37617664,
+          "NumGC": 138
+        },
+        {
+          "HeapAlloc": 4230792,
+          "HeapInuse": 6553600,
+          "TotalAlloc": 333564328,
+          "Sys": 19990792,
+          "SelfMaxRSSBytes": 37617664,
+          "NumGC": 202
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": -15,
+      "rss_guard_exceeded": true,
+      "external_rss_peak_bytes": 328794112,
+      "self_max_rss_bytes": null,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": null
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 38977536,
+      "self_max_rss_bytes": 39075840,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782576,
+          "HeapInuse": 3915776,
+          "TotalAlloc": 4200288,
+          "Sys": 13486344,
+          "SelfMaxRSSBytes": 21823488,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3752240,
+          "HeapInuse": 6545408,
+          "TotalAlloc": 478680216,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 38862848,
+          "NumGC": 335
+        },
+        {
+          "HeapAlloc": 3514400,
+          "HeapInuse": 6234112,
+          "TotalAlloc": 945663424,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 38862848,
+          "NumGC": 651
+        },
+        {
+          "HeapAlloc": 3993232,
+          "HeapInuse": 6545408,
+          "TotalAlloc": 1411449600,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 39075840,
+          "NumGC": 957
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 248119296,
+      "self_max_rss_bytes": 248119296,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2788208,
+          "HeapInuse": 3866624,
+          "TotalAlloc": 4205920,
+          "Sys": 13539608,
+          "SelfMaxRSSBytes": 21774336,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 138179640,
+          "HeapInuse": 141443072,
+          "TotalAlloc": 486419448,
+          "Sys": 217581896,
+          "SelfMaxRSSBytes": 208207872,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 117223648,
+          "HeapInuse": 120504320,
+          "TotalAlloc": 983778064,
+          "Sys": 218188104,
+          "SelfMaxRSSBytes": 235028480,
+          "NumGC": 25
+        },
+        {
+          "HeapAlloc": 117240504,
+          "HeapInuse": 120504320,
+          "TotalAlloc": 1483044736,
+          "Sys": 235063624,
+          "SelfMaxRSSBytes": 248119296,
+          "NumGC": 34
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 36995072,
+      "self_max_rss_bytes": 37076992,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782192,
+          "HeapInuse": 3866624,
+          "TotalAlloc": 4199904,
+          "Sys": 17680648,
+          "SelfMaxRSSBytes": 21725184,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3585376,
+          "HeapInuse": 5783552,
+          "TotalAlloc": 140796576,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 37076992,
+          "NumGC": 86
+        },
+        {
+          "HeapAlloc": 4019992,
+          "HeapInuse": 6201344,
+          "TotalAlloc": 275687768,
+          "Sys": 23976216,
+          "SelfMaxRSSBytes": 37076992,
+          "NumGC": 168
+        },
+        {
+          "HeapAlloc": 4261864,
+          "HeapInuse": 6610944,
+          "TotalAlloc": 409197760,
+          "Sys": 23976216,
+          "SelfMaxRSSBytes": 37076992,
+          "NumGC": 246
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": -15,
+      "rss_guard_exceeded": true,
+      "external_rss_peak_bytes": 384139264,
+      "self_max_rss_bytes": null,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": null
+    },
+    {
+      "backend": "sqlite",
+      "case": "events4000-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 41091072,
+      "self_max_rss_bytes": 41172992,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782616,
+          "HeapInuse": 3915776,
+          "TotalAlloc": 4200328,
+          "Sys": 17680648,
+          "SelfMaxRSSBytes": 22265856,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4438408,
+          "HeapInuse": 7364608,
+          "TotalAlloc": 580018984,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 41172992,
+          "NumGC": 380
+        },
+        {
+          "HeapAlloc": 3554392,
+          "HeapInuse": 6307840,
+          "TotalAlloc": 1151657272,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 41172992,
+          "NumGC": 739
+        },
+        {
+          "HeapAlloc": 4033128,
+          "HeapInuse": 6971392,
+          "TotalAlloc": 1719659904,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 41172992,
+          "NumGC": 1091
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 55410688,
+      "self_max_rss_bytes": 56492032,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2867648,
+          "HeapInuse": 3907584,
+          "TotalAlloc": 4194736,
+          "Sys": 13469960,
+          "SelfMaxRSSBytes": 22200320,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 13728232,
+          "HeapInuse": 15564800,
+          "TotalAlloc": 54639928,
+          "Sys": 31738120,
+          "SelfMaxRSSBytes": 46333952,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 7546720,
+          "HeapInuse": 9478144,
+          "TotalAlloc": 103019536,
+          "Sys": 40143112,
+          "SelfMaxRSSBytes": 55410688,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 15684680,
+          "HeapInuse": 17514496,
+          "TotalAlloc": 151407320,
+          "Sys": 40143112,
+          "SelfMaxRSSBytes": 56492032,
+          "NumGC": 21
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 36995072,
+      "self_max_rss_bytes": 37126144,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782720,
+          "HeapInuse": 3923968,
+          "TotalAlloc": 4200432,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 21987328,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3369248,
+          "HeapInuse": 5750784,
+          "TotalAlloc": 34317664,
+          "Sys": 19187976,
+          "SelfMaxRSSBytes": 35946496,
+          "NumGC": 20
+        },
+        {
+          "HeapAlloc": 3213976,
+          "HeapInuse": 5701632,
+          "TotalAlloc": 62416296,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 36339712,
+          "NumGC": 37
+        },
+        {
+          "HeapAlloc": 3524240,
+          "HeapInuse": 5808128,
+          "TotalAlloc": 90365144,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 37126144,
+          "NumGC": 53
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 111820800,
+      "self_max_rss_bytes": 113213440,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782864,
+          "HeapInuse": 3842048,
+          "TotalAlloc": 4200576,
+          "Sys": 17418504,
+          "SelfMaxRSSBytes": 21659648,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 47434616,
+          "HeapInuse": 50872320,
+          "TotalAlloc": 187642872,
+          "Sys": 87431448,
+          "SelfMaxRSSBytes": 97288192,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 39495904,
+          "HeapInuse": 42778624,
+          "TotalAlloc": 366786752,
+          "Sys": 100030744,
+          "SelfMaxRSSBytes": 111493120,
+          "NumGC": 25
+        },
+        {
+          "HeapAlloc": 29089016,
+          "HeapInuse": 32292864,
+          "TotalAlloc": 549498976,
+          "Sys": 100358424,
+          "SelfMaxRSSBytes": 113213440,
+          "NumGC": 33
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 41140224,
+      "self_max_rss_bytes": 41353216,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782832,
+          "HeapInuse": 3874816,
+          "TotalAlloc": 4200544,
+          "Sys": 12945672,
+          "SelfMaxRSSBytes": 22380544,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3572560,
+          "HeapInuse": 6422528,
+          "TotalAlloc": 127929568,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 39960576,
+          "NumGC": 90
+        },
+        {
+          "HeapAlloc": 4059304,
+          "HeapInuse": 7094272,
+          "TotalAlloc": 247970320,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 40960000,
+          "NumGC": 172
+        },
+        {
+          "HeapAlloc": 4327880,
+          "HeapInuse": 7274496,
+          "TotalAlloc": 368243888,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 41353216,
+          "NumGC": 252
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 57966592,
+      "self_max_rss_bytes": 57982976,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782072,
+          "HeapInuse": 3792896,
+          "TotalAlloc": 4199784,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 22298624,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 8915256,
+          "HeapInuse": 10600448,
+          "TotalAlloc": 52011864,
+          "Sys": 35707160,
+          "SelfMaxRSSBytes": 49446912,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 8930368,
+          "HeapInuse": 10625024,
+          "TotalAlloc": 92257784,
+          "Sys": 35723544,
+          "SelfMaxRSSBytes": 51232768,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 15673552,
+          "HeapInuse": 17514496,
+          "TotalAlloc": 140571728,
+          "Sys": 44128536,
+          "SelfMaxRSSBytes": 57982976,
+          "NumGC": 20
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 36700160,
+      "self_max_rss_bytes": 36782080,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2827280,
+          "HeapInuse": 3923968,
+          "TotalAlloc": 4205568,
+          "Sys": 13469960,
+          "SelfMaxRSSBytes": 21905408,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3533592,
+          "HeapInuse": 5947392,
+          "TotalAlloc": 36098200,
+          "Sys": 19958024,
+          "SelfMaxRSSBytes": 35586048,
+          "NumGC": 20
+        },
+        {
+          "HeapAlloc": 3847920,
+          "HeapInuse": 6045696,
+          "TotalAlloc": 65485800,
+          "Sys": 19990792,
+          "SelfMaxRSSBytes": 36175872,
+          "NumGC": 37
+        },
+        {
+          "HeapAlloc": 3487448,
+          "HeapInuse": 5980160,
+          "TotalAlloc": 95694336,
+          "Sys": 19990792,
+          "SelfMaxRSSBytes": 36782080,
+          "NumGC": 54
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 94896128,
+      "self_max_rss_bytes": 95846400,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782608,
+          "HeapInuse": 3776512,
+          "TotalAlloc": 4200320,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 22282240,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 48188272,
+          "HeapInuse": 51494912,
+          "TotalAlloc": 178903640,
+          "Sys": 79059224,
+          "SelfMaxRSSBytes": 94158848,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 17162000,
+          "HeapInuse": 19808256,
+          "TotalAlloc": 357795392,
+          "Sys": 79386904,
+          "SelfMaxRSSBytes": 95698944,
+          "NumGC": 25
+        },
+        {
+          "HeapAlloc": 39194624,
+          "HeapInuse": 41926656,
+          "TotalAlloc": 547669312,
+          "Sys": 79386904,
+          "SelfMaxRSSBytes": 95846400,
+          "NumGC": 35
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "wide-s16-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 40435712,
+      "self_max_rss_bytes": 40550400,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2873200,
+          "HeapInuse": 3866624,
+          "TotalAlloc": 4200288,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 21856256,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4225208,
+          "HeapInuse": 6914048,
+          "TotalAlloc": 135005568,
+          "Sys": 28903688,
+          "SelfMaxRSSBytes": 39829504,
+          "NumGC": 92
+        },
+        {
+          "HeapAlloc": 4321880,
+          "HeapInuse": 6995968,
+          "TotalAlloc": 261715328,
+          "Sys": 29182216,
+          "SelfMaxRSSBytes": 40271872,
+          "NumGC": 177
+        },
+        {
+          "HeapAlloc": 4188872,
+          "HeapInuse": 7364608,
+          "TotalAlloc": 389719328,
+          "Sys": 29182216,
+          "SelfMaxRSSBytes": 40550400,
+          "NumGC": 260
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 59080704,
+      "self_max_rss_bytes": 60309504,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782552,
+          "HeapInuse": 3825664,
+          "TotalAlloc": 4200264,
+          "Sys": 13486344,
+          "SelfMaxRSSBytes": 22134784,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 10131664,
+          "HeapInuse": 11960320,
+          "TotalAlloc": 55707624,
+          "Sys": 36194568,
+          "SelfMaxRSSBytes": 51691520,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15404496,
+          "HeapInuse": 17235968,
+          "TotalAlloc": 110263664,
+          "Sys": 44615944,
+          "SelfMaxRSSBytes": 58998784,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 16249968,
+          "HeapInuse": 18169856,
+          "TotalAlloc": 161685512,
+          "Sys": 44615944,
+          "SelfMaxRSSBytes": 60309504,
+          "NumGC": 21
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 35438592,
+      "self_max_rss_bytes": 35684352,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782984,
+          "HeapInuse": 3784704,
+          "TotalAlloc": 4200696,
+          "Sys": 17488152,
+          "SelfMaxRSSBytes": 21807104,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 2924144,
+          "HeapInuse": 5013504,
+          "TotalAlloc": 17279048,
+          "Sys": 19470616,
+          "SelfMaxRSSBytes": 34242560,
+          "NumGC": 9
+        },
+        {
+          "HeapAlloc": 3967048,
+          "HeapInuse": 6078464,
+          "TotalAlloc": 28098592,
+          "Sys": 20044056,
+          "SelfMaxRSSBytes": 35078144,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 3830008,
+          "HeapInuse": 5996544,
+          "TotalAlloc": 39547544,
+          "Sys": 20044056,
+          "SelfMaxRSSBytes": 35684352,
+          "NumGC": 23
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-master-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 56098816,
+      "self_max_rss_bytes": 56754176,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2781968,
+          "HeapInuse": 3792896,
+          "TotalAlloc": 4199680,
+          "Sys": 17156360,
+          "SelfMaxRSSBytes": 21676032,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 15611576,
+          "HeapInuse": 17498112,
+          "TotalAlloc": 53963856,
+          "Sys": 32315672,
+          "SelfMaxRSSBytes": 44761088,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15626040,
+          "HeapInuse": 17432576,
+          "TotalAlloc": 94262272,
+          "Sys": 44898584,
+          "SelfMaxRSSBytes": 55476224,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 8945408,
+          "HeapInuse": 10682368,
+          "TotalAlloc": 142693520,
+          "Sys": 44914968,
+          "SelfMaxRSSBytes": 56754176,
+          "NumGC": 21
+        }
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "jumbo-master-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 35078144,
+      "self_max_rss_bytes": 35176448,
+      "postgres_cluster_child_rss_sum_peak_bytes": null,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 2782232,
+          "HeapInuse": 3833856,
+          "TotalAlloc": 4199944,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 21676032,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3484976,
+          "HeapInuse": 5726208,
+          "TotalAlloc": 17165920,
+          "Sys": 19155208,
+          "SelfMaxRSSBytes": 34390016,
+          "NumGC": 9
+        },
+        {
+          "HeapAlloc": 2959384,
+          "HeapInuse": 5308416,
+          "TotalAlloc": 28222376,
+          "Sys": 23628040,
+          "SelfMaxRSSBytes": 34979840,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 3578160,
+          "HeapInuse": 5701632,
+          "TotalAlloc": 38936216,
+          "Sys": 23890184,
+          "SelfMaxRSSBytes": 35176448,
+          "NumGC": 22
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 47431680,
+      "self_max_rss_bytes": 49381376,
+      "postgres_cluster_child_rss_sum_peak_bytes": 23363584,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018680,
+          "HeapInuse": 4055040,
+          "TotalAlloc": 4436392,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 20283392,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 9046240,
+          "HeapInuse": 10788864,
+          "TotalAlloc": 52219760,
+          "Sys": 31721736,
+          "SelfMaxRSSBytes": 40632320,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15814256,
+          "HeapInuse": 17784832,
+          "TotalAlloc": 97212512,
+          "Sys": 36456712,
+          "SelfMaxRSSBytes": 45613056,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 17895944,
+          "HeapInuse": 19898368,
+          "TotalAlloc": 143663720,
+          "Sys": 40651016,
+          "SelfMaxRSSBytes": 49381376,
+          "NumGC": 20
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 28639232,
+      "self_max_rss_bytes": 29130752,
+      "postgres_cluster_child_rss_sum_peak_bytes": 25149440,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3057952,
+          "HeapInuse": 4055040,
+          "TotalAlloc": 4436240,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 20905984,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3188512,
+          "HeapInuse": 5300224,
+          "TotalAlloc": 18462256,
+          "Sys": 19663112,
+          "SelfMaxRSSBytes": 27934720,
+          "NumGC": 11
+        },
+        {
+          "HeapAlloc": 4007504,
+          "HeapInuse": 6365184,
+          "TotalAlloc": 29735896,
+          "Sys": 19695880,
+          "SelfMaxRSSBytes": 28229632,
+          "NumGC": 18
+        },
+        {
+          "HeapAlloc": 3171600,
+          "HeapInuse": 5324800,
+          "TotalAlloc": 40547592,
+          "Sys": 23890184,
+          "SelfMaxRSSBytes": 29130752,
+          "NumGC": 26
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 93323264,
+      "self_max_rss_bytes": 93339648,
+      "postgres_cluster_child_rss_sum_peak_bytes": 37257216,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018712,
+          "HeapInuse": 4046848,
+          "TotalAlloc": 4436424,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 20054016,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 22299648,
+          "HeapInuse": 24772608,
+          "TotalAlloc": 196706624,
+          "Sys": 74864920,
+          "SelfMaxRSSBytes": 81723392,
+          "NumGC": 16
+        },
+        {
+          "HeapAlloc": 27096464,
+          "HeapInuse": 30146560,
+          "TotalAlloc": 364708912,
+          "Sys": 83253528,
+          "SelfMaxRSSBytes": 92766208,
+          "NumGC": 24
+        },
+        {
+          "HeapAlloc": 22301568,
+          "HeapInuse": 25141248,
+          "TotalAlloc": 543744680,
+          "Sys": 83253528,
+          "SelfMaxRSSBytes": 93339648,
+          "NumGC": 33
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 32096256,
+      "self_max_rss_bytes": 32096256,
+      "postgres_cluster_child_rss_sum_peak_bytes": 25755648,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3013360,
+          "HeapInuse": 4063232,
+          "TotalAlloc": 4431072,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 20267008,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4521576,
+          "HeapInuse": 7651328,
+          "TotalAlloc": 54586216,
+          "Sys": 20252936,
+          "SelfMaxRSSBytes": 30769152,
+          "NumGC": 33
+        },
+        {
+          "HeapAlloc": 5047800,
+          "HeapInuse": 8298496,
+          "TotalAlloc": 103412640,
+          "Sys": 24447240,
+          "SelfMaxRSSBytes": 31686656,
+          "NumGC": 63
+        },
+        {
+          "HeapAlloc": 3708688,
+          "HeapInuse": 6660096,
+          "TotalAlloc": 150446944,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 32096256,
+          "NumGC": 92
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 52985856,
+      "self_max_rss_bytes": 53182464,
+      "postgres_cluster_child_rss_sum_peak_bytes": 24166400,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018584,
+          "HeapInuse": 4120576,
+          "TotalAlloc": 4436296,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 20725760,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 15808176,
+          "HeapInuse": 17776640,
+          "TotalAlloc": 54157504,
+          "Sys": 32246024,
+          "SelfMaxRSSBytes": 40321024,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15822984,
+          "HeapInuse": 17727488,
+          "TotalAlloc": 102452920,
+          "Sys": 44861704,
+          "SelfMaxRSSBytes": 52740096,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 9001360,
+          "HeapInuse": 10846208,
+          "TotalAlloc": 137401464,
+          "Sys": 44861704,
+          "SelfMaxRSSBytes": 53182464,
+          "NumGC": 19
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 28917760,
+      "self_max_rss_bytes": 28999680,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26083328,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3058720,
+          "HeapInuse": 4210688,
+          "TotalAlloc": 4437008,
+          "Sys": 17926408,
+          "SelfMaxRSSBytes": 20267008,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3934376,
+          "HeapInuse": 6504448,
+          "TotalAlloc": 20426288,
+          "Sys": 19155208,
+          "SelfMaxRSSBytes": 28114944,
+          "NumGC": 12
+        },
+        {
+          "HeapAlloc": 3133072,
+          "HeapInuse": 5259264,
+          "TotalAlloc": 33763080,
+          "Sys": 19171592,
+          "SelfMaxRSSBytes": 28917760,
+          "NumGC": 21
+        },
+        {
+          "HeapAlloc": 3775984,
+          "HeapInuse": 5988352,
+          "TotalAlloc": 47170720,
+          "Sys": 19171592,
+          "SelfMaxRSSBytes": 28999680,
+          "NumGC": 29
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 104333312,
+      "self_max_rss_bytes": 104349696,
+      "postgres_cluster_child_rss_sum_peak_bytes": 37060608,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018896,
+          "HeapInuse": 4079616,
+          "TotalAlloc": 4436608,
+          "Sys": 13224200,
+          "SelfMaxRSSBytes": 20627456,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 47399016,
+          "HeapInuse": 50642944,
+          "TotalAlloc": 188672912,
+          "Sys": 87693592,
+          "SelfMaxRSSBytes": 98418688,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 45814776,
+          "HeapInuse": 48832512,
+          "TotalAlloc": 361927920,
+          "Sys": 96229656,
+          "SelfMaxRSSBytes": 104316928,
+          "NumGC": 21
+        },
+        {
+          "HeapAlloc": 20439784,
+          "HeapInuse": 23240704,
+          "TotalAlloc": 540886264,
+          "Sys": 96229656,
+          "SelfMaxRSSBytes": 104349696,
+          "NumGC": 30
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events400-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 32751616,
+      "self_max_rss_bytes": 32833536,
+      "postgres_cluster_child_rss_sum_peak_bytes": 25903104,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018864,
+          "HeapInuse": 4177920,
+          "TotalAlloc": 4436576,
+          "Sys": 17942792,
+          "SelfMaxRSSBytes": 20791296,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4276520,
+          "HeapInuse": 7380992,
+          "TotalAlloc": 63477872,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 31506432,
+          "NumGC": 37
+        },
+        {
+          "HeapAlloc": 3686720,
+          "HeapInuse": 6922240,
+          "TotalAlloc": 120650664,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 31653888,
+          "NumGC": 70
+        },
+        {
+          "HeapAlloc": 4486112,
+          "HeapInuse": 7790592,
+          "TotalAlloc": 178164752,
+          "Sys": 28920072,
+          "SelfMaxRSSBytes": 32833536,
+          "NumGC": 103
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 262225920,
+      "self_max_rss_bytes": 262225920,
+      "postgres_cluster_child_rss_sum_peak_bytes": 28409856,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3013744,
+          "HeapInuse": 4317184,
+          "TotalAlloc": 4431456,
+          "Sys": 13224200,
+          "SelfMaxRSSBytes": 21135360,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 117366432,
+          "HeapInuse": 120766464,
+          "TotalAlloc": 505802808,
+          "Sys": 217430328,
+          "SelfMaxRSSBytes": 209125376,
+          "NumGC": 18
+        },
+        {
+          "HeapAlloc": 136677032,
+          "HeapInuse": 140124160,
+          "TotalAlloc": 985957368,
+          "Sys": 252295480,
+          "SelfMaxRSSBytes": 244891648,
+          "NumGC": 25
+        },
+        {
+          "HeapAlloc": 69390008,
+          "HeapInuse": 71286784,
+          "TotalAlloc": 1443254088,
+          "Sys": 252295480,
+          "SelfMaxRSSBytes": 262225920,
+          "NumGC": 32
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 30179328,
+      "self_max_rss_bytes": 30179328,
+      "postgres_cluster_child_rss_sum_peak_bytes": 28835840,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018496,
+          "HeapInuse": 4161536,
+          "TotalAlloc": 4436208,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 20545536,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4119424,
+          "HeapInuse": 6660096,
+          "TotalAlloc": 120010560,
+          "Sys": 19187976,
+          "SelfMaxRSSBytes": 29065216,
+          "NumGC": 82
+        },
+        {
+          "HeapAlloc": 3298000,
+          "HeapInuse": 5701632,
+          "TotalAlloc": 232008904,
+          "Sys": 19187976,
+          "SelfMaxRSSBytes": 30081024,
+          "NumGC": 157
+        },
+        {
+          "HeapAlloc": 4533184,
+          "HeapInuse": 7249920,
+          "TotalAlloc": 344419304,
+          "Sys": 19204360,
+          "SelfMaxRSSBytes": 30179328,
+          "NumGC": 232
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": -15,
+      "rss_guard_exceeded": true,
+      "external_rss_peak_bytes": 408223744,
+      "self_max_rss_bytes": null,
+      "postgres_cluster_child_rss_sum_peak_bytes": 45219840,
+      "heap_checkpoints": null
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 34947072,
+      "self_max_rss_bytes": 34947072,
+      "postgres_cluster_child_rss_sum_peak_bytes": 82411520,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018704,
+          "HeapInuse": 4055040,
+          "TotalAlloc": 4436416,
+          "Sys": 17942792,
+          "SelfMaxRSSBytes": 21069824,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4249664,
+          "HeapInuse": 7585792,
+          "TotalAlloc": 458822216,
+          "Sys": 28920072,
+          "SelfMaxRSSBytes": 34652160,
+          "NumGC": 270
+        },
+        {
+          "HeapAlloc": 4105696,
+          "HeapInuse": 7086080,
+          "TotalAlloc": 904778736,
+          "Sys": 28920072,
+          "SelfMaxRSSBytes": 34832384,
+          "NumGC": 521
+        },
+        {
+          "HeapAlloc": 3662688,
+          "HeapInuse": 6651904,
+          "TotalAlloc": 1355026872,
+          "Sys": 28920072,
+          "SelfMaxRSSBytes": 34947072,
+          "NumGC": 769
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 244088832,
+      "self_max_rss_bytes": 244088832,
+      "postgres_cluster_child_rss_sum_peak_bytes": 30097408,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3052776,
+          "HeapInuse": 4071424,
+          "TotalAlloc": 4431096,
+          "Sys": 13486344,
+          "SelfMaxRSSBytes": 19595264,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 117365360,
+          "HeapInuse": 120578048,
+          "TotalAlloc": 503889544,
+          "Sys": 226375992,
+          "SelfMaxRSSBytes": 204128256,
+          "NumGC": 18
+        },
+        {
+          "HeapAlloc": 136680072,
+          "HeapInuse": 139911168,
+          "TotalAlloc": 984049368,
+          "Sys": 260753736,
+          "SelfMaxRSSBytes": 244088832,
+          "NumGC": 25
+        },
+        {
+          "HeapAlloc": 117394192,
+          "HeapInuse": 120594432,
+          "TotalAlloc": 1441273112,
+          "Sys": 260753736,
+          "SelfMaxRSSBytes": 244088832,
+          "NumGC": 33
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 30146560,
+      "self_max_rss_bytes": 30162944,
+      "postgres_cluster_child_rss_sum_peak_bytes": 29048832,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3019000,
+          "HeapInuse": 4169728,
+          "TotalAlloc": 4436712,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 20561920,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3495976,
+          "HeapInuse": 5963776,
+          "TotalAlloc": 145131816,
+          "Sys": 23906568,
+          "SelfMaxRSSBytes": 29687808,
+          "NumGC": 99
+        },
+        {
+          "HeapAlloc": 4520536,
+          "HeapInuse": 7020544,
+          "TotalAlloc": 280258184,
+          "Sys": 23906568,
+          "SelfMaxRSSBytes": 30048256,
+          "NumGC": 186
+        },
+        {
+          "HeapAlloc": 3474968,
+          "HeapInuse": 6053888,
+          "TotalAlloc": 416078392,
+          "Sys": 23906568,
+          "SelfMaxRSSBytes": 30162944,
+          "NumGC": 276
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": -15,
+      "rss_guard_exceeded": true,
+      "external_rss_peak_bytes": 467730432,
+      "self_max_rss_bytes": null,
+      "postgres_cluster_child_rss_sum_peak_bytes": 45875200,
+      "heap_checkpoints": null
+    },
+    {
+      "backend": "postgres",
+      "case": "events4000-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 34193408,
+      "self_max_rss_bytes": 34291712,
+      "postgres_cluster_child_rss_sum_peak_bytes": 82903040,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3019104,
+          "HeapInuse": 4046848,
+          "TotalAlloc": 4436816,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 20365312,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3511280,
+          "HeapInuse": 6578176,
+          "TotalAlloc": 550264720,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 33177600,
+          "NumGC": 312
+        },
+        {
+          "HeapAlloc": 3786576,
+          "HeapInuse": 6701056,
+          "TotalAlloc": 1093066576,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 33669120,
+          "NumGC": 613
+        },
+        {
+          "HeapAlloc": 4069600,
+          "HeapInuse": 7176192,
+          "TotalAlloc": 1636613072,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 34291712,
+          "NumGC": 909
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p25-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 51724288,
+      "self_max_rss_bytes": 52297728,
+      "postgres_cluster_child_rss_sum_peak_bytes": 24526848,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3053104,
+          "HeapInuse": 4292608,
+          "TotalAlloc": 4431392,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 21266432,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 15800560,
+          "HeapInuse": 17809408,
+          "TotalAlloc": 54895032,
+          "Sys": 40179992,
+          "SelfMaxRSSBytes": 47611904,
+          "NumGC": 9
+        },
+        {
+          "HeapAlloc": 15823952,
+          "HeapInuse": 17801216,
+          "TotalAlloc": 103254920,
+          "Sys": 44374296,
+          "SelfMaxRSSBytes": 51658752,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 15836032,
+          "HeapInuse": 17825792,
+          "TotalAlloc": 143506160,
+          "Sys": 44390680,
+          "SelfMaxRSSBytes": 52297728,
+          "NumGC": 18
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p25-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 29933568,
+      "self_max_rss_bytes": 30015488,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26296320,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018712,
+          "HeapInuse": 4136960,
+          "TotalAlloc": 4436424,
+          "Sys": 12945672,
+          "SelfMaxRSSBytes": 20594688,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4093464,
+          "HeapInuse": 6569984,
+          "TotalAlloc": 36364456,
+          "Sys": 19712264,
+          "SelfMaxRSSBytes": 29605888,
+          "NumGC": 23
+        },
+        {
+          "HeapAlloc": 3244888,
+          "HeapInuse": 5808128,
+          "TotalAlloc": 66015824,
+          "Sys": 19974408,
+          "SelfMaxRSSBytes": 29786112,
+          "NumGC": 44
+        },
+        {
+          "HeapAlloc": 3601064,
+          "HeapInuse": 6012928,
+          "TotalAlloc": 95497696,
+          "Sys": 19974408,
+          "SelfMaxRSSBytes": 30015488,
+          "NumGC": 64
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p25-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 96567296,
+      "self_max_rss_bytes": 103661568,
+      "postgres_cluster_child_rss_sum_peak_bytes": 37224448,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3018648,
+          "HeapInuse": 4022272,
+          "TotalAlloc": 4436360,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 20643840,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 30947432,
+          "HeapInuse": 34103296,
+          "TotalAlloc": 190029920,
+          "Sys": 79321368,
+          "SelfMaxRSSBytes": 85393408,
+          "NumGC": 15
+        },
+        {
+          "HeapAlloc": 50989976,
+          "HeapInuse": 54157312,
+          "TotalAlloc": 344718272,
+          "Sys": 87775512,
+          "SelfMaxRSSBytes": 96567296,
+          "NumGC": 21
+        },
+        {
+          "HeapAlloc": 19056432,
+          "HeapInuse": 21889024,
+          "TotalAlloc": 507599360,
+          "Sys": 96164120,
+          "SelfMaxRSSBytes": 103661568,
+          "NumGC": 29
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p25-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 34930688,
+      "self_max_rss_bytes": 34930688,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26279936,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3013720,
+          "HeapInuse": 4079616,
+          "TotalAlloc": 4431432,
+          "Sys": 13469960,
+          "SelfMaxRSSBytes": 20463616,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3776872,
+          "HeapInuse": 6840320,
+          "TotalAlloc": 132819888,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 32735232,
+          "NumGC": 81
+        },
+        {
+          "HeapAlloc": 3800272,
+          "HeapInuse": 7004160,
+          "TotalAlloc": 257744112,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 33947648,
+          "NumGC": 156
+        },
+        {
+          "HeapAlloc": 3687872,
+          "HeapInuse": 6889472,
+          "TotalAlloc": 381934832,
+          "Sys": 24201480,
+          "SelfMaxRSSBytes": 34930688,
+          "NumGC": 227
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p50-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 51183616,
+      "self_max_rss_bytes": 51183616,
+      "postgres_cluster_child_rss_sum_peak_bytes": 24494080,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3019000,
+          "HeapInuse": 4120576,
+          "TotalAlloc": 4436712,
+          "Sys": 12962056,
+          "SelfMaxRSSBytes": 20905984,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 15812672,
+          "HeapInuse": 17784832,
+          "TotalAlloc": 54155840,
+          "Sys": 32069912,
+          "SelfMaxRSSBytes": 40337408,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 17188216,
+          "HeapInuse": 19292160,
+          "TotalAlloc": 97212088,
+          "Sys": 40474904,
+          "SelfMaxRSSBytes": 50692096,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 15838960,
+          "HeapInuse": 17907712,
+          "TotalAlloc": 140328640,
+          "Sys": 40474904,
+          "SelfMaxRSSBytes": 51183616,
+          "NumGC": 20
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p50-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 29392896,
+      "self_max_rss_bytes": 29392896,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26378240,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3058040,
+          "HeapInuse": 4063232,
+          "TotalAlloc": 4436360,
+          "Sys": 17680648,
+          "SelfMaxRSSBytes": 20643840,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4476224,
+          "HeapInuse": 6840320,
+          "TotalAlloc": 37514056,
+          "Sys": 23890184,
+          "SelfMaxRSSBytes": 29196288,
+          "NumGC": 22
+        },
+        {
+          "HeapAlloc": 4214144,
+          "HeapInuse": 6643712,
+          "TotalAlloc": 68730632,
+          "Sys": 24414472,
+          "SelfMaxRSSBytes": 29278208,
+          "NumGC": 43
+        },
+        {
+          "HeapAlloc": 3207664,
+          "HeapInuse": 5488640,
+          "TotalAlloc": 100351432,
+          "Sys": 24414472,
+          "SelfMaxRSSBytes": 29392896,
+          "NumGC": 65
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p50-c4-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 96681984,
+      "self_max_rss_bytes": 99909632,
+      "postgres_cluster_child_rss_sum_peak_bytes": 37502976,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3058256,
+          "HeapInuse": 4046848,
+          "TotalAlloc": 4436544,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 20037632,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 31070168,
+          "HeapInuse": 33767424,
+          "TotalAlloc": 188583000,
+          "Sys": 91609368,
+          "SelfMaxRSSBytes": 96436224,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 29356760,
+          "HeapInuse": 32628736,
+          "TotalAlloc": 353250720,
+          "Sys": 91642136,
+          "SelfMaxRSSBytes": 96681984,
+          "NumGC": 22
+        },
+        {
+          "HeapAlloc": 40444584,
+          "HeapInuse": 43630592,
+          "TotalAlloc": 507939912,
+          "Sys": 91642136,
+          "SelfMaxRSSBytes": 99909632,
+          "NumGC": 29
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "wide-s16-p50-c4-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 33652736,
+      "self_max_rss_bytes": 33701888,
+      "postgres_cluster_child_rss_sum_peak_bytes": 40730624,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3114560,
+          "HeapInuse": 4055040,
+          "TotalAlloc": 4441648,
+          "Sys": 17664264,
+          "SelfMaxRSSBytes": 20709376,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 4226960,
+          "HeapInuse": 7159808,
+          "TotalAlloc": 137883640,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 32620544,
+          "NumGC": 83
+        },
+        {
+          "HeapAlloc": 4186288,
+          "HeapInuse": 7094272,
+          "TotalAlloc": 267830968,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 33161216,
+          "NumGC": 160
+        },
+        {
+          "HeapAlloc": 4962528,
+          "HeapInuse": 8175616,
+          "TotalAlloc": 397025800,
+          "Sys": 24725768,
+          "SelfMaxRSSBytes": 33701888,
+          "NumGC": 231
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 50561024,
+      "self_max_rss_bytes": 53559296,
+      "postgres_cluster_child_rss_sum_peak_bytes": 24887296,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3013560,
+          "HeapInuse": 4177920,
+          "TotalAlloc": 4431272,
+          "Sys": 13224200,
+          "SelfMaxRSSBytes": 20971520,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 16381920,
+          "HeapInuse": 18325504,
+          "TotalAlloc": 58005864,
+          "Sys": 40179992,
+          "SelfMaxRSSBytes": 49610752,
+          "NumGC": 9
+        },
+        {
+          "HeapAlloc": 16434968,
+          "HeapInuse": 18333696,
+          "TotalAlloc": 101220640,
+          "Sys": 40442136,
+          "SelfMaxRSSBytes": 49823744,
+          "NumGC": 13
+        },
+        {
+          "HeapAlloc": 16420328,
+          "HeapInuse": 18284544,
+          "TotalAlloc": 144051408,
+          "Sys": 44652824,
+          "SelfMaxRSSBytes": 53559296,
+          "NumGC": 17
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 28835840,
+      "self_max_rss_bytes": 28917760,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26705920,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3024224,
+          "HeapInuse": 4145152,
+          "TotalAlloc": 4441936,
+          "Sys": 17402120,
+          "SelfMaxRSSBytes": 20758528,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3311960,
+          "HeapInuse": 5652480,
+          "TotalAlloc": 17984512,
+          "Sys": 23857416,
+          "SelfMaxRSSBytes": 28246016,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 4100872,
+          "HeapInuse": 6815744,
+          "TotalAlloc": 28869040,
+          "Sys": 23873800,
+          "SelfMaxRSSBytes": 28688384,
+          "NumGC": 17
+        },
+        {
+          "HeapAlloc": 3575896,
+          "HeapInuse": 5881856,
+          "TotalAlloc": 40082568,
+          "Sys": 23906568,
+          "SelfMaxRSSBytes": 28917760,
+          "NumGC": 26
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-master-c1-baseline",
+      "baseline": true,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 50675712,
+      "self_max_rss_bytes": 50692096,
+      "postgres_cluster_child_rss_sum_peak_bytes": 24969216,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3013840,
+          "HeapInuse": 4071424,
+          "TotalAlloc": 4431552,
+          "Sys": 13486344,
+          "SelfMaxRSSBytes": 20316160,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 13862360,
+          "HeapInuse": 15761408,
+          "TotalAlloc": 54303968,
+          "Sys": 32069912,
+          "SelfMaxRSSBytes": 40222720,
+          "NumGC": 10
+        },
+        {
+          "HeapAlloc": 15809888,
+          "HeapInuse": 17629184,
+          "TotalAlloc": 95633672,
+          "Sys": 40737048,
+          "SelfMaxRSSBytes": 50675712,
+          "NumGC": 14
+        },
+        {
+          "HeapAlloc": 17179184,
+          "HeapInuse": 19120128,
+          "TotalAlloc": 136965448,
+          "Sys": 40737048,
+          "SelfMaxRSSBytes": 50692096,
+          "NumGC": 18
+        }
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "jumbo-master-c1-candidate",
+      "baseline": false,
+      "exit_code": 0,
+      "rss_guard_exceeded": false,
+      "external_rss_peak_bytes": 28852224,
+      "self_max_rss_bytes": 28884992,
+      "postgres_cluster_child_rss_sum_peak_bytes": 26279936,
+      "heap_checkpoints": [
+        {
+          "HeapAlloc": 3114656,
+          "HeapInuse": 4079616,
+          "TotalAlloc": 4441744,
+          "Sys": 13207816,
+          "SelfMaxRSSBytes": 20250624,
+          "NumGC": 1
+        },
+        {
+          "HeapAlloc": 3631256,
+          "HeapInuse": 6184960,
+          "TotalAlloc": 18168904,
+          "Sys": 19433736,
+          "SelfMaxRSSBytes": 28131328,
+          "NumGC": 11
+        },
+        {
+          "HeapAlloc": 3388568,
+          "HeapInuse": 5808128,
+          "TotalAlloc": 29210368,
+          "Sys": 19433736,
+          "SelfMaxRSSBytes": 28803072,
+          "NumGC": 18
+        },
+        {
+          "HeapAlloc": 4074920,
+          "HeapInuse": 6414336,
+          "TotalAlloc": 40510656,
+          "Sys": 19450120,
+          "SelfMaxRSSBytes": 28884992,
+          "NumGC": 26
+        }
+      ]
+    }
+  ],
+  "candidate_memory_cases": 28,
+  "candidate_external_rss_max_bytes": 41140224,
+  "candidate_self_rss_max_bytes": 41353216,
+  "runtime_benchmark_scope": "20 paired first-page rounds; 3 paired complete walks; 3 memory walks per worker; C1/C4; unchanged Store pools",
+  "limitations": [
+    "Full-result Store baseline is a harness-only SDK wrapper, not a production tool contract",
+    "Full walks are medians/ranges of three paired walks, not 20-round p95 evidence",
+    "Dense/complete traversal can be much slower than one full result; do not auto-traverse",
+    "E3 pilot numbers have a different workload/transport and are not direct runtime before/after values",
+    "Sampled RSS guard can overshoot; no hard process or SQL-executor memory bound is claimed",
+    "PostgreSQL child RSS sum includes auxiliary processes and double-counted shared pages; not physical/PSS memory",
+    "Killed baseline processes have incomplete heap/traversal evidence; raw failures remain failures",
+    "No real providers, credentials, application database, production, Gateway/client changes or Git publication"
+  ]
+}

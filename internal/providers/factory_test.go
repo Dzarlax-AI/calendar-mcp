@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -90,5 +91,54 @@ func TestFactorySkipsConnectedProvidersWithoutApplicationCredentials(t *testing.
 	}
 	if len(got) != 1 || got[0].Name() != "apple" {
 		t.Fatalf("providers = %#v, want only Apple", got)
+	}
+}
+
+func TestAppleRefreshUsesCurrentCredentialBinding(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
+	service := connections.New(store, cipher)
+	if err = service.CreateApple(ctx, "apple", "Apple", "user@example.test", "old"); err != nil {
+		t.Fatal(err)
+	}
+	factory := NewFactory(&config.Config{AppleCalDAVURL: "https://caldav.icloud.com"}, store, service)
+	providers, err := factory.Build(ctx)
+	if err != nil || len(providers) != 1 {
+		t.Fatalf("build: %v", err)
+	}
+	first := providers[0]
+	same, err := factory.RefreshProvider(ctx, first)
+	if err != nil || same != first {
+		t.Fatalf("unchanged binding did not preserve instance: %v", err)
+	}
+	if err = service.ReconnectApple(ctx, "apple", "user@example.test", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = factory.RefreshProvider(ctx, first); err == nil {
+		t.Fatal("pending reconnect served old provider")
+	}
+	snap, err := store.CredentialSnapshot(ctx, "apple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.CompleteNonGoogleAuthorization(ctx, snap, nil, "identity", "Apple", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	next, err := factory.RefreshProvider(ctx, first)
+	if err != nil || next == first {
+		t.Fatalf("provider not refreshed: %v", err)
+	}
+	nextBinding := next.(interface{ CredentialBinding() (string, [32]byte) })
+	rev, _ := nextBinding.CredentialBinding()
+	if rev != snap.AuthorizationRevision {
+		t.Fatal("new provider has stale revision")
 	}
 }

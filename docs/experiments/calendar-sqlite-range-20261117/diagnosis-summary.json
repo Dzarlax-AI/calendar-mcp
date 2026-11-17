@@ -1,0 +1,62 @@
+{
+  "status": "diagnosed_plan_pending",
+  "runtime_changed": false,
+  "current_sources_match_r7": true,
+  "phases": {
+    "no-background": {
+      "walk_median_ms": 5172.262667,
+      "walk_mean_ms": 5186.769944333333,
+      "pages": 334,
+      "phase_mean_per_walk_ms": {
+        "AuthorityNS": 85.578501,
+        "ReadNS": 4642.508222,
+        "PackNS": 117.94942566666667,
+        "FinalValidationNS": 53.402194333333334
+      },
+      "nested_read_mean_per_walk_ms": {
+        "pool_wait_ns": 0.10194333333333333,
+        "sql_events_ns": 4550.322278,
+        "sql_metadata_ns": 58.813648
+      },
+      "background_reads": 0,
+      "background_writes": 0
+    },
+    "background": {
+      "walk_median_ms": 14051.17375,
+      "walk_mean_ms": 14115.310527666667,
+      "pages": 334,
+      "phase_mean_per_walk_ms": {
+        "AuthorityNS": 9015.238359333332,
+        "ReadNS": 4569.2570123333335,
+        "PackNS": 118.93672533333333,
+        "FinalValidationNS": 106.47534666666667
+      },
+      "nested_read_mean_per_walk_ms": {
+        "pool_wait_ns": 55.03163133333333,
+        "sql_events_ns": 4416.981734333333,
+        "sql_metadata_ns": 63.57064333333334
+      },
+      "background_reads": 1035,
+      "background_writes": 1035
+    }
+  },
+  "methods": [
+    "Current frozen R7 SDK binary;3 full walks with/without unchanged5ms background;one first-page round, no first-page p95 evidence here.",
+    "SQL-only variants:3 sequential walks after current reference;full-day UTC ranges;16sources;4000 unique times and400 mixed/tied corpora. Existing indexes, explicit COVERING range cursor plus rowid lookup. No candidate SDK implementation.",
+    "UI hold:20 sequential iterations after warmup;actual SELECT and EventV2 decode copied in diagnostic;source-status query excluded. Bounded per-call raw buffer8MiB;no reusable cache;no candidate end-to-end speed/RSS claim."
+  ],
+  "decisions": [
+    "Recommend two global timed/date branches with native cursor bounds and scalar-type fallback, preserving covering eligibility and final page projection.",
+    "Do not use per-source top-K by default:small unique-time advantage, about3x worse on mixed/tied400 fixtures.",
+    "Investigate releasing SQLite UI rows before decoding within a bounded per-call buffer;fallback to current streaming on budget overflow.",
+    "Keep current source lifecycle/cursor guarantees;single-tenant has no inter-user ACL requirement. Three DB acquisitions are an implementation detail, but reducing them alone does not remove the initial queue."
+  ],
+  "limits": [
+    "Authority timer includes pool wait and metadata;wait dominance inferred from no-background control,not separately timed.",
+    "Native typed bounds alone skipped selected malformed numeric timestamps;guarded fallback preserves the rejection.",
+    "Prototype full-day bounds do not validate arbitrary RFC3339 date ceilings;production must reuse existing UTC/date boundary logic.",
+    "UI prototype has raw-byte cap only and max3599rows;production requires an additional row/header bound and cancellation tests.",
+    "UI buffer8MiB falls back on2KiB descriptions;that case gets no meaningful hold-time reduction.",
+    "No production state or current runtime implementation changed."
+  ]
+}

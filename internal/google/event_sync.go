@@ -15,6 +15,7 @@ import (
 	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/token"
 )
 
 // EventSyncPolicy supplies the bounded defaults appropriate for Google's
@@ -58,8 +59,13 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		call = call.PageToken(string(request.PageToken))
 	}
 
+	binding := &token.RequestBinding{}
+	ctx = token.WithRequestBinding(ctx, binding)
 	response, err := call.Context(ctx).Do()
 	if err != nil {
+		if binding.AuthorityError != nil {
+			return calendar.EventSyncPage{}, &calendar.EventSyncAuthorityError{Cause: binding.AuthorityError}
+		}
 		var apiErr *googleapi.Error
 		if errors.As(err, &apiErr) && apiErr.Code == http.StatusGone {
 			// A stale sync token requires replacement, but must not mutate this page.
@@ -68,10 +74,10 @@ func (p *Provider) SyncEvents(ctx context.Context, request calendar.EventSyncReq
 		return calendar.EventSyncPage{}, classifyGoogleSyncError(err)
 	}
 
-	page := calendar.EventSyncPage{SourceTimeZone: response.TimeZone}
+	page := calendar.EventSyncPage{SourceTimeZone: response.TimeZone, RoleConfirmed: true, AccessRole: response.AccessRole, CredentialRevision: binding.Revision, CredentialDigest: binding.Digest}
 	for _, item := range response.Items {
 		if item == nil || item.Id == "" {
-			return calendar.EventSyncPage{}, syncProtocolError(nil)
+			return page, syncProtocolError(nil)
 		}
 		if item.Status == "cancelled" {
 			page.DeletedEventIDs = append(page.DeletedEventIDs, item.Id)
@@ -178,6 +184,9 @@ func (p *Provider) RepairEventSyncObject(ctx context.Context, request calendar.E
 				var apiErr *googleapi.Error
 				if errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone) {
 					return calendar.EventSyncObjectRepairResult{Object: object, Outcome: calendar.EventSyncObjectProviderDeleted}, nil
+				}
+				if googleRepairWriteOnlyDenied(apiErr) {
+					return calendar.EventSyncObjectRepairResult{}, &calendar.EventSyncError{Class: calendar.EventSyncTransient, Cause: err}
 				}
 				return calendar.EventSyncObjectRepairResult{}, classifyGoogleSyncError(err)
 			}
@@ -412,6 +421,21 @@ func classifyGoogleSyncError(err error) error {
 		class = calendar.EventSyncTransient
 	}
 	return &calendar.EventSyncError{Class: class, RetryAfter: googleRetryAfter(apiErr.Header), ProviderStatus: apiErr.Code, ProviderReason: reason, Cause: err}
+}
+
+// A known write-only failure is object-local; it is not read revocation.
+func googleRepairWriteOnlyDenied(err *googleapi.Error) bool {
+	if err == nil || err.Code != http.StatusForbidden || len(err.Errors) == 0 {
+		return false
+	}
+	for _, item := range err.Errors {
+		switch strings.ToLower(item.Reason) {
+		case "forbiddenfornonorganizer", "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded", "dailylimitexceeded", "calendarusagelimitsexceeded":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func googleSyncRateLimited(apiErr *googleapi.Error) bool {

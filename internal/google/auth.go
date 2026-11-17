@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -40,4 +41,18 @@ func newHTTPClient(store token.Store, cfg *oauth2.Config, initial *oauth2.Token)
 	client := oauth2.NewClient(context.Background(), ts)
 	client.Timeout = 30 * time.Second
 	return client
+}
+
+// newSnapshotHTTPClient requires successful decryption of the captured token;
+// unlike the legacy file-token path it never falls back to an empty token.
+func newSnapshotHTTPClient(store token.Store, cfg *oauth2.Config) (*http.Client, error) {
+	initial, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	if initial == nil || (initial.AccessToken == "" && initial.RefreshToken == "") {
+		return nil, fmt.Errorf("snapshot has no OAuth credentials")
+	}
+	client := &http.Client{Transport: token.SnapshotTransport(store, cfg, initial), Timeout: 30 * time.Second}
+	return client, nil
 }

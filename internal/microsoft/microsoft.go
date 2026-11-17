@@ -19,10 +19,11 @@ import (
 const graphBase = "https://graph.microsoft.com/v1.0"
 
 type Provider struct {
-	client    *http.Client
-	baseURL   string
-	routeName string
-	calendars map[string]struct{}
+	client     *http.Client
+	baseURL    string
+	tokenStore token.Store
+	routeName  string
+	calendars  map[string]struct{}
 }
 
 func New(clientID, clientSecret, tenantID, refreshToken, tokenDir string) (*Provider, error) {
@@ -33,7 +34,30 @@ func New(clientID, clientSecret, tenantID, refreshToken, tokenDir string) (*Prov
 func NewWithTokenStore(clientID, clientSecret, tenantID string, store token.Store, initial *oauth2.Token) (*Provider, error) {
 	cfg := newOAuthConfig(clientID, clientSecret, tenantID)
 	client := newHTTPClient(store, cfg, initial)
-	return &Provider{client: client, baseURL: graphBase}, nil
+	return &Provider{client: client, baseURL: graphBase, tokenStore: store}, nil
+}
+
+// NewWithSnapshotTokenStore loads the captured token before publishing a
+// replacement route. The legacy constructor still supports file-token fallback.
+func NewWithSnapshotTokenStore(clientID, clientSecret, tenantID string, store token.Store) (*Provider, error) {
+	initial, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	if initial == nil || (initial.AccessToken == "" && initial.RefreshToken == "") {
+		return nil, fmt.Errorf("snapshot has no OAuth credentials")
+	}
+	cfg := newOAuthConfig(clientID, clientSecret, tenantID)
+	return &Provider{client: oauthHTTPClient(store, cfg, initial), baseURL: graphBase, tokenStore: store}, nil
+}
+
+// CredentialBinding reports the snapshot currently held by the token store,
+// including a refresh this instance has already persisted.
+func (p *Provider) CredentialBinding() (string, [32]byte) {
+	if bound, ok := p.tokenStore.(interface{ CredentialBinding() (string, [32]byte) }); ok {
+		return bound.CredentialBinding()
+	}
+	return "", [32]byte{}
 }
 
 func (p *Provider) Name() string { return "microsoft" }

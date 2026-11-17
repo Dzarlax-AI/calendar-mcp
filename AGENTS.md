@@ -33,7 +33,7 @@ Go version: 1.27.3 (from go.mod)
 
 ## MCP Tools
 
-- `/mcp/modern` exposes 12 tools with typed lifecycle contracts: `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, `search_events`, `create_event`, `update_event`, `delete_event`, `respond_to_event`, `move_event`, `import_event`. Requires `ENABLE_V2=true`; no `_v2` aliases.
+- `/mcp/modern` exposes 12 base tools with typed lifecycle contracts: `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, `search_events`, `create_event`, `update_event`, `delete_event`, `respond_to_event`, `move_event`, `import_event`. Requires `ENABLE_V2=true`; no `_v2` aliases.
 - `/mcp/compat` preserves the original five tools and adds the original eleven V2 tools when `ENABLE_V2=true`.
 - `/mcp` follows `MCP_CATALOG_MODE=compat|modern`, default `compat`. Empty mode keeps compatibility; invalid mode or modern with V2 disabled fails startup. Trailing-slash variants use the same catalog.
 - Identical names across catalogs can have different schemas/results: modern `get_events` returns the V2 page; compat `get_events` returns the legacy list. Never auto-detect a contract from arguments or silently retry another catalog.
@@ -41,6 +41,19 @@ Go version: 1.27.3 (from go.mod)
 - Migrate one connection per client. Gateway modern identity, schema caches, ACL mapping, and proxy paths require explicit review; do not silently reuse legacy permissions or switch production defaults.
 
 Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>` (canonical multi-account IDs also remain supported).
+
+### Cached Google summaries
+
+- `get_cached_events` adds a thirteenth modern tool only with `ENABLE_V2`, `EVENT_READ_MODEL_ENABLED`, platform Store/cipher, primary API key and a ready narrow reader. Compat and live/REST/native contracts remain separate.
+- Require 1–16 unique explicit canonical platform Google IDs, RFC3339 start/end within every source's target window, page size 25 by default (1–50), optional opaque cursor up to 4 KiB. Unknown or unavailable sources close the whole request; never call providers or start synchronization from this tool.
+- Bound the full SDK result (text plus structured output) to 16 KiB and each transferred SQL summary to 32 KiB. Preserve whole summaries or emit explicit oversized markers. Cursor continuation uses the last emitted row; complete means the end of the cached selection, not provider completeness.
+- Migration 029 adds server-generated `authorization_revision` and role-bound `detail_receipt`. Google Begin fences leases/generations and purges before provider construction; only complete staged discovery opens receipts. Normal OAuth refresh preserves authorization and uses snapshot CAS. Each actual HTTP request captures the token binding under the existing TokenSource mutex.
+- Writer tickets must precede provider I/O. Late sync/repair/application responses and stale token errors cannot acquire current authority. Keep connection → sync-state lock order. Keep Google scalar event timestamps in UTC; preserve original payload offsets/timezones. SQLite range UNION arms must stay covering; apply timed precedence before LIMIT outside the date arm.
+- SQLite cached pages select at most page_size+1 rows before guarded summary JSON projection in a separate materialized stage; keep cursor filtering before costly master JSON checks and master exclusion before LIMIT. Final authority validation batches every expected tuple in one fresh transaction after Pack, preserving duplicate-ticket semantics and all receipt/revision checks. Do not hold a connection through Pack or HTTP output.
+- SQLite page ranges use global timed/date branches with native cursor bounds and covering index eligibility before rowid lookup. Validate all sources in the same read transaction before running the SQLite range SQL, which relies on that validation for calendar and connection status. Timed continuations preflight the numeric timestamp range and keep the legacy-query fallback in that transaction. The master filter may skip JSON parsing only for text with neither the literal `seriesMaster` nor a JSON Unicode escape. Keep master exclusion before LIMIT and payload validation on the selected rows.
+- SQLite full cached UI reads use a per-call buffer capped at 8 MiB raw payloads and 8192 rows, closing SQL rows before decode when the result fits. Overflow flushes the buffer and permanently streams the rest of that call. Release raw entries while decoding; do not reuse buffers across calls. PostgreSQL remains streaming. These limits do not bound total result or process memory.
+- Legacy Google bootstrap attempts at most one eligible account per worker cycle. Failure/cancellation/crash stays closed until explicit reconnect. This can temporarily remove UI/native cached projection; preserve Apple auth rechecks and Microsoft/Apple behavior.
+- Before a separately authorized activation, quiesce all old API/worker/cache writers. Migration version checks cannot stop an already running old writer. Do not mix unfenced old writers with the new reader or roll schema 029 back to an older binary.
 
 ## Environment Variables
 

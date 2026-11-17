@@ -1,0 +1,201 @@
+{
+  "synthetic_only": true,
+  "binaries": {
+    "before": "a3c8e3b04d1b89db02cf0334ef117734fcd25d965134b888e99c42124d7dbf1b",
+    "after": "fd099c1590a40c7ac97eb0f66e51e2e3e02330b6653bacfdcda7b03e41ab215f"
+  },
+  "cases": {
+    "ordinary": {
+      "stored": 4000,
+      "returned": 4000,
+      "master_rows": 0,
+      "unicode_master_rows": 0,
+      "same_order_count_and_digests": true,
+      "with_background": true,
+      "variants": {
+        "before": {
+          "median_wall_ms": 5889.460792,
+          "median_sql_ms": 3097.531641,
+          "runs": [
+            {
+              "wall_ms": 5889.460792,
+              "sql_ms": 3089.561217,
+              "pages": 334,
+              "background_reads": 191,
+              "background_writes": 191,
+              "max_sdk_bytes": 16286,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            },
+            {
+              "wall_ms": 5936.920167,
+              "sql_ms": 3097.531641,
+              "pages": 334,
+              "background_reads": 193,
+              "background_writes": 193,
+              "max_sdk_bytes": 16288,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            },
+            {
+              "wall_ms": 5882.327417,
+              "sql_ms": 3103.3019,
+              "pages": 334,
+              "background_reads": 191,
+              "background_writes": 191,
+              "max_sdk_bytes": 16288,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            }
+          ]
+        },
+        "after": {
+          "median_wall_ms": 4835.363792,
+          "median_sql_ms": 2500.423824,
+          "runs": [
+            {
+              "wall_ms": 4790.766625,
+              "sql_ms": 2493.642896,
+              "pages": 334,
+              "background_reads": 152,
+              "background_writes": 152,
+              "max_sdk_bytes": 16284,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            },
+            {
+              "wall_ms": 4933.823542,
+              "sql_ms": 2500.423824,
+              "pages": 334,
+              "background_reads": 154,
+              "background_writes": 154,
+              "max_sdk_bytes": 16288,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            },
+            {
+              "wall_ms": 4835.363792,
+              "sql_ms": 2501.59398,
+              "pages": 334,
+              "background_reads": 154,
+              "background_writes": 154,
+              "max_sdk_bytes": 16288,
+              "digest": "e1e887488e89256e14ad3f97cd133560e80243db373a7095a746f1c5f0aa1dd8",
+              "titles_digest": "d5dbdceaf76263cad718bfa11ec332ef70d7032979fadb4a623f879539d7d60d",
+              "reference_digest": "518f85ea2a9beef4656d2961b06eb89852ef928cae0b2c5ea04fc87240836eab"
+            }
+          ]
+        }
+      }
+    },
+    "masters": {
+      "stored": 4000,
+      "returned": 3600,
+      "master_rows": 400,
+      "unicode_master_rows": 200,
+      "same_order_count_and_digests": true,
+      "with_background": true,
+      "variants": {
+        "before": {
+          "median_wall_ms": 5285.440167,
+          "median_sql_ms": 2742.732596,
+          "runs": [
+            {
+              "wall_ms": 5240.587667,
+              "sql_ms": 2763.680874,
+              "pages": 300,
+              "background_reads": 165,
+              "background_writes": 165,
+              "max_sdk_bytes": 16286,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            },
+            {
+              "wall_ms": 5662.140708,
+              "sql_ms": 2742.732596,
+              "pages": 300,
+              "background_reads": 170,
+              "background_writes": 170,
+              "max_sdk_bytes": 16284,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            },
+            {
+              "wall_ms": 5285.440167,
+              "sql_ms": 2731.709007,
+              "pages": 300,
+              "background_reads": 167,
+              "background_writes": 167,
+              "max_sdk_bytes": 16284,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            }
+          ]
+        },
+        "after": {
+          "median_wall_ms": 4661.375583,
+          "median_sql_ms": 2306.543088,
+          "runs": [
+            {
+              "wall_ms": 4399.758416,
+              "sql_ms": 2285.811591,
+              "pages": 300,
+              "background_reads": 138,
+              "background_writes": 138,
+              "max_sdk_bytes": 16288,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            },
+            {
+              "wall_ms": 4695.558667,
+              "sql_ms": 2333.957606,
+              "pages": 300,
+              "background_reads": 141,
+              "background_writes": 141,
+              "max_sdk_bytes": 16288,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            },
+            {
+              "wall_ms": 4661.375583,
+              "sql_ms": 2306.543088,
+              "pages": 300,
+              "background_reads": 141,
+              "background_writes": 141,
+              "max_sdk_bytes": 16288,
+              "digest": "98e153f856b4c0a4278544aa2cd96e53b0d4f80980523ceac2358c57769bd352",
+              "titles_digest": "f26d26729b91caafd781412791c7b4b9a753524036bcc6c859dd3eaddd95a375",
+              "reference_digest": "f049c0bacb97051a4e202aa1498830eb0ab00bbc7942c5df97ab27af1dcd68ab"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "method": "Three paired fresh-process walks per corpus. Each process uses a fresh copy of the same seeded SQLite fixture, the existing 5 ms full UI read and sync background, 16 sources, 512-byte descriptions, page size 25, and loopback MCP SDK. The diagnostic build overlay only enables timing capture in the harness. Before and after runtime code came from the working checkout.",
+  "verification": {
+    "go_race_named_pass": 717,
+    "go_race_named_skip": 1,
+    "go_vet": "passed",
+    "server_build": "passed",
+    "negative_controls": [
+      "Removing the Unicode escape guard exposes a series master.",
+      "Removing real timestamps from the numeric probe skips a malformed row."
+    ],
+    "source_delta": [
+      "internal/storage/event_pages.go",
+      "internal/storage/event_pages_test.go"
+    ],
+    "ui_buffer_and_pool_source_verified_unchanged": true
+  }
+}

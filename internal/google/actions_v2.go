@@ -25,8 +25,15 @@ func (p *Provider) SearchEventsV2(ctx context.Context, request calendar.SearchEv
 	if request.PageToken != "" {
 		call = call.PageToken(request.PageToken)
 	}
+	ctx, observe, err := p.startRoleObservation(ctx, request.CalendarID)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
+	}
 	response, err := call.Context(ctx).Do()
 	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
+	}
+	if err := observeRole(ctx, observe, response.AccessRole); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
 	items := make([]calendar.EventV2, 0, len(response.Items))
@@ -130,6 +137,10 @@ func (p *Provider) ImportEventV2(ctx context.Context, request calendar.ImportEve
 }
 
 func (p *Provider) FindEventByOperationIDV2(ctx context.Context, calendarID, operationID string) (*calendar.EventV2, error) {
+	ctx, observe, err := p.startRoleObservation(ctx, calendarID)
+	if err != nil {
+		return nil, err
+	}
 	response, err := p.svc.Events.List(calendarID).
 		PrivateExtendedProperty("calendarMcpOperation=" + operationID).
 		ShowDeleted(false).
@@ -138,6 +149,9 @@ func (p *Provider) FindEventByOperationIDV2(ctx context.Context, calendarID, ope
 		Context(ctx).
 		Do()
 	if err != nil {
+		return nil, err
+	}
+	if err := observeRole(ctx, observe, response.AccessRole); err != nil {
 		return nil, err
 	}
 	if len(response.Items) == 0 {

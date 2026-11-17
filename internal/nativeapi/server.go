@@ -439,46 +439,55 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	allowed, err := s.calendars(r, true)
+	catalog, err := s.store.CachedCalendarCatalog(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calendar data is unavailable")
 		return
 	}
-	allowedIDs := make(map[string]calendarResponse, len(allowed))
-	for _, item := range allowed {
-		allowedIDs[item.ID] = item
-	}
+	knownIDs := make(map[string]storage.CachedCalendarCatalogEntry, len(catalog))
 	ids := unique(r.URL.Query()["calendar_id"])
-	if len(ids) == 0 {
-		for _, item := range allowed {
-			if item.enabled {
-				ids = append(ids, item.ID)
-			}
+	implicit := len(ids) == 0
+	if implicit {
+		sort.Slice(catalog, func(i, j int) bool { return catalog[i].Name < catalog[j].Name })
+	}
+	for _, item := range catalog {
+		knownIDs[item.ID] = item
+		if implicit && item.Available && item.Enabled {
+			ids = append(ids, item.ID)
 		}
 	}
+	readableIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if _, ok := allowedIDs[id]; !ok {
+		entry, ok := knownIDs[id]
+		if !ok {
 			writeError(w, http.StatusForbidden, "calendar is unavailable")
 			return
 		}
+		if entry.Available && entry.Enabled {
+			readableIDs = append(readableIDs, id)
+		}
 	}
 
-	events, statuses, err := s.cachedEventsApp.ListCachedEvents(r.Context(), ids, start, end)
+	events, statuses, err := s.cachedEventsApp.ListCachedEvents(r.Context(), readableIDs, start, end)
 	if err != nil {
 		writeApplicationError(w, err)
 		return
 	}
+	statusByCalendar := make(map[string]storage.CachedSourceStatus, len(statuses))
+	for _, status := range statuses {
+		statusByCalendar[status.CalendarID] = status
+	}
 	sortEventsByStart(events)
 	items := make([]nativeEvent, 0, len(events))
 	for _, event := range events {
-		if !allowedIDs[event.CalendarID].enabled {
+		if !knownIDs[event.CalendarID].Enabled {
 			continue
 		}
 		items = append(items, nativeEvent{
 			CalendarID:         event.CalendarID,
 			Title:              event.Title,
 			Status:             event.Status,
-			SelfResponseStatus: cachedSelfResponseStatus(event, allowedIDs[event.CalendarID].googlePrimary),
+			SelfResponseStatus: cachedSelfResponseStatus(event, statusByCalendar[event.CalendarID].GooglePrimary),
 			Start:              nativeEventTime{Date: event.Start.Date, DateTime: event.Start.DateTime},
 			End:                nativeEventTime{Date: event.End.Date, DateTime: event.End.DateTime},
 		})
@@ -488,18 +497,14 @@ func (s *Server) cachedEvents(w http.ResponseWriter, r *http.Request) {
 		Sources:  make([]cachedSource, 0, len(ids)),
 		Complete: true,
 	}
-	statusByCalendar := make(map[string]storage.CachedSourceStatus, len(statuses))
-	for _, status := range statuses {
-		statusByCalendar[status.CalendarID] = status
-	}
 	for _, id := range ids {
-		if !allowedIDs[id].enabled {
+		if knownIDs[id].Available && !knownIDs[id].Enabled {
 			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "disabled", Stale: false})
 			continue
 		}
 		status, found := statusByCalendar[id]
 		if !found {
-			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "pending", Stale: true})
+			response.Sources = append(response.Sources, cachedSource{CalendarID: id, Status: "unavailable", Stale: true})
 			response.Complete = false
 			continue
 		}

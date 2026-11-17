@@ -832,3 +832,63 @@ func TestAuthorizedRepairHonorsSharedWriteFence(t *testing.T) {
 		})
 	}
 }
+
+type malformedGoogleProvider struct {
+	*fakeProvider
+	cancel context.CancelFunc
+	err    error
+}
+
+func (p *malformedGoogleProvider) Name() string { return "google" }
+func (p *malformedGoogleProvider) SyncEvents(context.Context, calendar.EventSyncRequest) (calendar.EventSyncPage, error) {
+	p.cancel()
+	if p.err != nil {
+		return calendar.EventSyncPage{}, p.err
+	}
+	return calendar.EventSyncPage{RoleConfirmed: true, AccessRole: "freeBusyReader", CredentialRevision: "revision"}, &calendar.EventSyncError{Class: calendar.EventSyncProtocol}
+}
+
+type observingFakeStore struct {
+	*fakeStore
+	observed bool
+}
+
+func (s *observingFakeStore) CaptureWriterTicket(context.Context, string) (storage.AuthorityTicket, error) {
+	return storage.AuthorityTicket{DetailReceipt: "owner:6ba7b810-9dad-11d1-80b4-00c04fd430c8"}, nil
+}
+func (s *observingFakeStore) ObserveGoogleRole(ctx context.Context, _ storage.AuthorityTicket, revision string, _ [32]byte, role string, _ time.Time) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	s.observed = revision == "revision" && role == "freeBusyReader"
+	return storage.ErrAuthorityClosed
+}
+func TestConfirmedRoleObservedAfterMalformedPageAndCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &malformedGoogleProvider{fakeProvider: &fakeProvider{}, cancel: cancel}
+	st := &observingFakeStore{fakeStore: &fakeStore{}}
+	svc := &Service{Store: st, Resolver: fakeResolver{provider: p, rawID: "calendar"}}
+	err := svc.RunOne(ctx, testState(""))
+	if !st.observed || !errors.Is(err, storage.ErrAuthorityClosed) {
+		t.Fatalf("observed=%v err=%v", st.observed, err)
+	}
+}
+
+func TestGoogleSyncPreservesLocalClosureFailure(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		afterResponse := func() {}
+		if canceled {
+			afterResponse = cancel
+		}
+		want := &calendar.EventSyncAuthorityError{Cause: context.DeadlineExceeded}
+		p := &malformedGoogleProvider{fakeProvider: &fakeProvider{}, cancel: afterResponse, err: want}
+		st := &observingFakeStore{fakeStore: &fakeStore{}}
+		service := &Service{Store: st, Resolver: fakeResolver{provider: p, rawID: "calendar"}}
+		if got := service.RunOne(ctx, testState("")); got != want {
+			t.Fatalf("canceled=%v: got %v, want %v", canceled, got, want)
+		}
+	}
+}

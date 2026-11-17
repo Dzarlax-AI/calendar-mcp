@@ -12,14 +12,29 @@ import (
 	"google.golang.org/api/googleapi"
 
 	"calendar-mcp/internal/calendar"
+	"calendar-mcp/internal/storage"
+	"calendar-mcp/internal/token"
 )
 
 const defaultGooglePageSize int64 = 250
 
 func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calendar.CalendarCapabilities, error) {
-	entry, err := p.svc.CalendarList.Get(calendarID).Context(ctx).Do()
+	ctx, observe, err := p.startCalendarRoleObservation(ctx, calendarID)
 	if err != nil {
 		return calendar.CalendarCapabilities{}, err
+	}
+	entry, err := p.svc.CalendarList.Get(calendarID).Context(ctx).Do()
+	if err != nil {
+		return calendar.CalendarCapabilities{}, authorityError(ctx, err)
+	}
+	knownRole := entry.AccessRole == "owner" || entry.AccessRole == "writer" || entry.AccessRole == "writerWithoutPrivateAccess" || entry.AccessRole == "reader" || entry.AccessRole == "freeBusyReader"
+	if err := observeRole(ctx, observe, entry.AccessRole); err != nil {
+		if !errors.Is(err, storage.ErrAuthorityClosed) || !knownRole {
+			return calendar.CalendarCapabilities{}, err
+		}
+		if ctx.Err() != nil {
+			return calendar.CalendarCapabilities{}, ctx.Err()
+		}
 	}
 	canWrite := entry.AccessRole == "owner" || entry.AccessRole == "writer"
 	readOnly := !canWrite
@@ -63,16 +78,26 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 		if pageToken != "" {
 			call = call.PageToken(pageToken)
 		}
-		response, err := call.Context(ctx).Do()
+		callCtx, observe, err := p.startRoleObservation(ctx, calendarID)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			return nil, err
+		}
+		response, err := call.Context(callCtx).Do()
+		if err != nil {
+			if binding := token.RequestBindingFromContext(callCtx); binding != nil && binding.AuthorityError != nil {
+				return nil, binding.AuthorityError
+			}
+			if callCtx.Err() != nil {
+				return nil, callCtx.Err()
 			}
 			var apiErr *googleapi.Error
 			if errors.As(err, &apiErr) {
 				return nil, &googleapi.Error{Code: apiErr.Code}
 			}
 			return nil, errors.New("sync marker lookup failed")
+		}
+		if err := observeRole(callCtx, observe, response.AccessRole); err != nil {
+			return nil, err
 		}
 		if len(response.Items) > 2 {
 			return nil, errors.New("sync marker lookup exceeded page size")
@@ -129,8 +154,15 @@ func (p *Provider) listOneView(ctx context.Context, request calendar.ListEventsR
 	} else {
 		call = call.SingleEvents(false)
 	}
+	ctx, observe, err := p.startRoleObservation(ctx, request.CalendarID)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
+	}
 	response, err := call.Context(ctx).Do()
 	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, authorityError(ctx, err)
+	}
+	if err := observeRole(ctx, observe, response.AccessRole); err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
 	}
 	items := make([]calendar.EventV2, 0, len(response.Items))

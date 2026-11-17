@@ -1,0 +1,9 @@
+{
+  "comparison": "docs/verification/calendar-performance-20261117/final-source-manifest.json",
+  "compared_files": 200,
+  "changed": [],
+  "new_runtime_changes": false,
+  "probe_binary_sha256": "54a19f3c9883f66f4bd70b4463a7d7f63187b5a53ff1b5b3c8984cfe036b5179",
+  "current_sdk_binary_sha256": "d82dcc166e0b8d862151b64d517d0bcc45e87fde07a0c0ec874691bee667b40d",
+  "ui_probe_binary_sha256": "e6722c3fb40b77fd0096ec68a376163ae95811aaabe1bcf24c0ab7a50d75bdc0"
+}

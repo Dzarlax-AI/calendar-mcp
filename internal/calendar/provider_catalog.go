@@ -50,6 +50,21 @@ func (r *Registry) ListAvailabilityCalendars(ctx context.Context, provider strin
 		expectedSet[route] = true
 	}
 	providers := r.Providers()
+	if provider == "google" {
+		known := make(map[string]bool, len(providers))
+		for _, p := range providers {
+			known[ProviderRouteName(p)] = true
+		}
+		for _, route := range expected {
+			if !known[route] {
+				account := strings.TrimPrefix(route, "google@")
+				if err := r.discoverProviders(ctx, account); err != nil {
+					return result, fmt.Errorf("provider inventory unavailable")
+				}
+			}
+		}
+		providers = r.Providers()
+	}
 	live := map[string]Provider{}
 	for _, p := range providers {
 		if p.Name() != provider {
@@ -66,7 +81,11 @@ func (r *Registry) ListAvailabilityCalendars(ctx context.Context, provider strin
 	}
 	seenIDs := map[string]bool{}
 	for _, route := range expected {
-		p := live[route]
+		p, err := r.RefreshProvider(ctx, live[route])
+		if err != nil {
+			return AvailabilityCalendarCatalog{}, fmt.Errorf("provider inventory unavailable")
+		}
+		live[route] = p
 		cals, err := p.ListCalendars(ctx)
 		if err != nil {
 			return AvailabilityCalendarCatalog{}, fmt.Errorf("provider listing unavailable")
@@ -131,6 +150,18 @@ func (r *Registry) ListAvailabilityCalendars(ctx context.Context, provider strin
 	for i := range expected {
 		if expected[i] != current[i] {
 			return AvailabilityCalendarCatalog{}, fmt.Errorf("provider inventory changed")
+		}
+	}
+	r.mu.RLock()
+	checkBinding := r.refresh != nil
+	r.mu.RUnlock()
+	if checkBinding {
+		for _, route := range expected {
+			p := live[route]
+			current, err := r.RefreshProvider(ctx, p)
+			if err != nil || !sameProvider(current, p) {
+				return AvailabilityCalendarCatalog{}, fmt.Errorf("provider authorization changed during listing")
+			}
 		}
 	}
 	result.Complete = true

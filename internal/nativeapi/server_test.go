@@ -256,6 +256,72 @@ func TestNativeAPICachedEventsUsesProjectionAndReportsPartialFreshness(t *testin
 	if source := response.Sources[1]; source.CalendarID != "google:unwarmed" || source.Status != "pending" || !source.Stale || source.LastSuccessAt != nil || source.NextSyncAt != nil || source.CoverageComplete != nil {
 		t.Fatalf("pending source = %#v", response.Sources[1])
 	}
+	for _, bounds := range []string{
+		"start=2026-08-28T09:30:00Z&end=2026-08-28T09:45:00Z",
+		"start=2026-08-28T11:30:00%2B02:00&end=2026-08-28T11:45:00%2B02:00",
+		"start=2026-08-28T04:00:00-05:30&end=2026-08-28T04:15:00-05:30",
+	} {
+		result := request(handler, http.MethodGet, "/cached-events?calendar_id=google:primary&"+bounds, "read-only-token")
+		var page cachedEventsResponse
+		if err := json.Unmarshal(result.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		if result.Code != http.StatusOK || len(page.Items) != 2 ||
+			page.Items[1].Start.DateTime != "2026-08-28T09:00:00Z" {
+			t.Fatalf("equivalent cached range %s: %d %s", bounds, result.Code, result.Body.String())
+		}
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("equivalent cached ranges called provider: %d", provider.listCalls)
+	}
+}
+
+func TestNativeCachedEventsKnownUnreadableSource(t *testing.T) {
+	handler, provider, store := testHandler(t, false)
+	prepareCachedCalendar(t, store, "google:primary")
+	now := time.Now().UTC()
+	ctx := t.Context()
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:revoked", ConnectionID: "account", ProviderCalendarID: "revoked", Name: "private name", DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateConnection(ctx, storage.Connection{ID: "ms", Provider: "microsoft", DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("test"), CredentialVersion: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	const reconnecting = "microsoft:ms:cal"
+	if err := store.UpsertCalendar(ctx, storage.Calendar{ID: reconnecting, ConnectionID: "ms", ProviderCalendarID: "cal", Name: "Synthetic", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BeginAuthorization(ctx, "ms", []byte("test-reconnect"), now); err != nil {
+		t.Fatal(err)
+	}
+	event := calendar.EventV2{ID: "keep", CalendarID: "google:primary", Provider: "google", Title: "keep", Start: calendar.EventTime{DateTime: "2026-08-28T09:00:00Z", TimeZone: "UTC"}, End: calendar.EventTime{DateTime: "2026-08-28T10:00:00Z", TimeZone: "UTC"}}
+	if err := store.UpsertCachedEvent(t.Context(), event, now); err != nil {
+		t.Fatal(err)
+	}
+	base := "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z"
+	w := request(handler, http.MethodGet, base+"&calendar_id=google:primary&calendar_id=google:revoked", "read-only-token")
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || response.Complete || len(response.Items) != 1 || len(response.Sources) != 2 || response.Sources[1] != (cachedSource{CalendarID: "google:revoked", Status: "unavailable", Stale: true}) || strings.Contains(w.Body.String(), "private name") {
+		t.Fatalf("mixed response: %d %s", w.Code, w.Body.String())
+	}
+	if got := request(handler, http.MethodGet, base+"&calendar_id=google:unknown", "read-only-token").Code; got != http.StatusForbidden {
+		t.Fatalf("unknown status = %d", got)
+	}
+	w = request(handler, http.MethodGet, base, "read-only-token")
+	if strings.Contains(w.Body.String(), "google:revoked") || strings.Contains(w.Body.String(), reconnecting) || provider.listCalls != 0 {
+		t.Fatalf("implicit response: %s, provider calls=%d", w.Body.String(), provider.listCalls)
+	}
+	w = request(handler, http.MethodGet, base+"&calendar_id="+reconnecting, "read-only-token")
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || response.Complete || len(response.Items) != 0 || len(response.Sources) != 1 ||
+		response.Sources[0] != (cachedSource{CalendarID: reconnecting, Status: "unavailable", Stale: true}) {
+		t.Fatalf("explicit reconnecting source: %s", w.Body.String())
+	}
 }
 
 func TestNativeCachedSourceErrorCodeIsAllowlisted(t *testing.T) {
@@ -712,5 +778,57 @@ func TestCachedEventsDisabledSourceIsNeutralAndPrivate(t *testing.T) {
 	}
 	if result.Complete || len(result.Sources) != 1 || result.Sources[0].Status != "pending" {
 		t.Fatalf("reenabled response=%s", w.Body.String())
+	}
+}
+
+type cachedReadHook struct {
+	*storage.Store
+	beforeRead func(context.Context) error
+}
+
+func (r cachedReadHook) ListVisibleCachedEvents(ctx context.Context, ids []string, start, end time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
+	if err := r.beforeRead(ctx); err != nil {
+		return nil, nil, err
+	}
+	return r.Store.ListVisibleCachedEvents(ctx, ids, start, end)
+}
+
+func TestCachedEventsUsesPrimaryFlagFromValidatedProjection(t *testing.T) {
+	_, provider, store := testHandler(t, false)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	const id = "google:account:owner@example.test"
+	err := store.UpsertCalendar(ctx, storage.Calendar{
+		ID: id, ConnectionID: "account", ProviderCalendarID: "owner@example.test",
+		Name: "Previously primary", GooglePrimary: true, CanRead: true, DiscoveredAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureCalendarSyncStates(ctx, now, storage.SyncWindow{Start: now.AddDate(0, 0, -7), End: now.AddDate(0, 0, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	event := calendar.EventV2{
+		ID: "event", CalendarID: id, Provider: "google",
+		Start: calendar.EventTime{Date: "2026-08-28"}, End: calendar.EventTime{Date: "2026-08-29"},
+		Attendees: []calendar.AttendeeV2{{PersonV2: calendar.PersonV2{Self: true}, Status: "declined"}},
+	}
+	if err := store.UpsertCachedEvent(ctx, event, now); err != nil {
+		t.Fatal(err)
+	}
+	app := application.New(calendar.NewRegistry([]calendar.Provider{provider}), application.WithEventReadModel(cachedReadHook{
+		Store: store,
+		beforeRead: func(ctx context.Context) error {
+			return store.ClearGooglePrimaryCalendars(ctx, "account")
+		},
+	}))
+	handler := New(Config{CachedEventsApp: app, Store: store, ReadOnlyToken: "read-only-token"}).Handler()
+	w := request(handler, http.MethodGet, "/cached-events?start=2026-08-28T00:00:00Z&end=2026-08-29T00:00:00Z&calendar_id="+id, "read-only-token")
+	var response cachedEventsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || len(response.Items) != 1 || response.Items[0].CalendarID != id || strings.Contains(w.Body.String(), "self_response_status") {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
 	}
 }

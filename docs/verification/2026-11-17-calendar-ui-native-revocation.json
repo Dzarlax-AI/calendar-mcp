@@ -1,0 +1,260 @@
+{
+  "synthetic_only": true,
+  "scope": "Final local grant recheck for Cache UI/native reads",
+  "verification": {
+    "go_race_named_results": {
+      "pass": 760,
+      "skip": 1
+    },
+    "postgres_integration_named_results": {
+      "pass": 124
+    },
+    "vet": "passed",
+    "server_build": "passed",
+    "sqlite_buffer_max_bytes": 8388608,
+    "sqlite_buffer_max_rows": 8192,
+    "sqlite_pool_max_open_connections": 1
+  },
+  "heavy_ui_store": {
+    "rounds": 6,
+    "stored": 4000,
+    "events": 3599,
+    "sources": 16,
+    "concurrency": 4,
+    "description_bytes": 2048,
+    "reads_per_process": 12,
+    "synthetic_only": true,
+    "digest": "58e7437115c6de371d0b46eabb4fcadfdb9532354ff1c97243257c4dd6f61f35",
+    "measurement": "Store.ListCachedEvents wall time excluding digest, same preseeded SQLite file, each process has four warmups followed by three groups of four overlapping requests",
+    "variants": {
+      "baseline": {
+        "median_ms": 192.50571875,
+        "runs": [
+          {
+            "median_ms": 195.305646,
+            "self_max_rss_bytes": 107790336,
+            "samples_ms": [
+              197.925875,
+              198.072208,
+              198.32025,
+              198.175958,
+              146.59,
+              146.410334,
+              146.750666,
+              195.312625,
+              195.0295,
+              195.42,
+              195.298667,
+              195.176959
+            ]
+          },
+          {
+            "median_ms": 146.035458,
+            "self_max_rss_bytes": 94142464,
+            "samples_ms": [
+              145.355625,
+              145.62425,
+              145.488084,
+              193.700292,
+              146.446666,
+              146.550208,
+              146.741,
+              194.057917,
+              96.02575,
+              144.232666,
+              144.342708,
+              193.340875
+            ]
+          },
+          {
+            "median_ms": 194.219083,
+            "self_max_rss_bytes": 93044736,
+            "samples_ms": [
+              145.460708,
+              145.580583,
+              194.166583,
+              194.271583,
+              148.032667,
+              195.3255,
+              195.424,
+              195.556042,
+              146.379291,
+              146.5605,
+              194.523167,
+              194.379167
+            ]
+          },
+          {
+            "median_ms": 196.166604,
+            "self_max_rss_bytes": 110624768,
+            "samples_ms": [
+              195.778709,
+              195.924333,
+              196.076,
+              196.257208,
+              99.023958,
+              198.182208,
+              198.299458,
+              198.481167,
+              132.8155,
+              132.751917,
+              229.7575,
+              229.902083
+            ]
+          },
+          {
+            "median_ms": 190.7923545,
+            "self_max_rss_bytes": 112115712,
+            "samples_ms": [
+              146.267666,
+              146.605667,
+              146.439209,
+              194.688667,
+              192.662958,
+              192.858333,
+              193.011833,
+              193.173875,
+              143.291458,
+              190.634167,
+              190.735917,
+              190.848792
+            ]
+          },
+          {
+            "median_ms": 170.4888125,
+            "self_max_rss_bytes": 95731712,
+            "samples_ms": [
+              147.763292,
+              147.8955,
+              196.7055,
+              196.876417,
+              144.798958,
+              193.082125,
+              193.270709,
+              193.39875,
+              146.276541,
+              146.439792,
+              146.5645,
+              195.972083
+            ]
+          }
+        ]
+      },
+      "verified": {
+        "median_ms": 196.5635105,
+        "runs": [
+          {
+            "median_ms": 197.096396,
+            "self_max_rss_bytes": 93634560,
+            "samples_ms": [
+              151.899292,
+              152.056917,
+              202.021083,
+              202.19025,
+              147.300416,
+              147.447375,
+              147.563917,
+              197.45875,
+              197.031209,
+              197.312958,
+              197.161583,
+              197.494666
+            ]
+          },
+          {
+            "median_ms": 198.409583,
+            "self_max_rss_bytes": 116228096,
+            "samples_ms": [
+              198.616166,
+              198.892709,
+              199.017541,
+              199.372958,
+              147.604583,
+              147.73325,
+              147.856292,
+              198.203,
+              149.652958,
+              149.84225,
+              198.657125,
+              198.809083
+            ]
+          },
+          {
+            "median_ms": 196.030625,
+            "self_max_rss_bytes": 112410624,
+            "samples_ms": [
+              150.656166,
+              151.052542,
+              206.892166,
+              206.608792,
+              98.915667,
+              195.837708,
+              196.096667,
+              195.964583,
+              149.005917,
+              197.650375,
+              197.75075,
+              197.910334
+            ]
+          },
+          {
+            "median_ms": 195.970584,
+            "self_max_rss_bytes": 114016256,
+            "samples_ms": [
+              98.398,
+              196.454709,
+              196.290459,
+              196.596,
+              146.484375,
+              195.36975,
+              195.513083,
+              195.650709,
+              99.522209,
+              199.251042,
+              199.367667,
+              199.526083
+            ]
+          },
+          {
+            "median_ms": 199.69566650000002,
+            "self_max_rss_bytes": 97452032,
+            "samples_ms": [
+              98.368417,
+              98.484833,
+              197.649042,
+              197.811333,
+              152.076834,
+              152.249459,
+              201.58,
+              201.721917,
+              266.693125,
+              334.002417,
+              334.189542,
+              334.305667
+            ]
+          },
+          {
+            "median_ms": 172.4942915,
+            "self_max_rss_bytes": 93011968,
+            "samples_ms": [
+              100.037,
+              148.706542,
+              196.282041,
+              196.434875,
+              147.713,
+              147.879083,
+              197.564625,
+              197.688667,
+              99.907708,
+              100.0765,
+              198.0645,
+              198.232917
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "heavy_ui_median_change_pct": 2.1078811457386992,
+  "method": "Alternating baseline/guarded order in six pairs of fresh processes. Each process warms once and measures three groups of four concurrent Store calls against an identical disposable SQLite fixture. Elapsed reading excludes comparison digest."
+}

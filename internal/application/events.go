@@ -19,11 +19,12 @@ type Service struct {
 	eventReadModelWindow storage.SyncWindow
 }
 
-// EventReadModel is the deliberately small projection surface used by the
-// browser read path and write-through reconciliation. *storage.Store
+// EventReadModel is the deliberately small projection surface used by
+// presentation reads and write-through reconciliation. *storage.Store
 // implements it without pulling application concerns into storage.
 type EventReadModel interface {
 	ListCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error)
+	ListVisibleCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error)
 	EnsureCalendarSyncStates(context.Context, time.Time, storage.SyncWindow) error
 	ScheduleCalendarSync(context.Context, string, time.Time, bool) error
 	UpsertCachedEvent(context.Context, calendar.EventV2, time.Time) error
@@ -60,7 +61,7 @@ func (s *Service) ListCachedEvents(ctx context.Context, calendarIDs []string, st
 	if s.eventReadModel == nil {
 		return nil, nil, calendar.NewAPIError(calendar.ErrorProviderUnavailable, "calendar read model is unavailable")
 	}
-	return s.eventReadModel.ListCachedEvents(ctx, calendarIDs, start, end)
+	return s.eventReadModel.ListVisibleCachedEvents(ctx, calendarIDs, start, end)
 }
 
 func (s *Service) ScheduleCalendarSync(ctx context.Context, calendarID string, now time.Time) error {
@@ -187,6 +188,7 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	if !ok {
 		return nil, nil, unsupported(provider.Name(), request.CalendarID, "V2 event creation is not supported")
 	}
+	ctx = s.captureWriter(ctx, provider, rawCalendarID)
 	if err := s.validateNotifications(ctx, provider, rawCalendarID, request.CalendarID, &request.Notifications); err != nil {
 		return nil, nil, err
 	}
@@ -225,6 +227,9 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	v2, ok := provider.(calendar.EventProviderV2)
 	if !ok {
 		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "V2 event updates are not supported")
+	}
+	if !request.PreviewOnly {
+		ctx = s.captureWriter(ctx, provider, rawRef.CalendarID)
 	}
 	if err := s.validateScopeAndNotifications(ctx, provider, rawRef.CalendarID, request.Ref.CalendarID, request.Scope, &request.Notifications); err != nil {
 		return nil, err
@@ -274,6 +279,9 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	v2, ok := provider.(calendar.EventProviderV2)
 	if !ok {
 		return nil, unsupported(provider.Name(), request.Ref.CalendarID, "V2 event deletion is not supported")
+	}
+	if !request.PreviewOnly {
+		ctx = s.captureWriter(ctx, provider, rawRef.CalendarID)
 	}
 	if err := s.validateScopeAndNotifications(ctx, provider, rawRef.CalendarID, request.Ref.CalendarID, request.Scope, &request.Notifications); err != nil {
 		return nil, err

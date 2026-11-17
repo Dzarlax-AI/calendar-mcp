@@ -168,6 +168,9 @@ type stubEventReadModel struct {
 func (m *stubEventReadModel) ListCachedEvents(context.Context, []string, time.Time, time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
 	return append([]calendar.EventV2(nil), m.cached...), nil, nil
 }
+func (m *stubEventReadModel) ListVisibleCachedEvents(ctx context.Context, ids []string, start, end time.Time) ([]calendar.EventV2, []storage.CachedSourceStatus, error) {
+	return m.ListCachedEvents(ctx, ids, start, end)
+}
 func (m *stubEventReadModel) EnsureCalendarSyncStates(_ context.Context, _ time.Time, window storage.SyncWindow) error {
 	m.ensured = append(m.ensured, window)
 	return nil
