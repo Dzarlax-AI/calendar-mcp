@@ -214,9 +214,11 @@ func (p *Provider) probeGatewayEventRead(ctx context.Context, id string, start t
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{
 		{Name: "VEVENT", Start: start, End: start.Add(time.Minute)},
 	}}}
-	objects, malformed, err := p.queryCalendarForEventSync(ctx, id, query)
-	querySucceeded := err == nil && !malformed
-	if querySucceeded {
+	objects, fallback, err := p.queryGatewayCalendar(ctx, id, query)
+	if err != nil {
+		return false, err
+	}
+	if !fallback {
 		for i := range objects {
 			if objects[i].Data != nil && normalizeAppleFixedOffsetTimezone(&objects[i]) == nil && len(objects[i].Data.Events()) > 0 {
 				return true, nil
@@ -225,40 +227,53 @@ func (p *Provider) probeGatewayEventRead(ctx context.Context, id string, start t
 		if !proveOwnedAccess {
 			return false, nil
 		}
-		// A narrow empty REPORT says nothing about access to private
-		// content elsewhere in an owned collection.
+		// A narrow empty REPORT confirms a successful read. Private access
+		// still needs an actual event from the owned collection.
 	}
-	if err != nil {
-		if class, ok := appleCalendarQueryErrorClass(err); ok {
-			if class == calendar.EventSyncAuth {
-				return false, calendar.NewAPIError(calendar.ErrorPermissionDenied, "Apple calendar authentication failed")
-			}
-			return false, &calendar.EventSyncError{Class: class}
-		}
-		if !strings.Contains(err.Error(), "HTTP 500") {
-			return false, errors.New("Apple event access check unavailable")
-		}
-	}
-	// On shared collections with a broken calendar-query, only an actual
-	// normalized object read validates the fallback. A PROPFIND alone proves
-	// the listing, not the right to read an object's body.
+	ctx = context.WithValue(ctx, gatewayEventStatusKey{}, &discoveryStatus{})
 	inventory, err := p.propfindEventSyncInventory(ctx, id)
 	if err != nil {
 		return false, err
 	}
-	if len(inventory) == 0 {
-		if querySucceeded {
-			return false, nil
+	const maxObjectProbes = 4
+	for _, item := range inventory[:min(len(inventory), maxObjectProbes)] {
+		object, missing, malformed, _, err := p.fetchEventSyncObject(ctx, item.path, item.etag)
+		if err != nil {
+			return false, err
 		}
-		return false, errors.New("Apple fallback event access unconfirmed")
+		if missing || malformed || object == nil || normalizeAppleFixedOffsetTimezone(object) != nil {
+			return false, errors.New("Apple fallback event payload unconfirmed")
+		}
+		if len(object.Data.Events()) > 0 {
+			return true, nil
+		}
 	}
-	item := inventory[0]
-	object, missing, malformed, _, err := p.fetchEventSyncObject(ctx, item.path, item.etag)
-	if err != nil || missing || malformed || object == nil {
-		return false, errors.New("Apple fallback event access unconfirmed")
+	if !fallback {
+		return false, nil
 	}
-	if err := normalizeAppleFixedOffsetTimezone(object); err != nil || len(object.Data.Events()) == 0 {
-		return false, errors.New("Apple fallback event payload unconfirmed")
+	return false, errors.New("Apple fallback event access unconfirmed")
+}
+
+func (p *Provider) queryGatewayCalendar(ctx context.Context, id string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, bool, error) {
+	status := &discoveryStatus{}
+	objects, malformed, err := p.queryCalendarForEventSync(context.WithValue(ctx, gatewayEventStatusKey{}, status), id, query)
+	switch status.code.Load() {
+	case http.StatusUnauthorized:
+		return nil, false, calendar.NewAPIError(calendar.ErrorPermissionDenied, "Apple calendar authentication failed")
+	case http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+		return nil, false, appleEventSyncError(calendar.EventSyncPermission)
+	case http.StatusTooManyRequests:
+		return nil, false, appleEventSyncError(calendar.EventSyncRateLimited)
+	case http.StatusInternalServerError:
+		return nil, true, nil
 	}
-	return true, nil
+	if err != nil {
+		if class, ok := appleCalendarQueryErrorClass(err); ok {
+			if class == calendar.EventSyncAuth {
+				return nil, false, calendar.NewAPIError(calendar.ErrorPermissionDenied, "Apple calendar authentication failed")
+			}
+			return nil, false, appleEventSyncError(class)
+		}
+	}
+	return objects, malformed, err
 }
