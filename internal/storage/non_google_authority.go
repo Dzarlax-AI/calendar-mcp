@@ -75,7 +75,41 @@ func (s *Store) CompleteNonGoogleAuthorization(ctx context.Context, snapshot Cre
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET status='pending',next_sync_at=?,last_error_code=NULL,updated_at=? WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=? AND can_read=? AND enabled=TRUE) AND status='parked' AND (lease_until IS NULL OR lease_until<=?)`)), now, now, snapshot.ConnectionID, true, now); err != nil {
+	// Legacy permission failures may predate projection purging. Invalidate
+	// them before clearing the error, within the same authority transaction.
+	rows, err = tx.QueryContext(ctx, s.query(s.eventSyncTimeComparisons(`SELECT calendar_id FROM calendar_sync_state
+		WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=? AND can_read=? AND enabled=TRUE)
+		AND last_error_code='permission' AND (lease_until IS NULL OR lease_until<=?)`)), snapshot.ConnectionID, true, now)
+	if err != nil {
+		return err
+	}
+	var denied []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		denied = append(denied, id)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range denied {
+		if err = s.purgeAuthorizedProjection(ctx, tx, projectionCalendarScope, id); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendars SET detail_receipt=? WHERE id=?`), uuid.NewString(), id); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET status='pending',next_sync_at=?,last_error_code=NULL,updated_at=?,
+		cursor=CASE WHEN last_error_code='permission' THEN '' ELSE cursor END,
+		generation=CASE WHEN last_error_code='permission' THEN generation+1 ELSE generation END,
+		last_success_at=CASE WHEN last_error_code IN ('auth','permission') THEN NULL ELSE last_success_at END
+		WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=? AND can_read=? AND enabled=TRUE) AND (status='parked' OR last_error_code='permission') AND (lease_until IS NULL OR lease_until<=?)`)), now, now, snapshot.ConnectionID, true, now); err != nil {
 		return err
 	}
 	return tx.Commit()

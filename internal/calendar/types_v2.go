@@ -165,18 +165,23 @@ type EventV2 struct {
 	AttendeesKnown    bool         `json:"-"`
 	// SourceAttendeesComplete is not target safety evidence and does not
 	// survive cache JSON without an explicit durable provenance contract.
-	SourceAttendeesComplete bool                  `json:"-"`
-	Reminders               *ReminderSettings     `json:"reminders,omitempty"`
-	Visibility              string                `json:"visibility,omitempty"`
-	Transparency            string                `json:"transparency,omitempty"`
-	ColorID                 string                `json:"color_id,omitempty"`
-	Attachments             []Attachment          `json:"attachments,omitempty"`
-	Conference              *ConferenceData       `json:"conference,omitempty"`
-	GuestPermissions        *GuestPermissions     `json:"guest_permissions,omitempty"`
-	Google                  *GoogleEventExtension `json:"google,omitempty"`
-	Created                 *time.Time            `json:"created,omitempty"`
-	Updated                 *time.Time            `json:"updated,omitempty"`
-	ReadOnly                bool                  `json:"read_only,omitempty"`
+	SourceAttendeesComplete bool `json:"-"`
+	// SourceConferenceComplete is private provenance, not a public event field.
+	SourceConferenceComplete bool `json:"-"`
+	// MirrorMeetingToGoogle selects the private cached-copy path.
+	MirrorMeetingToGoogle bool `json:"-"`
+
+	Reminders        *ReminderSettings     `json:"reminders,omitempty"`
+	Visibility       string                `json:"visibility,omitempty"`
+	Transparency     string                `json:"transparency,omitempty"`
+	ColorID          string                `json:"color_id,omitempty"`
+	Attachments      []Attachment          `json:"attachments,omitempty"`
+	Conference       *ConferenceData       `json:"conference,omitempty"`
+	GuestPermissions *GuestPermissions     `json:"guest_permissions,omitempty"`
+	Google           *GoogleEventExtension `json:"google,omitempty"`
+	Created          *time.Time            `json:"created,omitempty"`
+	Updated          *time.Time            `json:"updated,omitempty"`
+	ReadOnly         bool                  `json:"read_only,omitempty"`
 }
 
 type EventCreateV2 struct {

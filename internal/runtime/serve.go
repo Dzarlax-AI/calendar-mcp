@@ -193,7 +193,7 @@ func runtimeMCPOptions(cfg *config.Config, store *storage.Store, cipher *credent
 	if !cfg.EnableV2 || !cfg.EventReadModelEnabled || store == nil || cipher == nil || cfg.APIKey == "" {
 		return opts, nil
 	}
-	reader, err := cachedpages.NewService(store, cipher, cachedpages.Options{Now: now, WindowAt: func(anchor time.Time) storage.SyncWindow { return eventReadModelWindow(cfg, anchor) }})
+	reader, err := cachedpages.NewService(store, cipher, cachedpages.Options{Now: now, ExcludeCalendarIDs: cfg.ExcludeCalendarIDs, IncludeImportedCalendars: cfg.IncludeImportedCalendars, WindowAt: func(anchor time.Time) storage.SyncWindow { return eventReadModelWindow(cfg, anchor) }})
 	if err != nil {
 		return opts, err
 	}

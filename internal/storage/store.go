@@ -638,13 +638,7 @@ func (s *Store) SetCalendarEnabled(ctx context.Context, id string, enabled bool,
 	if currentEnabled == enabled {
 		return tx.Commit()
 	}
-	newReceipt := uuid.NewString()
-	if provider == "google" {
-		newReceipt = ""
-		if role := DetailReceiptRole(receipt); role != "" {
-			newReceipt = role + ":" + uuid.NewString()
-		}
-	}
+	newReceipt := renewedSelectionReceipt(provider, receipt)
 	if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendars SET enabled=?, detail_receipt=? WHERE id=?`), enabled, newReceipt, id); err != nil {
 		return fmt.Errorf("update calendar selection: %w", err)
 	}
@@ -657,6 +651,16 @@ func (s *Store) SetCalendarEnabled(ctx context.Context, id string, enabled bool,
 		return fmt.Errorf("invalidate calendar sync: %w", err)
 	}
 	return tx.Commit()
+}
+
+func renewedSelectionReceipt(provider, receipt string) string {
+	if provider != "google" {
+		return uuid.NewString()
+	}
+	if role := DetailReceiptRole(receipt); role != "" {
+		return role + ":" + uuid.NewString()
+	}
+	return ""
 }
 
 func (s *Store) CalendarEnabled(ctx context.Context, id string) (bool, error) {

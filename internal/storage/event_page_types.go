@@ -8,15 +8,20 @@ import (
 
 // CachedPageRequest describes one bounded cached-event query.
 type CachedPageRequest struct {
-	CalendarIDs []string  `json:"calendar_ids"`
-	Start       time.Time `json:"start"`
-	End         time.Time `json:"end"`
-	PageSize    int       `json:"page_size"`
+	CalendarIDs           []string   `json:"calendar_ids"`
+	Start                 time.Time  `json:"start"`
+	End                   time.Time  `json:"end"`
+	PageSize              int        `json:"page_size"`
+	WithCoverage          bool       `json:"-"`
+	StartDate, EndDate    string     `json:"-"`
+	FanOutExcludeIDs      []string   `json:"-"`
+	FanOutIncludeImported bool       `json:"-"`
+	TargetWindow          SyncWindow `json:"-"`
 }
 
 // CachedPagePosition is the stable keyset position of a cached event row.
 type CachedPagePosition struct {
-	AllDay                                  bool
+	AllDay, Partial                         bool
 	StartAt, StartDate, EventID, CalendarID string
 }
 
@@ -41,6 +46,8 @@ type CachedPageSource struct {
 	CalendarID    string     `json:"calendar_id"`
 	Provider      string     `json:"provider"`
 	Status        string     `json:"status"`
+	Coverage      string     `json:"coverage,omitempty"`
+	ErrorCode     string     `json:"error_code,omitempty"`
 	Stale         bool       `json:"stale"`
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 	NextSyncAt    *time.Time `json:"next_sync_at,omitempty"`
@@ -61,9 +68,11 @@ type CachedPageReadStats struct {
 }
 
 type CachedPageRead struct {
-	Rows       []CachedPageRow
-	Sources    []CachedPageSource
-	Tickets    []AuthorityTicket
-	ObservedAt time.Time
-	Stats      CachedPageReadStats
+	Rows                  []CachedPageRow
+	Sources               []CachedPageSource
+	Tickets               []AuthorityTicket
+	Grants                []CachedPageGrant
+	WithCoverage, Partial bool
+	ObservedAt            time.Time
+	Stats                 CachedPageReadStats
 }

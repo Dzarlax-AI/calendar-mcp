@@ -23,7 +23,14 @@ func (f *PatchField[T]) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, &f.Value)
 }
 
+type MirrorMeetingUpdate struct {
+	URL   string
+	Known bool
+}
+
 type EventPatchV2 struct {
+	// MirrorMeeting is an internal managed-fragment operation, never an API field.
+	MirrorMeeting    *MirrorMeetingUpdate             `json:"-"`
 	Title            PatchField[string]               `json:"title"`
 	Description      PatchField[string]               `json:"description"`
 	Location         PatchField[string]               `json:"location"`

@@ -32,6 +32,7 @@ func Pack(read ReadPage, pageSize int, mint func(Position) (string, error)) (Pag
 		Sources:     append([]Source{}, read.Sources...),
 		Consistency: "cached_weak",
 		ObservedAt:  read.ObservedAt,
+		Partial:     read.Partial,
 	}
 	if !fitsWire(page) {
 		return Page{}, &MetadataOverflowError{Bytes: wireSize(page)}
@@ -94,7 +95,9 @@ func Pack(read ReadPage, pageSize int, mint func(Position) (string, error)) (Pag
 			if len(page.Items) == 0 || consumed == 0 {
 				return Page{}, &MetadataOverflowError{Bytes: wireSize(page)}
 			}
-			token, err := mint(read.Rows[consumed-1].Position)
+			position := read.Rows[consumed-1].Position
+			position.Partial = read.WithCoverage && page.Partial
+			token, err := mint(position)
 			if err != nil {
 				return Page{}, fmt.Errorf("mint page token: %w", err)
 			}
@@ -115,6 +118,13 @@ func Pack(read ReadPage, pageSize int, mint func(Position) (string, error)) (Pag
 						return Page{}, fmt.Errorf("account page size: %w", err)
 					}
 					withCursor = page
+					if read.WithCoverage && !position.Partial {
+						position.Partial = true
+						token, err = mint(position)
+						if err != nil {
+							return Page{}, fmt.Errorf("mint partial page token: %w", err)
+						}
+					}
 					withCursor.NextPageToken = token
 					if fitsWire(withCursor) {
 						page = withCursor
@@ -125,14 +135,14 @@ func Pack(read ReadPage, pageSize int, mint func(Position) (string, error)) (Pag
 			}
 			page.Items = page.Items[:len(page.Items)-1]
 			consumed--
-			page.Partial = hasMarker(page.Items)
+			page.Partial = read.Partial || hasMarker(page.Items)
 			sizer, err = sizerForItems(page, page.Items)
 			if err != nil {
 				return Page{}, fmt.Errorf("account page size: %w", err)
 			}
 		}
 	} else {
-		page.Complete = true
+		page.Complete = !read.WithCoverage || !page.Partial
 	}
 	if !fitsWire(page) {
 		return Page{}, &MetadataOverflowError{Bytes: wireSize(page)}

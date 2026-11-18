@@ -118,6 +118,42 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		}
 		request.ExpectedETag = etag
 	}
+	if request.Patch.MirrorMeeting != nil {
+		if !request.RequireNoAttendees || request.ExpectedSyncMarker == nil || request.Notifications != calendar.NotificationsNone {
+			return nil, calendar.DefinitiveNoDispatch(unsupportedGoogle("managed meeting update requires safe sync ownership"))
+		}
+		meeting := request.Patch.MirrorMeeting
+		// Validate the destination marker even when an explicit source body
+		// replaces it, so malformed state never gets silently discarded.
+		if _, err := calendar.MergeMirrorMeeting(existing.Description, ""); err != nil {
+			return nil, calendar.DefinitiveNoDispatch(err)
+		}
+		body := existing.Description
+		if request.Patch.Description.Present {
+			body = request.Patch.Description.Value
+			if request.Patch.Description.Null {
+				body = ""
+			}
+			if calendar.HasMirrorMeetingMarker(body) {
+				return nil, calendar.DefinitiveNoDispatch(calendar.ErrMeetingMarkerAmbiguous)
+			}
+		}
+		var merged string
+		var mergeErr error
+		if meeting.Known {
+			merged, mergeErr = calendar.MergeMirrorMeeting(body, meeting.URL)
+		} else if request.Patch.Description.Present {
+			merged, mergeErr = calendar.PreserveMirrorMeeting(body, existing.Description)
+		} else {
+			merged = body
+		}
+		if mergeErr != nil {
+			return nil, calendar.DefinitiveNoDispatch(mergeErr)
+		}
+		if request.Patch.Description.Present || merged != existing.Description {
+			request.Patch.Description = calendar.PatchField[string]{Present: true, Value: merged}
+		}
+	}
 	if err := validateGooglePatchForEventType(existing, request.Patch); err != nil {
 		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(err))
 	}

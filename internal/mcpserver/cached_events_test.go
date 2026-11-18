@@ -155,7 +155,7 @@ func TestCachedEventsActualSDKCallerSessionAndFreshRights(t *testing.T) {
 	if page.Items[0].EventID != "event-1" {
 		t.Fatal("same accepted key could not continue in another session")
 	}
-	legacy := newCachedSDKClient(t, srv.URL+"/mcp", "legacy")
+	legacy := newCachedSDKClient(t, srv.URL+"/mcp/modern", "legacy")
 	if got := cachedSDKCall(t, legacy, request, first.NextPageToken); !got.IsError {
 		t.Fatal("cursor transferred between accepted credentials")
 	}
@@ -202,6 +202,7 @@ func TestCachedEventsActualSDKRegistrationPrerequisites(t *testing.T) {
 		{"modern", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/modern", 13},
 		{"compat", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/compat", 16},
 		{"default_compat", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp", 16},
+		{"default_modern", Options{EnableV2: true, EventReadModelEnabled: true, CatalogMode: CatalogModern, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp", 12},
 		{"no_read_model", Options{EnableV2: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},
 		{"no_dependency", Options{EnableV2: true, EventReadModelEnabled: true}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},
 		{"uninitialized_dependency", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: &cachedpages.Service{}}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},
@@ -418,5 +419,56 @@ func TestCachedEventsActualSDKRevocationAfterPackBeforeFinalValidation(t *testin
 	}
 	if bytes.Contains(wire, []byte("Useful title")) || len(wire) > cachedpages.MaxResultBytes {
 		t.Fatal("packed title escaped fresh validation")
+	}
+}
+
+func TestMainMCPPublishesAndServesCachedGetEvents(t *testing.T) {
+	store, reader, query := cachedHTTPFixture(t)
+	now := query.Start.Add(time.Hour)
+	state, err := store.ClaimDueCalendarSync(t.Context(), "fixture", now, now.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim synthetic calendar: %v", err)
+	}
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{NextCursor: "fixture"}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	reg := calendar.NewRegistry(nil)
+	mux := http.NewServeMux()
+	if err := RegisterWithOptions(mux, reg, application.New(reg), auth.Options{APIKey: "primary"},
+		Options{EnableV2: true, EventReadModelEnabled: true, CatalogMode: CatalogModern, CachedEvents: reader}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := newCachedSDKClient(t, srv.URL+"/mcp", "primary")
+	listed, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range listed.Tools {
+		if tool.Name == "get_cached_events" {
+			t.Fatal("legacy cached alias exposed on the main endpoint")
+		}
+		if tool.Name == "get_events" {
+			properties := tool.InputSchema.Properties
+			found = properties["calendar_ids"] != nil && properties["page_size"] != nil && properties["calendar_id"] == nil
+		}
+	}
+	if !found {
+		t.Fatal("cached get_events schema missing on main endpoint")
+	}
+	call := mcp.CallToolRequest{}
+	call.Params.Name = "get_events"
+	call.Params.Arguments = map[string]any{
+		"start": query.Start.Format(time.RFC3339), "end": query.End.Format(time.RFC3339), "page_size": 1,
+	}
+	result, err := c.CallTool(t.Context(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := decodeCachedSDKPage(t, result)
+	if len(page.Items) != 1 || page.Items[0].Title != "Useful title 0" || page.NextPageToken == "" || page.Consistency != "cached_weak" {
+		t.Fatalf("unexpected main endpoint page: %+v", page)
 	}
 }

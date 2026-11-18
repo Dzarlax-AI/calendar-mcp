@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"calendar-mcp/internal/auth"
+	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/credentials"
 	"calendar-mcp/internal/storage"
 )
@@ -38,9 +40,11 @@ func init() {
 }
 
 type Options struct {
-	Window   storage.SyncWindow
-	WindowAt func(time.Time) storage.SyncWindow
-	Now      func() time.Time
+	Window                   storage.SyncWindow
+	WindowAt                 func(time.Time) storage.SyncWindow
+	Now                      func() time.Time
+	ExcludeCalendarIDs       []string
+	IncludeImportedCalendars bool
 }
 
 type PageStats struct {
@@ -52,13 +56,15 @@ type PageStats struct {
 }
 
 type Service struct {
-	store    *storage.Store
-	cipher   *credentials.Cipher
-	codec    *Codec
-	window   storage.SyncWindow
-	windowAt func(time.Time) storage.SyncWindow
-	now      func() time.Time
-	ready    bool
+	store                    *storage.Store
+	cipher                   *credentials.Cipher
+	codec                    *Codec
+	window                   storage.SyncWindow
+	windowAt                 func(time.Time) storage.SyncWindow
+	now                      func() time.Time
+	ready                    bool
+	excludeCalendarIDs       []string
+	includeImportedCalendars bool
 
 	// testBeforeFinalValidation is available only to package tests.
 	testBeforeFinalValidation func()
@@ -82,7 +88,7 @@ func NewService(store *storage.Store, cipher *credentials.Cipher, opts Options) 
 	if !validWindow(window) {
 		return nil, errors.New("cached page service requires a valid sync window")
 	}
-	return &Service{store: store, cipher: cipher, codec: NewCodec(cipher, opts.Now), window: window, windowAt: opts.WindowAt, now: opts.Now, ready: true}, nil
+	return &Service{store: store, cipher: cipher, codec: NewCodec(cipher, opts.Now), window: window, windowAt: opts.WindowAt, now: opts.Now, ready: true, excludeCalendarIDs: slices.Clone(opts.ExcludeCalendarIDs), includeImportedCalendars: opts.IncludeImportedCalendars}, nil
 }
 
 func utcWindow(window storage.SyncWindow) storage.SyncWindow {
@@ -100,6 +106,18 @@ func (s *Service) Ready() bool {
 }
 
 func (s *Service) Read(ctx context.Context, request Request, pageToken string) (Page, PageStats, error) {
+	request.WithCoverage = false
+	return s.read(ctx, request, pageToken)
+}
+
+// ReadCoverage serves the versioned list contract. Existing readers keep
+// their Google-only scope, schema, and meaning of completion.
+func (s *Service) ReadCoverage(ctx context.Context, request Request, pageToken string) (Page, PageStats, error) {
+	request.WithCoverage = true
+	return s.read(ctx, request, pageToken)
+}
+
+func (s *Service) read(ctx context.Context, request Request, pageToken string) (Page, PageStats, error) {
 	var stats PageStats
 	if !s.Ready() {
 		return Page{}, stats, ErrUnavailable
@@ -108,6 +126,8 @@ func (s *Service) Read(ctx context.Context, request Request, pageToken string) (
 	if !ok {
 		return Page{}, stats, ErrUnavailable
 	}
+	request.FanOutExcludeIDs = s.excludeCalendarIDs
+	request.FanOutIncludeImported = s.includeImportedCalendars
 	request, err := normalizeRequest(request)
 	if err != nil {
 		if errors.Is(err, ErrUnavailable) {
@@ -122,33 +142,52 @@ func (s *Service) Read(ctx context.Context, request Request, pageToken string) (
 	if s.windowAt != nil {
 		window = utcWindow(s.windowAt(s.now().UTC()))
 	}
-	if !validWindow(window) || request.Start.Before(window.Start) || request.End.After(window.End) {
+	outsideWindow := request.Start.Before(window.Start) || request.End.After(window.End)
+	if !validWindow(window) || (!request.WithCoverage && outsideWindow) {
 		if pageToken != "" {
 			return Page{}, stats, fmt.Errorf("%w: window unavailable", ErrCursorUnavailable)
 		}
 		return Page{}, stats, ErrUnavailable
 	}
+	request.TargetWindow = window
 	authorityStart := time.Now()
-	captured, err := s.store.CaptureCachedPageAuthority(ctx, request)
+	var captured []storage.AuthorityTicket
+	var grants []storage.CachedPageGrant
+	var binding [32]byte
+	resolved := request
+	if request.WithCoverage {
+		grants, err = s.store.CaptureCachedPageCoverage(ctx, request)
+		if err == nil {
+			resolved.CalendarIDs = make([]string, 0, len(grants))
+			for _, grant := range grants {
+				resolved.CalendarIDs = append(resolved.CalendarIDs, grant.CalendarID)
+			}
+			binding = coveragePageBinding(request, grants, caller, window)
+		}
+	} else {
+		captured, err = s.store.CaptureCachedPageAuthority(ctx, request)
+		if err == nil {
+			err = validateTickets(request, captured)
+		}
+		if err == nil {
+			binding = pageBinding(request, captured, caller, window)
+		}
+	}
 	stats.AuthorityNS = time.Since(authorityStart).Nanoseconds()
 	if err != nil {
 		if pageToken != "" {
-			return Page{}, stats, fmt.Errorf("%w: source authority is no longer available", ErrCursorUnavailable)
+			return Page{}, stats, ErrCursorUnavailable
+		}
+		if errors.Is(err, storage.ErrExplicitCachedPageScope) {
+			return Page{}, stats, err
 		}
 		return Page{}, stats, ErrUnavailable
 	}
-	if err := validateTickets(request, captured); err != nil {
-		if pageToken != "" {
-			return Page{}, stats, fmt.Errorf("%w: source authority is no longer available", ErrCursorUnavailable)
-		}
-		return Page{}, stats, ErrUnavailable
-	}
-	binding := pageBinding(request, captured, caller, window)
 	var after *Position
 	expiry := s.now().UTC().Add(cursorLifetime)
 	if pageToken != "" {
 		position, decodedExpiry, decodeErr := s.codec.Decode(pageToken, binding)
-		if decodeErr != nil || decodedExpiry.After(s.now().UTC().Add(cursorLifetime)) || validateCursorRequest(request, position) != nil {
+		if decodeErr != nil || decodedExpiry.After(s.now().UTC().Add(cursorLifetime)) || validateCursorRequest(resolved, position) != nil {
 			return Page{}, stats, fmt.Errorf("%w: invalid, expired, or stale cursor", ErrCursorUnavailable)
 		}
 		after = &position
@@ -168,13 +207,23 @@ func (s *Service) Read(ctx context.Context, request Request, pageToken string) (
 		return Page{}, stats, fmt.Errorf("read cached event page: %w", err)
 	}
 	stats.Read = read.Stats
-	if !sameTickets(captured, read.Tickets) {
+	if !sameTickets(captured, read.Tickets) || !slices.Equal(grants, read.Grants) {
 		if pageToken != "" {
 			return Page{}, stats, fmt.Errorf("%w: source proof changed", ErrCursorUnavailable)
 		}
 		return Page{}, stats, ErrUnavailable
 	}
 
+	if request.WithCoverage {
+		if outsideWindow {
+			for i := range read.Sources {
+				if read.Sources[i].Coverage == "covered" {
+					read.Sources[i].Coverage = "outside_window"
+				}
+			}
+		}
+		read.Partial = read.Partial || outsideWindow || (after != nil && after.Partial)
+	}
 	packStart := time.Now()
 	page, err := Pack(read, request.PageSize, func(position Position) (string, error) {
 		return s.codec.Encode(position, binding, expiry)
@@ -195,7 +244,15 @@ func (s *Service) Read(ctx context.Context, request Request, pageToken string) (
 		s.testBeforeFinalValidation()
 	}
 	validationStart := time.Now()
-	err = s.store.ValidateAuthorityTickets(ctx, captured)
+	if request.WithCoverage {
+		var current []storage.CachedPageGrant
+		current, err = s.store.CaptureCachedPageCoverage(ctx, request)
+		if err == nil && !slices.Equal(grants, current) {
+			err = storage.ErrAuthorityChanged
+		}
+	} else {
+		err = s.store.ValidateAuthorityTickets(ctx, captured)
+	}
 	stats.FinalValidationNS = time.Since(validationStart).Nanoseconds()
 	if err != nil {
 		if pageToken != "" {
@@ -203,10 +260,29 @@ func (s *Service) Read(ctx context.Context, request Request, pageToken string) (
 		}
 		return Page{}, stats, ErrUnavailable
 	}
+	// Final authority validation can itself outlive the cursor deadline.
+	if !expiry.After(s.now().UTC()) {
+		if pageToken != "" {
+			return Page{}, stats, ErrCursorUnavailable
+		}
+		return Page{}, stats, ErrUnavailable
+	}
 	return page, stats, nil
 }
 
 func normalizeRequest(request Request) (Request, error) {
+	if request.WithCoverage {
+		request.StartDate = request.Start.Format(calendar.DateLayout)
+		end := request.End
+		h, m, sec := end.Clock()
+		if h != 0 || m != 0 || sec != 0 || end.Nanosecond() != 0 {
+			end = end.AddDate(0, 0, 1)
+		}
+		request.EndDate = end.Format(calendar.DateLayout)
+		if request.EndDate <= request.StartDate {
+			return Request{}, errors.New("empty or reversed civil date range")
+		}
+	}
 	request.Start = request.Start.UTC()
 	request.End = request.End.UTC()
 	if request.PageSize == 0 {
@@ -214,6 +290,9 @@ func normalizeRequest(request Request) (Request, error) {
 	}
 	if request.PageSize < 1 || request.PageSize > maxPageSize || !request.End.After(request.Start) || request.Start.Year() < 1 || request.End.Year() > 9999 {
 		return Request{}, errors.New("invalid date range or page size")
+	}
+	if len(request.CalendarIDs) == 0 && request.WithCoverage && request.CalendarIDs == nil {
+		return request, nil
 	}
 	if len(request.CalendarIDs) < 1 || len(request.CalendarIDs) > maxScopeSize {
 		return Request{}, errors.New("calendar scope must contain 1 to 16 IDs")
@@ -225,7 +304,7 @@ func normalizeRequest(request Request) (Request, error) {
 		}
 		provider, rest, ok := strings.Cut(id, ":")
 		connectionID, providerCalendarID, found := strings.Cut(rest, ":")
-		if ok && provider != "google" {
+		if ok && provider != "google" && !(request.WithCoverage && storage.IsCachedPageProvider(provider)) {
 			return Request{}, ErrUnavailable
 		}
 		if !ok || !found || connectionID == "" || providerCalendarID == "" {
@@ -335,4 +414,21 @@ type bindingAuthorityTicket struct {
 	CalendarID   string `json:"calendar_id"`
 	Revision     string `json:"revision"`
 	Receipt      string `json:"receipt"`
+}
+
+func coveragePageBinding(request Request, grants []storage.CachedPageGrant, caller auth.VerifiedCaller, window storage.SyncWindow) [32]byte {
+	material := struct {
+		Purpose            string
+		Scope              [32]byte
+		StartDate, EndDate string
+		Grants             []storage.CachedPageGrant
+	}{
+		Purpose:   "calendar:get_events:main:v1",
+		Scope:     pageBinding(request, nil, caller, window),
+		StartDate: request.StartDate,
+		EndDate:   request.EndDate,
+		Grants:    grants,
+	}
+	encoded, _ := json.Marshal(material)
+	return sha256.Sum256(encoded)
 }

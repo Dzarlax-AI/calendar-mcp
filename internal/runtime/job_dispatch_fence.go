@@ -34,3 +34,20 @@ func (f *jobDispatchFence) CheckProviderDispatch(ctx context.Context) error {
 	}
 	return f.store.CheckSyncTargetEligibility(ctx, f.job.RuleID)
 }
+
+func (f *jobDispatchFence) RestoreMappingAfterNoDispatch(ctx context.Context, previous storage.Mapping, pending storage.Mapping) error {
+	if f == nil || f.store == nil {
+		return syncengine.ErrDispatchFenceUnavailable
+	}
+	store, ok := f.store.(interface {
+		RestoreMappingAfterNoDispatchCAS(context.Context, storage.Mapping, int64, storage.Job) error
+	})
+	if !ok {
+		return syncengine.ErrDispatchFenceUnavailable
+	}
+	if err := f.CheckProviderDispatch(ctx); err != nil {
+		return err
+	}
+	previous.Version = pending.Version
+	return store.RestoreMappingAfterNoDispatchCAS(ctx, previous, pending.Version, f.job)
+}

@@ -12,8 +12,9 @@ import (
 // These envelopes are private storage formats. Completeness is an adapter
 // assertion; decoding it does not establish provider provenance or integrity.
 type projectionAttendeeEvidence struct {
-	EventID  string `json:"event_id"`
-	Complete *bool  `json:"complete"`
+	EventID            string `json:"event_id"`
+	Complete           *bool  `json:"complete"`
+	ConferenceComplete *bool  `json:"conference_complete,omitempty"`
 }
 type projectionPagePayload struct {
 	Version  int                          `json:"version"`
@@ -38,7 +39,12 @@ func projectionEvidence(events []calendar.EventV2, source string) ([]projectionA
 		}
 		seen[event.ID] = true
 		complete := event.SourceAttendeesComplete
-		evidence = append(evidence, projectionAttendeeEvidence{EventID: event.ID, Complete: &complete})
+		item := projectionAttendeeEvidence{EventID: event.ID, Complete: &complete}
+		if event.SourceConferenceComplete {
+			proven := true
+			item.ConferenceComplete = &proven
+		}
+		evidence = append(evidence, item)
 	}
 	return evidence, nil
 }
@@ -49,7 +55,7 @@ func restoreProjectionEvidence(events []calendar.EventV2, evidence []projectionA
 	if _, err := projectionEvidence(events, source); err != nil {
 		return err
 	}
-	byID := make(map[string]bool, len(evidence))
+	byID := make(map[string]projectionAttendeeEvidence, len(evidence))
 	for _, item := range evidence {
 		if item.EventID == "" || item.Complete == nil {
 			return ErrProjectionPageStage
@@ -57,14 +63,15 @@ func restoreProjectionEvidence(events []calendar.EventV2, evidence []projectionA
 		if _, exists := byID[item.EventID]; exists {
 			return ErrProjectionPageStage
 		}
-		byID[item.EventID] = *item.Complete
+		byID[item.EventID] = item
 	}
 	for i := range events {
-		complete, ok := byID[events[i].ID]
+		item, ok := byID[events[i].ID]
 		if !ok {
 			return ErrProjectionPageStage
 		}
-		events[i].SourceAttendeesComplete = complete
+		events[i].SourceAttendeesComplete = *item.Complete
+		events[i].SourceConferenceComplete = item.ConferenceComplete != nil && *item.ConferenceComplete
 	}
 	return nil
 }
@@ -134,6 +141,15 @@ func rejectProjectionDuplicateKeys(data []byte) error {
 	}
 	return value()
 }
+func projectionEvidenceVersion(evidence []projectionAttendeeEvidence) int {
+	for _, item := range evidence {
+		if item.ConferenceComplete != nil {
+			return 2
+		}
+	}
+	return 1
+}
+
 func encodeProjectionPagePayload(page calendar.EventSyncPage, source string) ([]byte, error) {
 	events := make([]calendar.EventV2, len(page.Upserts))
 	for i := range page.Upserts {
@@ -143,11 +159,11 @@ func encodeProjectionPagePayload(page calendar.EventSyncPage, source string) ([]
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(projectionPagePayload{Version: 1, Page: &page, Evidence: evidence})
+	return json.Marshal(projectionPagePayload{Version: projectionEvidenceVersion(evidence), Page: &page, Evidence: evidence})
 }
 func decodeProjectionPagePayload(data []byte, source string) (calendar.EventSyncPage, error) {
 	var envelope projectionPagePayload
-	if err := decodeProjectionPayload(data, projectionPageSizeLimit, &envelope); err != nil || envelope.Version != 1 || envelope.Page == nil {
+	if err := decodeProjectionPayload(data, projectionPageSizeLimit, &envelope); err != nil || envelope.Version != projectionEvidenceVersion(envelope.Evidence) || envelope.Page == nil {
 		return calendar.EventSyncPage{}, ErrProjectionPageStage
 	}
 	page := *envelope.Page
@@ -177,11 +193,11 @@ func encodeProjectionSnapshotPayload(events []calendar.EventV2, source string) (
 	if events == nil {
 		events = []calendar.EventV2{}
 	}
-	return json.Marshal(projectionSnapshotPayload{Version: 1, Events: &events, Evidence: evidence})
+	return json.Marshal(projectionSnapshotPayload{Version: projectionEvidenceVersion(evidence), Events: &events, Evidence: evidence})
 }
 func decodeProjectionSnapshotPayload(data []byte, source string) ([]calendar.EventV2, error) {
 	var envelope projectionSnapshotPayload
-	if err := decodeProjectionPayload(data, maxProjectionSnapshotBytes, &envelope); err != nil || envelope.Version != 1 || envelope.Events == nil || *envelope.Events == nil {
+	if err := decodeProjectionPayload(data, maxProjectionSnapshotBytes, &envelope); err != nil || envelope.Version != projectionEvidenceVersion(envelope.Evidence) || envelope.Events == nil || *envelope.Events == nil {
 		return nil, ErrProjectionPageStage
 	}
 	events := *envelope.Events

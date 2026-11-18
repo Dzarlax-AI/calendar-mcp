@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"calendar-mcp/internal/calendar"
 )
 
@@ -491,7 +493,8 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		return nil, err
 	}
 	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
-  SET generation=generation+1,status=?,lease_owner=?,lease_until=?,last_started_at=?,updated_at=?
+  SET generation=generation+1,status=?,lease_owner=?,lease_until=?,last_started_at=?,updated_at=?,
+      last_success_at=CASE WHEN status='parked' AND last_error_code='auth' THEN NULL ELSE last_success_at END
   WHERE calendar_id=? AND generation=? AND next_sync_at<=? AND (lease_until IS NULL OR lease_until<=?)
    AND (status IN (?,?,?,?,?) OR (status='parked' AND last_error_code='auth' AND EXISTS(SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=calendar_sync_state.calendar_id AND conn.provider='apple')))
    AND EXISTS(SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=calendar_sync_state.calendar_id AND conn.status=? AND c.can_read=? AND c.enabled=TRUE)`)), "syncing", workerID, leaseUntil, now, now, state.CalendarID, state.Generation, now, now, "pending", "ready", "failed", "degraded", "syncing", "connected", true)
@@ -514,6 +517,9 @@ func (s *Store) ClaimDueCalendarSync(ctx context.Context, workerID string, now, 
 		return nil, fmt.Errorf("commit calendar sync claim: %w", err)
 	}
 	state.Generation++
+	if state.Status == "parked" && state.LastErrorCode == "auth" {
+		state.LastSuccessAt = nil
+	}
 	state.Status, state.LeaseOwner, state.LeaseUntil, state.LastStartedAt = "syncing", workerID, &leaseUntil, &now
 	return &state, nil
 }
@@ -821,14 +827,27 @@ func (s *Store) ParkCalendarSync(ctx context.Context, state CalendarSyncState, c
 	if err := lockCalendarSyncLease(ctx, s, tx, state, now); err != nil {
 		return err
 	}
+	// Fence listing cursors for a denied source without affecting siblings.
+	// A permission denial requires replacement. Apple auth rechecks retain
+	// their existing cursor and cadence.
+	var invalidate bool
+	if code == "auth" || code == "permission" {
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT conn.provider IN ('apple','microsoft')
+			FROM calendars c JOIN connections conn ON conn.id=c.connection_id WHERE c.id=?`), state.CalendarID).Scan(&invalidate); err != nil {
+			return err
+		}
+	}
+	replace := invalidate && code == "permission"
 	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 		SET status=?, last_error_code=?,
+			cursor=CASE WHEN ? THEN '' ELSE cursor END,
+			last_success_at=CASE WHEN ? THEN NULL ELSE last_success_at END,
 			next_sync_at=CASE WHEN ?='auth' AND EXISTS (
 				SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
 				WHERE c.id=calendar_sync_state.calendar_id AND conn.provider='apple'
 			) THEN ? ELSE next_sync_at END,
 			lease_owner=NULL, lease_until=NULL, updated_at=?
-		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), "parked", code, code, now.Add(AppleAuthRecheckInterval), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
+		WHERE calendar_id=? AND generation=? AND status=? AND lease_owner=? AND lease_until>?`)), "parked", code, replace, invalidate, code, now.Add(AppleAuthRecheckInterval), now, state.CalendarID, state.Generation, "syncing", state.LeaseOwner, now)
 	if err != nil {
 		return fmt.Errorf("park calendar sync: %w", err)
 	}
@@ -838,6 +857,16 @@ func (s *Store) ParkCalendarSync(ctx context.Context, state CalendarSyncState, c
 	}
 	if changed != 1 {
 		return ErrCalendarSyncLeaseLost
+	}
+	if invalidate {
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendars SET detail_receipt=? WHERE id=?`), uuid.NewString(), state.CalendarID); err != nil {
+			return err
+		}
+	}
+	if replace {
+		if err := s.purgeAuthorizedProjection(ctx, tx, projectionCalendarScope, state.CalendarID); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit park calendar sync: %w", err)
@@ -851,9 +880,19 @@ func (s *Store) ScheduleCalendarSync(ctx context.Context, calendarID string, now
 	if calendarID == "" {
 		return ErrNotFound
 	}
-	res, err := s.db.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
-		SET status=?, next_sync_at=?, cursor=CASE WHEN ? THEN '' ELSE cursor END,
-			generation=CASE WHEN ? THEN generation+1 ELSE generation END,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schedule calendar sync: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	state, err := selectCalendarSyncStateForUpdate(ctx, s, tx, calendarID)
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
+		SET status=?, next_sync_at=?, cursor=CASE WHEN ? OR last_error_code='permission' THEN '' ELSE cursor END,
+			generation=CASE WHEN ? OR last_error_code='permission' THEN generation+1 ELSE generation END,
+			last_success_at=CASE WHEN last_error_code IN ('auth','permission') THEN NULL ELSE last_success_at END,
 			last_error_code=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?
 		WHERE calendar_id=? AND (lease_until IS NULL OR lease_until<=?)
 			AND EXISTS (SELECT 1 FROM calendars c JOIN connections conn ON conn.id=c.connection_id
@@ -866,17 +905,24 @@ func (s *Store) ScheduleCalendarSync(ctx context.Context, calendarID string, now
 		return err
 	}
 	if changed == 1 {
-		return nil
-	}
-	var stateExists int
-	if err := s.db.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM calendar_sync_state WHERE calendar_id=?`), calendarID).Scan(&stateExists); err != nil {
-		return fmt.Errorf("check calendar sync state: %w", err)
-	}
-	if stateExists == 0 {
-		return ErrNotFound
+		if state.LastErrorCode == "permission" {
+			if err := s.purgeAuthorizedProjection(ctx, tx, projectionCalendarScope, calendarID); err != nil {
+				return err
+			}
+			var provider, priorReceipt string
+			if err := tx.QueryRowContext(ctx, s.query(`SELECT conn.provider,cal.detail_receipt FROM calendars cal
+				JOIN connections conn ON conn.id=cal.connection_id WHERE cal.id=?`), calendarID).Scan(&provider, &priorReceipt); err != nil {
+				return err
+			}
+			receipt := renewedSelectionReceipt(provider, priorReceipt)
+			if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendars SET detail_receipt=? WHERE id=?`), receipt, calendarID); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
 	}
 	var eligible int
-	if err := s.db.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM calendars c JOIN connections conn ON conn.id=c.connection_id
+	if err := tx.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM calendars c JOIN connections conn ON conn.id=c.connection_id
 		WHERE c.id=? AND c.can_read=? AND c.enabled=? AND conn.status=?`), calendarID, true, true, "connected").Scan(&eligible); err != nil {
 		return fmt.Errorf("check calendar sync eligibility: %w", err)
 	}

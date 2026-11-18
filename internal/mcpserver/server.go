@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -55,6 +56,7 @@ func RegisterWithOptions(mux *http.ServeMux, reg *calendar.Registry, app *applic
 	}
 
 	compatHandler := streamableHandler(buildCompatCatalog(reg, app, opts.EnableV2))
+	defaultHandler := compatHandler
 	var modernHandler http.Handler
 	if opts.EnableV2 {
 		modern := buildModernCatalog(reg, app)
@@ -66,10 +68,22 @@ func RegisterWithOptions(mux *http.ServeMux, reg *calendar.Registry, app *applic
 		if cachedEnabled {
 			modernHandler = observeCachedRequestBody(modernHandler)
 		}
-	}
-	defaultHandler := compatHandler
-	if mode == CatalogModern {
-		defaultHandler = modernHandler
+		if mode == CatalogModern {
+			defaultHandler = modernHandler
+			if cachedEnabled {
+				coverage, ok := opts.CachedEvents.(coverageEventReader)
+				if !ok {
+					return fmt.Errorf("modern default catalog requires the cached coverage reader")
+				}
+				main := newMCPServer()
+				registerListCalendars(main, reg, "list_calendars")
+				names := maps.Clone(modernToolNames)
+				delete(names, toolGetEvents)
+				registerToolsV2(main, app, names)
+				registerCoverageEvents(main, opts.CachedEvents, coverage)
+				defaultHandler = observeCachedRequestBody(streamableHandler(main))
+			}
+		}
 	}
 
 	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

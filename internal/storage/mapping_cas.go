@@ -81,3 +81,39 @@ func (s *Store) DeleteMappingCAS(ctx context.Context, id, incarnation string, ex
 	}
 	return nil
 }
+
+// RestoreMappingAfterNoDispatchCAS restores the exact previous mapping only
+// while the same job attempt still holds an unexpired dispatch lease.
+func (s *Store) RestoreMappingAfterNoDispatchCAS(ctx context.Context, m Mapping, expectedVersion int64, job Job) error {
+	if m.ID == "" || m.RuleID == "" || m.RuleID != job.RuleID || m.SourceEventID == "" || m.Incarnation == "" || m.Version != expectedVersion || expectedVersion < 1 || expectedVersion == math.MaxInt64 || job.ID == "" || job.ClaimedBy == "" || job.Attempt < 1 || (m.ReconciliationState != "current" && m.ReconciliationState != "legacy" && m.ReconciliationState != "") {
+		return ErrMappingConflict
+	}
+	leaseClock := `j.claimed_at<=clock_timestamp() AND j.lease_until>clock_timestamp()`
+	if s.dialect == DialectSQLite {
+		leaseClock = s.sqliteInstantKey("j.claimed_at") + `<=strftime('%Y-%m-%dT%H:%M:%f000000Z','now') AND ` + s.sqliteInstantKey("j.lease_until") + `>strftime('%Y-%m-%dT%H:%M:%f000000Z','now')`
+	}
+	q := `UPDATE event_mappings SET object_kind=?,source_series_id=?,target_event_id=?,target_series_id=?,content_hash=?,last_seen_at=?,reconciliation_state=?,target_etag=?,version=version+1 WHERE id=? AND rule_id=? AND source_event_id=? AND original_start=? AND incarnation=? AND version=? AND reconciliation_state='pending_update' AND EXISTS (SELECT 1 FROM sync_jobs j JOIN sync_rules r ON r.id=j.rule_id WHERE j.id=? AND j.rule_id=? AND j.state='running' AND j.claimed_by=? AND j.attempt=? AND j.stop_requested=? AND ` + leaseClock + ` AND (j.kind='dry_run' OR r.state='enabled'))`
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if s.dialect == DialectPostgres {
+		var locked string
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT id FROM sync_jobs WHERE id=? FOR UPDATE`), job.ID).Scan(&locked); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, s.query(q), m.ObjectKind, m.SourceSeriesID, m.TargetEventID, m.TargetSeriesID, m.ContentHash, m.LastSeenAt, m.ReconciliationState, m.TargetETag, m.ID, m.RuleID, m.SourceEventID, m.OriginalStart, m.Incarnation, expectedVersion, job.ID, job.RuleID, job.ClaimedBy, job.Attempt, false)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrMappingConflict
+	}
+	return tx.Commit()
+}

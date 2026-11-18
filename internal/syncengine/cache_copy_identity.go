@@ -31,6 +31,9 @@ func cacheCopyCreate(ruleID, sourceCalendarID string, event calendar.EventV2, ta
 		return calendar.EventCreateV2{}, fmt.Errorf("invalid source event time: %w", err)
 	}
 	marker := newMappingID(ruleID, identity, "")
+	if targetProvider == "google" && calendar.HasMirrorMeetingMarker(mirrorDescription(event)) {
+		return calendar.EventCreateV2{}, calendar.ErrMeetingMarkerAmbiguous
+	}
 	created := mirrorCreate(ruleID, event, targetProvider)
 	created.ICalUID = marker + "@calendar-mcp"
 	if targetProvider == "google" {

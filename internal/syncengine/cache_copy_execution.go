@@ -132,6 +132,21 @@ func (f cacheCopyDispatchFence) CheckProviderDispatch(ctx context.Context) error
 	return f.source.CheckSourceProjectionCurrent(ctx, f.sourceID, f.revision, f.start, f.end, time.Now().UTC(), f.maxAge)
 }
 
+// RestoreMappingAfterNoDispatch preserves the cache snapshot checks around the
+// same lease-bound restoration used by direct sync.
+func (f cacheCopyDispatchFence) RestoreMappingAfterNoDispatch(ctx context.Context, previous, pending storage.Mapping) error {
+	if err := f.CheckProviderDispatch(ctx); err != nil {
+		return err
+	}
+	restorer, ok := f.parent.(interface {
+		RestoreMappingAfterNoDispatch(context.Context, storage.Mapping, storage.Mapping) error
+	})
+	if !ok {
+		return ErrDispatchFenceUnavailable
+	}
+	return restorer.RestoreMappingAfterNoDispatch(ctx, previous, pending)
+}
+
 // RunCacheCopy reads the verified local source exactly once and rechecks its
 // revision and target eligibility before every provider mutation. It does not
 // read the source calendar from a provider. The caller must hold the shared

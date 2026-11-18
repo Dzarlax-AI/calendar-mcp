@@ -64,3 +64,28 @@ func (e *Engine) completeMappingDelete(ctx context.Context, pending storage.Mapp
 	}
 	return e.mappings.DeleteMappingCAS(ctx, pending.ID, pending.Incarnation, pending.Version)
 }
+
+// reconcileNoDispatchUpdate applies only to existing, stable mappings. A
+// failed fence or CAS leaves the intent and run reservation protected.
+func (e *Engine) reconcileNoDispatchUpdate(ctx context.Context, previous, pending storage.Mapping, cause error) error {
+	if !calendar.IsDefinitiveNoDispatch(cause) {
+		return cause
+	}
+	unreconciled := func(err error) error { return &Failure{Stage: "target_pre_dispatch_unreconciled", Cause: err} }
+	if previous.Version < 1 || (previous.ReconciliationState != "current" && previous.ReconciliationState != "legacy" && previous.ReconciliationState != "") {
+		return unreconciled(cause)
+	}
+	restorer, ok := e.dispatchFence.(interface {
+		RestoreMappingAfterNoDispatch(context.Context, storage.Mapping, storage.Mapping) error
+	})
+	if !ok {
+		return unreconciled(cause)
+	}
+	if err := restorer.RestoreMappingAfterNoDispatch(ctx, previous, pending); err != nil {
+		return unreconciled(errors.Join(cause, err))
+	}
+	if e.onNoDispatch != nil {
+		e.onNoDispatch()
+	}
+	return &Failure{Stage: "target_pre_dispatch", Cause: cause}
+}

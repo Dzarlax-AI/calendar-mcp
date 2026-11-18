@@ -206,3 +206,22 @@ func TestAppleAuthDeadlineSurvivesReopen(t *testing.T) {
 		t.Fatalf("reopened due=%#v err=%v", due, err)
 	}
 }
+
+func TestLegacyAppleAuthClaimClearsSuccessPreservesCursorAndCadence(t *testing.T) {
+	s, now := newEventCacheStore(t)
+	ctx := t.Context()
+	if _, err := s.db.ExecContext(ctx, `UPDATE connections SET provider='apple'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE calendar_sync_state SET status='parked',last_error_code='auth',cursor='legacy',last_success_at=?,next_sync_at=?`, now.Add(-time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.ClaimDueCalendarSync(ctx, "worker", now, now.Add(time.Minute))
+	if err != nil || state == nil || state.LastSuccessAt != nil || state.Cursor != "legacy" || !state.NextSyncAt.Equal(now) {
+		t.Fatalf("claim=%+v err=%v", state, err)
+	}
+	var success *time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT last_success_at FROM calendar_sync_state WHERE calendar_id='calendar'`).Scan(&success); err != nil || success != nil {
+		t.Fatalf("success=%v err=%v", success, err)
+	}
+}

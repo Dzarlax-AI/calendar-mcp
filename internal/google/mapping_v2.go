@@ -46,10 +46,26 @@ func fromGoogleEventV2(event *gcal.Event, calendarID, fallbackTimeZone string) c
 			WorkingLocation: structMap(event.WorkingLocationProperties),
 		},
 	}
+	meetingLink := calendar.MirrorMeetingURL(result.Conference)
+	if meetingLink == "" && event.HangoutLink != "" {
+		// Older Google events can report a video link without conferenceData.
+		fallback := &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: event.HangoutLink}}}
+		meetingLink = calendar.MirrorMeetingURL(fallback)
+		if meetingLink != "" {
+			if result.Conference == nil {
+				result.Conference = fallback
+			} else {
+				result.Conference.EntryPoints = append(result.Conference.EntryPoints, fallback.EntryPoints...)
+			}
+		}
+	}
+	visible := event.Organizer != nil && event.Organizer.Self
+	result.SourceConferenceComplete = visible && !event.AttendeesOmitted &&
+		(meetingLink != "" || (event.ConferenceData == nil && event.HangoutLink == ""))
+
 	// Trust the source list only when Google provides an explicit list and
 	// confirms visibility. In-progress group expansion, extra unnamed guests,
 	// nil entries and participants without an address remain incomplete.
-	visible := event.Organizer != nil && event.Organizer.Self
 	if !visible && event.GuestsCanSeeOtherGuests != nil && *event.GuestsCanSeeOtherGuests {
 		for _, attendee := range event.Attendees {
 			if attendee != nil && attendee.Self {
