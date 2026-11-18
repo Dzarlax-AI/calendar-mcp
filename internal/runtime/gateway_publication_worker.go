@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
+	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/eventsync"
 	"calendar-mcp/internal/storage"
 )
@@ -44,6 +46,23 @@ func refreshNextGatewayPublication(ctx context.Context, store *storage.Store, fa
 		return err
 	}
 	*after = id
+	ticket, err := store.CaptureGatewayPublication(ctx, id, now)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(id, "google:") {
+		builder, ok := factory.(interface {
+			BuildGatewayGooglePublication(context.Context, storage.GatewayPublicationTicket) (calendar.Provider, string, error)
+		})
+		if !ok {
+			return errors.New("isolated Google publication provider unavailable")
+		}
+		provider, raw, err := builder.BuildGatewayGooglePublication(ctx, ticket)
+		if err != nil {
+			return err
+		}
+		return eventsync.RefreshGatewayPublication(ctx, store, provider, raw, ticket, time.Now)
+	}
 	providers, err := factory.Build(ctx)
 	if err != nil {
 		return err
@@ -53,5 +72,5 @@ func refreshNextGatewayPublication(ctx context.Context, store *storage.Store, fa
 	if err != nil {
 		return err
 	}
-	return eventsync.RefreshGatewayPublication(ctx, store, provider, raw, id, time.Now)
+	return eventsync.RefreshGatewayPublication(ctx, store, provider, raw, ticket, time.Now)
 }
