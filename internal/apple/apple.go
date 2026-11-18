@@ -84,9 +84,9 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 	}
 	status := &discoveryStatus{}
 	readCtx := context.WithValue(ctx, discoveryStatusKey{}, status)
-	davCals, err := p.client.FindCalendars(readCtx, homeSet)
+	calendars, timezoneOnlyDenied, err := p.findCalendars(readCtx, homeSet)
 	code := status.code.Load()
-	if code == 404 || code == 410 || code == 401 || code == 403 {
+	if code == 404 || code == 410 || code == 401 || (code == 403 && !timezoneOnlyDenied) {
 		p.invalidateDiscovery(generation)
 		if err == nil {
 			err = fmt.Errorf("CalDAV discovery HTTP %d", code)
@@ -98,14 +98,7 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var cals []calendar.Calendar
-	for _, c := range davCals {
-		cals = append(cals, calendar.Calendar{
-			ID:   c.Path,
-			Name: c.Name,
-		})
-	}
-	return cals, nil
+	return calendars, nil
 }
 
 func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {
