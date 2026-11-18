@@ -164,6 +164,7 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(err))
 	}
 	prepareGoogleRemindersForWrite(existing.Reminders)
+	setGatewayWriteMarker(existing, calendar.GatewayUpdateDispatchID(ctx))
 
 	call := p.svc.Events.Update(request.Ref.CalendarID, request.Ref.EventID, existing).SendUpdates(sendUpdates)
 	etag := request.ExpectedETag

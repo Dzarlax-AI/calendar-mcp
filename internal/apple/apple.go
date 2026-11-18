@@ -78,27 +78,32 @@ func (p *Provider) SetRoute(route string, calendarIDs []string) {
 }
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
+	inventory, err := p.discoverCalendars(ctx, false)
+	return inventory.calendars, err
+}
+
+func (p *Provider) discoverCalendars(ctx context.Context, allowPartial bool) (calendarInventory, error) {
 	homeSet, generation, err := p.calendarHomeSet(ctx)
 	if err != nil {
-		return nil, err
+		return calendarInventory{}, err
 	}
 	status := &discoveryStatus{}
 	readCtx := context.WithValue(ctx, discoveryStatusKey{}, status)
-	calendars, timezoneOnlyDenied, err := p.findCalendars(readCtx, homeSet)
+	inventory, err := p.findCalendarInventory(readCtx, homeSet, allowPartial)
 	code := status.code.Load()
-	if code == 404 || code == 410 || code == 401 || (code == 403 && !timezoneOnlyDenied) {
+	if code == 404 || code == 410 || code == 401 || (code == 403 && !inventory.timezoneOnlyDenied) {
 		p.invalidateDiscovery(generation)
 		if err == nil {
 			err = fmt.Errorf("CalDAV discovery HTTP %d", code)
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find calendars: %w", err)
+		return calendarInventory{}, fmt.Errorf("find calendars: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return calendarInventory{}, err
 	}
-	return calendars, nil
+	return inventory, nil
 }
 
 func (p *Provider) GetEvents(ctx context.Context, calendarID string, start, end time.Time) ([]calendar.Event, error) {

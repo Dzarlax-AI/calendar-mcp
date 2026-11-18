@@ -50,6 +50,9 @@ func Worker(ctx context.Context) error {
 	if cfg.DatabaseURL == "" {
 		return errWorkerNotConfigured
 	}
+	if err := cfg.ValidateGatewayCachePreparation(); err != nil {
+		return err
+	}
 	if cfg.EventReadModelEnabled {
 		if err := cfg.ValidateEventReadModel(); err != nil {
 			return fmt.Errorf("event read-model configuration: %w", err)
@@ -93,6 +96,23 @@ func Worker(ctx context.Context) error {
 	factory := providerfactory.NewFactory(cfg, store, connections.New(store, cipher))
 	waitCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if cfg.GatewayCachedReadsPrepare {
+		writeDone := make(chan struct{})
+		go func() {
+			defer close(writeDone)
+			runGatewayWriteRecovery(waitCtx, store, factory)
+		}()
+		defer func() { stop(); <-writeDone }()
+		authorityDone := make(chan struct{})
+		go func() {
+			defer close(authorityDone)
+			runGatewayAuthority(waitCtx, store, factory)
+		}()
+		defer func() {
+			stop()
+			<-authorityDone
+		}()
+	}
 	log.Println("calendar worker ready")
 	if err := runWorkerCycleWithConfig(waitCtx, store, factory, cfg, time.Now().UTC()); err != nil {
 		log.Printf("calendar worker cycle failed: category=%T", err)
@@ -144,6 +164,7 @@ func runWorkerCycleWithConfig(ctx context.Context, store *storage.Store, factory
 			}
 		}
 	}
+
 	if err := runOneEventSync(ctx, store, factory, cfg, now); err != nil {
 		// EventSyncError.Error exposes only bounded provider status/reason fields;
 		// it deliberately excludes response bodies, cursors, tokens, and payloads.
@@ -191,7 +212,22 @@ func runOneEventSync(ctx context.Context, store *storage.Store, factory provider
 	}
 	registry := workerCalendarRegistry(providers, factory, nil)
 	service := eventsync.NewService(store, registry, eventSyncPolicyFor(cfg))
-	return runClaimedEventSync(ctx, store, service, *state)
+	if err := runClaimedEventSync(ctx, store, service, *state); err != nil {
+		return err
+	}
+	if cfg.GatewayCachedReadsPrepare {
+		call, cancel := context.WithTimeout(ctx, gatewayAuthorityTimeout)
+		defer cancel()
+		provider, raw, err := registry.ResolveContext(call, state.CalendarID)
+		if err == nil {
+			err = eventsync.RefreshGatewayPublication(call, store, provider, raw, state.CalendarID, time.Now)
+		}
+		if err != nil && !errors.Is(err, storage.ErrAuthorityChanged) && ctx.Err() == nil {
+			// Provider details and page tokens stay out of worker logs.
+			log.Print("gateway event snapshot refresh failed")
+		}
+	}
+	return nil
 }
 
 // eventReadModelWindow freezes the projection to UTC calendar days. Repeated

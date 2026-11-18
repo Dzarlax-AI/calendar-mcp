@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+type gatewayRawStatusKey struct{}
+
 type basicAuthTransport struct {
 	username string
 	password string
@@ -20,6 +22,9 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := t.base.RoundTrip(req2)
 	if err != nil {
 		return nil, err
+	}
+	if status, ok := req.Context().Value(gatewayRawStatusKey{}).(*discoveryStatus); ok && resp.StatusCode == http.StatusUnauthorized {
+		status.code.CompareAndSwap(0, int32(resp.StatusCode))
 	}
 	// Preserve the original status for listing only. Event fallback behavior is unchanged.
 	if status, ok := req.Context().Value(discoveryStatusKey{}).(*discoveryStatus); ok {

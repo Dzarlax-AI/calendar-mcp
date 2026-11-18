@@ -36,10 +36,14 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 			return calendar.CalendarCapabilities{}, ctx.Err()
 		}
 	}
-	canWrite := entry.AccessRole == "owner" || entry.AccessRole == "writer"
+	return calendarCapabilities(entry.AccessRole, entry.Primary || calendarID == "primary"), nil
+}
+
+func calendarCapabilities(role string, primary bool) calendar.CalendarCapabilities {
+	canWrite := role == "owner" || role == "writer"
 	readOnly := !canWrite
 	eventTypes := []string{"default"}
-	if entry.Primary || calendarID == "primary" {
+	if primary {
 		eventTypes = append(eventTypes, "birthday", "focusTime", "outOfOffice", "workingLocation", "fromGmail")
 	}
 	return calendar.CalendarCapabilities{
@@ -50,12 +54,12 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 		},
 		Fields: calendar.FieldCapabilities{
 			Recurrence: true, Reminders: true, Attachments: true, Conferencing: true, Colors: true,
-			GuestPermissions: true, ExtendedProps: true, SpecialEventTypes: entry.Primary || calendarID == "primary", OptimisticLocking: true,
+			GuestPermissions: true, ExtendedProps: true, SpecialEventTypes: primary, OptimisticLocking: true,
 		},
 		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle, calendar.ScopeFollowing},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone, calendar.NotificationsExternalOnly, calendar.NotificationsAll},
 		EventTypes:           eventTypes,
-	}, nil
+	}
 }
 
 func (p *Provider) ValidateRecurrenceWrite(lines []string, _ calendar.EventTime) error {

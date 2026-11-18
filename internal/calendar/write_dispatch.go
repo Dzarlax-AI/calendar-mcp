@@ -49,6 +49,9 @@ func MaskNoDispatch(err error) error {
 // GuardedWrite retains the reservation unless the operation is confirmed or
 // explicitly proves that no provider mutation was dispatched.
 func GuardedWrite[T any](ctx context.Context, guard WriteDispatchGuard, ids []string, call func() (T, error), confirmed func(T) bool) (T, error) {
+	if tracking, ok := ctx.Value(gatewayWriteContextKey{}).(*GatewayWriteTracking); ok && tracking.scope.Kind != "" {
+		return trackedGatewayWrite(ctx, guard, ids, call, confirmed, tracking)
+	}
 	if guard == nil {
 		return call()
 	}
@@ -73,5 +76,39 @@ func GuardedWrite[T any](ctx context.Context, guard WriteDispatchGuard, ids []st
 	if marker != nil {
 		return zero, marker.err
 	}
+	return result, nil
+}
+
+func trackedGatewayWrite[T any](ctx context.Context, guard WriteDispatchGuard, ids []string, call func() (T, error), confirmed func(T) bool, tracking *GatewayWriteTracking) (T, error) {
+	var zero T
+	durable, ok := guard.(GatewayWriteDispatchGuard)
+	if !ok {
+		return zero, ErrWriteDispatchBlocked
+	}
+	reservation, err := durable.BeginGatewayWrite(ctx, ids, tracking.scope)
+	if err != nil {
+		return zero, ErrWriteDispatchBlocked
+	}
+	if err := reservation.Authorize(ctx); err != nil {
+		return zero, ErrWriteDispatchBlocked
+	}
+	tracking.dispatchID = reservation.ID()
+	result, err := call()
+	marker, noDispatch := err.(*noDispatchError)
+	if err != nil && !noDispatch {
+		return zero, &APIError{Code: ErrorMutationOutcomeUnknown, Message: MutationOutcomeUnknownMessage, Cause: ErrProviderMutationOutcomeUnknown}
+	}
+	if err == nil && !confirmed(result) {
+		return result, nil
+	}
+	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = reservation.Complete(finish, result, noDispatch)
+	if noDispatch {
+		return zero, marker.err
+	}
+	// A confirmed provider result must survive a local publication error.
+	// The worker will use the durable receipt or a positive read-only marker.
+	tracking.pending = true
 	return result, nil
 }

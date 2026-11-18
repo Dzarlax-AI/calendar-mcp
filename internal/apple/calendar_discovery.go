@@ -27,10 +27,16 @@ type calendarDiscoveryProps struct {
 	Other       []struct{} `xml:",any"`
 }
 
-func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calendar.Calendar, bool, error) {
+type calendarInventory struct {
+	calendars          []calendar.Calendar
+	unknown            []string
+	timezoneOnlyDenied bool
+}
+
+func (p *Provider) findCalendarInventory(ctx context.Context, homeSet string, allowPartial bool) (calendarInventory, error) {
 	base, err := url.Parse(p.caldavURL)
 	if err != nil {
-		return nil, false, err
+		return calendarInventory{}, err
 	}
 	if !strings.HasPrefix(homeSet, "/") {
 		homeSet = path.Join(base.Path, homeSet)
@@ -38,17 +44,17 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 	endpoint := url.URL{Scheme: base.Scheme, User: base.User, Host: base.Host, Path: homeSet}
 	req, err := http.NewRequestWithContext(ctx, "PROPFIND", endpoint.String(), strings.NewReader(calendarDiscoveryRequest))
 	if err != nil {
-		return nil, false, err
+		return calendarInventory{}, err
 	}
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", "1")
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return nil, false, err
+		return calendarInventory{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMultiStatus {
-		return nil, false, fmt.Errorf("calendar PROPFIND returned HTTP %d", resp.StatusCode)
+		return calendarInventory{}, fmt.Errorf("calendar PROPFIND returned HTTP %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -63,28 +69,62 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 		} `xml:"DAV: response"`
 	}
 	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, false, fmt.Errorf("calendar PROPFIND parse: %w", err)
+		return calendarInventory{}, fmt.Errorf("calendar PROPFIND parse: %w", err)
 	}
 
-	var calendars []calendar.Calendar
+	var inventory calendarInventory
 	sawTimezoneDenial, sawOtherFailure := false, false
+	seen := make(map[string]bool)
+	if resp.Request != nil && resp.Request.URL != nil {
+		endpoint = *resp.Request.URL
+	}
+	homePath := strings.TrimRight(endpoint.Path, "/")
+entries:
 	for _, entry := range result.Responses {
-		if entry.Status != "" && webDAVStatus(entry.Status)/100 != 2 {
-			return nil, false, fmt.Errorf("calendar PROPFIND entry returned HTTP %d", webDAVStatus(entry.Status))
+		status := webDAVStatus(entry.Status)
+		if entry.Status != "" && status/100 != 2 && (!allowPartial || !temporaryCalendarDiscoveryStatus(status)) {
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND entry returned HTTP %d", status)
 		}
 		if len(entry.Hrefs) != 1 {
-			return nil, false, fmt.Errorf("calendar PROPFIND entry must have one href")
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND entry must have one href")
 		}
 		href, err := url.Parse(strings.TrimSpace(entry.Hrefs[0]))
 		if err != nil || href.Path == "" {
-			return nil, false, fmt.Errorf("calendar PROPFIND entry has an invalid href")
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND entry has an invalid href")
+		}
+		// Only a named collection under the enumerated home can be
+		// inconclusive without invalidating the whole inventory.
+		cleanPath := path.Clean(href.Path)
+		canBeUnknown := allowPartial && strings.HasPrefix(cleanPath, homePath+"/") && cleanPath == strings.TrimRight(href.Path, "/") &&
+			href.Opaque == "" && href.User == nil && href.RawQuery == "" && href.Fragment == "" &&
+			(href.Host == "" || strings.EqualFold(href.Host, endpoint.Host)) &&
+			(href.Scheme == "" || strings.EqualFold(href.Scheme, endpoint.Scheme))
+		if allowPartial {
+			id := strings.TrimRight(href.Path, "/")
+			if seen[id] {
+				return calendarInventory{}, fmt.Errorf("duplicate calendar PROPFIND href")
+			}
+			seen[id] = true
+		}
+		if entry.Status != "" && status/100 != 2 {
+			if !canBeUnknown {
+				return calendarInventory{}, fmt.Errorf("calendar PROPFIND entry returned HTTP %d", status)
+			}
+			inventory.unknown = append(inventory.unknown, href.Path)
+			continue
 		}
 		var props calendarDiscoveryProps
 		var displayNameStatus int
+		var temporaryProperties bool
 		for _, stat := range entry.PropStats {
 			code := webDAVStatus(stat.Status)
+			temporaryProperties = temporaryProperties || temporaryCalendarDiscoveryStatus(code)
 			if stat.Props.ResourceType != nil && code/100 != 2 {
-				return nil, false, fmt.Errorf("calendar PROPFIND resourcetype returned HTTP %d", code)
+				if canBeUnknown && temporaryCalendarDiscoveryStatus(code) {
+					inventory.unknown = append(inventory.unknown, href.Path)
+					continue entries
+				}
+				return calendarInventory{}, fmt.Errorf("calendar PROPFIND resourcetype returned HTTP %d", code)
 			}
 			if stat.Props.DisplayName != nil && code/100 != 2 && code != http.StatusNotFound {
 				displayNameStatus = code
@@ -107,13 +147,21 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 			props.Timezone = append(props.Timezone, stat.Props.Timezone...)
 		}
 		if props.ResourceType == nil {
-			return nil, false, fmt.Errorf("calendar PROPFIND entry is missing resourcetype")
+			if canBeUnknown && temporaryProperties {
+				inventory.unknown = append(inventory.unknown, href.Path)
+				continue
+			}
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND entry is missing resourcetype")
 		}
 		if props.ResourceType.Calendar == nil {
 			continue
 		}
 		if displayNameStatus != 0 {
-			return nil, false, fmt.Errorf("calendar PROPFIND displayname returned HTTP %d", displayNameStatus)
+			if canBeUnknown && temporaryCalendarDiscoveryStatus(displayNameStatus) {
+				inventory.unknown = append(inventory.unknown, href.Path)
+				continue
+			}
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND displayname returned HTTP %d", displayNameStatus)
 		}
 		item := calendar.Calendar{ID: href.Path}
 		if props.DisplayName != nil {
@@ -122,7 +170,12 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 		if len(props.Timezone) == 1 {
 			item.Timezone = calendarTimezone(props.Timezone[0])
 		}
-		calendars = append(calendars, item)
+		inventory.calendars = append(inventory.calendars, item)
 	}
-	return calendars, len(calendars) > 0 && sawTimezoneDenial && !sawOtherFailure, nil
+	inventory.timezoneOnlyDenied = len(inventory.calendars) > 0 && len(inventory.unknown) == 0 && sawTimezoneDenial && !sawOtherFailure
+	return inventory, nil
+}
+
+func temporaryCalendarDiscoveryStatus(status int) bool {
+	return status/100 == 5 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
 }

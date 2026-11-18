@@ -186,6 +186,10 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 
 // DiscoverDetailCalendars stages a complete, bounded raw-role listing.
 func (p *Provider) DiscoverDetailCalendars(ctx context.Context) ([]calendar.DetailDiscoveryEntry, error) {
+	return p.discoverDetailCalendars(ctx, nil)
+}
+
+func (p *Provider) discoverDetailCalendars(ctx context.Context, observe func(context.Context, string, string) error) ([]calendar.DetailDiscoveryEntry, error) {
 	result := make([]calendar.DetailDiscoveryEntry, 0)
 	seen := map[string]bool{}
 	err := p.listCalendarPages(ctx, 64, func(response *gcal.CalendarList, _ *token.RequestBinding) error {
@@ -194,6 +198,11 @@ func (p *Provider) DiscoverDetailCalendars(ctx context.Context) ([]calendar.Deta
 				return fmt.Errorf("invalid or oversized calendar discovery")
 			}
 			seen[c.Id] = true
+			if observe != nil {
+				if err := observe(ctx, c.Id, c.AccessRole); err != nil {
+					return err
+				}
+			}
 			result = append(result, calendar.DetailDiscoveryEntry{Calendar: calendar.Calendar{ID: c.Id, Name: c.Summary, Color: c.BackgroundColor, Primary: c.Primary, Timezone: c.TimeZone, ReadOnly: c.AccessRole != "owner" && c.AccessRole != "writer"}, AccessRole: c.AccessRole})
 		}
 		return nil

@@ -32,10 +32,11 @@ const (
 )
 
 type Options struct {
-	EnableV2              bool
-	CatalogMode           CatalogMode
-	EventReadModelEnabled bool
-	CachedEvents          CachedEventReader
+	EnableV2               bool
+	CatalogMode            CatalogMode
+	EventReadModelEnabled  bool
+	GatewayCachedReadsOnly bool
+	CachedEvents           CachedEventReader
 }
 
 // Register retains the original combined catalog at /mcp for existing callers.
@@ -84,6 +85,17 @@ func RegisterWithOptions(mux *http.ServeMux, reg *calendar.Registry, app *applic
 				defaultHandler = observeCachedRequestBody(streamableHandler(main))
 			}
 		}
+	}
+
+	if opts.GatewayCachedReadsOnly {
+		reader, ok := opts.CachedEvents.(gatewayCatalogReader)
+		if !ok || !reader.Ready() || !opts.EnableV2 || mode != CatalogModern || !opts.EventReadModelEnabled || authOptions.APIKey == "" {
+			return fmt.Errorf("strict gateway catalog requires authenticated modern V2 and a local cache reader")
+		}
+		main := buildModernCatalog(reg, app)
+		registerGatewayReads(main, reader)
+		registerGatewayWriteTracking(main)
+		defaultHandler = observeCachedRequestBody(streamableHandler(main))
 	}
 
 	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,11 @@ func (s *Store) ReleaseExclusiveAfterConfirmedRun(ctx context.Context, operation
 // It never resolves an operation protected by another guard link. It does not
 // authorize runtime dispatch and is not a reconciliation protocol.
 func (s *Store) experimentalReleaseExclusiveAfterConfirmedRun(ctx context.Context, operationID string, calendarIDs []string, now time.Time) error {
+	return s.releaseExclusiveDispatch(ctx, operationID, calendarIDs, now, nil)
+}
+
+func (s *Store) releaseExclusiveDispatch(ctx context.Context, operationID string, calendarIDs []string, now time.Time,
+	publish func(context.Context, *sql.Tx, string, time.Time) error) error {
 	ids, encoded, err := normalizeMutationCalendars(calendarIDs)
 	if err != nil || !validProjectionMutationID(operationID) || now.IsZero() {
 		return ErrExclusiveDispatchConflict
@@ -89,6 +94,12 @@ func (s *Store) experimentalReleaseExclusiveAfterConfirmedRun(ctx context.Contex
 			return err
 		}
 	}
+	if publish != nil {
+		if err := publish(ctx, tx, operationID, now); err != nil {
+			return err
+		}
+	}
+
 	res, err := tx.ExecContext(ctx, s.query(`DELETE FROM exclusive_dispatch_guard_members WHERE operation_id=?`), operationID)
 	if err != nil {
 		return err

@@ -195,7 +195,9 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	providerRequest := request
 	providerRequest.CalendarID = rawCalendarID
 	var warnings []string
+	calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "create", CalendarID: calendar.CanonicalCalendarID(provider, rawCalendarID)})
 	event, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func() (*calendar.EventV2, error) {
+		providerRequest.Event.GatewayWriteID = calendar.GatewayWriteDispatchID(ctx)
 		event, err := v2.CreateEventV2(ctx, providerRequest)
 		if err == nil && event != nil && event.ID != "" {
 			normalizeEvent(event, provider.Name(), request.CalendarID)
@@ -253,6 +255,7 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	if request.PreviewOnly {
 		result, err = call()
 	} else {
+		calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "update", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID, Scope: request.Scope})
 		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {
@@ -305,6 +308,7 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	if request.PreviewOnly {
 		result, err = call()
 	} else {
+		calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "delete", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID, Scope: request.Scope})
 		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {

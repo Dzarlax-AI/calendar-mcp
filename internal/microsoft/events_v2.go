@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,13 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 	if err := p.getWithParamsAndHeaders(ctx, path, nil, nil, &metadata); err != nil {
 		return calendar.CalendarCapabilities{}, err
 	}
+	return graphCapabilities(metadata.CanEdit), nil
+}
+
+func graphCapabilities(canEdit bool) calendar.CalendarCapabilities {
 	return calendar.CalendarCapabilities{
-		ReadOnly:             !metadata.CanEdit,
-		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: metadata.CanEdit, Update: metadata.CanEdit, Delete: metadata.CanEdit},
+		ReadOnly:             !canEdit,
+		Operations:           calendar.OperationCapabilities{List: true, Get: true, Create: canEdit, Update: canEdit, Delete: canEdit},
 		Fields:               calendar.FieldCapabilities{Recurrence: true, Conferencing: true, OptimisticLocking: true},
 		MutationScopes:       []calendar.MutationScope{calendar.ScopeSeries, calendar.ScopeSingle},
 		NotificationPolicies: []calendar.NotificationPolicy{calendar.NotificationsNone, calendar.NotificationsAll},
@@ -40,7 +45,7 @@ func (p *Provider) Capabilities(ctx context.Context, calendarID string) (calenda
 			"recurrence":    "Graph recurrence is read and written losslessly for representable daily, weekly, monthly, and yearly RRULE patterns; unsupported selectors are rejected before mutation",
 			"notifications": "none is accepted only when the event has no attendees; Graph does not expose sendUpdates suppression",
 		},
-	}, nil
+	}
 }
 
 func (p *Provider) ValidateRecurrenceWrite(lines []string, start calendar.EventTime) error {
@@ -154,41 +159,92 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	}
 	items := make([]calendar.EventV2, 0, len(response.Value))
 	masters := map[string]struct{}{}
+	presentOccurrences := map[string]bool{}
+	cancelledOccurrences := map[string]bool{}
+	var verifiedCancellationSeries map[string]string
 	for i := range response.Value {
 		item, err := response.Value[i].toEventV2(request.CalendarID)
 		if err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
 		}
 		items = append(items, item)
+		if occurrence := response.Value[i].OccurrenceID; occurrence != "" {
+			presentOccurrences[occurrence] = true
+			cancelledOccurrences[occurrence] = response.Value[i].IsCancelled
+		}
 		if response.Value[i].SeriesMasterID != "" {
 			masters[response.Value[i].SeriesMasterID] = struct{}{}
 		}
 	}
 	if request.View == calendar.RecurrenceBoth {
+		if request.GatewayCancellationInventory {
+			verifiedCancellationSeries = make(map[string]string)
+			if err := p.addGatewaySeriesInventory(ctx, request.CalendarID, masters); err != nil {
+				return calendar.Page[calendar.EventV2]{}, err
+			}
+		}
+		ids := make([]string, 0, len(masters))
+		for id := range masters {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
 		seriesItems := make([]calendar.EventV2, 0, len(masters))
-		for masterID := range masters {
+		for _, masterID := range ids {
 			master, err := p.getSeriesMaster(ctx, request.CalendarID, masterID)
 			if err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
+			}
+			if request.GatewayCancellationInventory && (master.ID != masterID || master.Type != "seriesMaster") {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph returned mismatched series master")
 			}
 			converted, err := master.toEventV2(request.CalendarID)
 			if err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
 			}
 			seriesItems = append(seriesItems, converted)
-			for _, occurrenceID := range master.CancelledOccurrences {
-				cancelled, err := cancelledOccurrence(*master, request.CalendarID, occurrenceID)
+			zone := ""
+			if request.GatewayCancellationInventory && master.Recurrence != nil && master.Recurrence.Range.RecurrenceTimeZone != "" {
+				zone, err = graphIANAZone(master.Recurrence.Range.RecurrenceTimeZone)
 				if err != nil {
 					return calendar.Page[calendar.EventV2]{}, err
 				}
-				if eventTimeInWindow(cancelled.OriginalStart, request.Start, request.End) {
+			}
+			verified := master.CancelledOccurrences != nil
+			seen := map[string]bool{}
+			for _, occurrenceID := range master.CancelledOccurrences {
+				if seen[occurrenceID] {
+					continue
+				}
+				seen[occurrenceID] = true
+				if request.GatewayCancellationInventory && presentOccurrences[occurrenceID] {
+					verified = verified && cancelledOccurrences[occurrenceID]
+					continue
+				}
+				if request.GatewayCancellationInventory && !master.IsAllDay && zone == "" {
+					verified = false
+					continue
+				}
+				cancelled, err := cancelledOccurrence(*master, request.CalendarID, occurrenceID)
+				if err != nil {
+					if request.GatewayCancellationInventory {
+						verified = false
+						continue
+					}
+					return calendar.Page[calendar.EventV2]{}, err
+				}
+				if eventTimeInWindow(cancelled.OriginalStart, request.Start, request.End) || request.GatewayCancellationInventory &&
+					gatewayCancelledDateOverlaps(cancelled.OriginalStart, zone, request.Start, request.End) {
+					cancelled.Visibility = master.Sensitivity
 					seriesItems = append(seriesItems, cancelled)
 				}
+			}
+			if request.GatewayCancellationInventory && verified {
+				verifiedCancellationSeries[masterID] = zone
 			}
 		}
 		items = append(seriesItems, items...)
 	}
-	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true}, nil
+	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true, VerifiedCancellationSeries: verifiedCancellationSeries}, nil
 }
 
 func (p *Provider) validateGraphPageURL(value string) error {
@@ -387,6 +443,9 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 	if request.Patch.Conference.Present {
 		return nil, calendar.DefinitiveNoDispatch(unsupportedMicrosoft("Teams meeting state cannot be safely changed after creation"))
 	}
+	if id := calendar.GatewayUpdateDispatchID(ctx); id != "" {
+		patch["singleValueExtendedProperties"] = []graphSingleValueProperty{{ID: microsoftGatewayWriteProperty, Value: id}}
+	}
 	path := fmt.Sprintf("/me/calendars/%s/events/%s", url.PathEscape(request.Ref.CalendarID), url.PathEscape(request.Ref.EventID))
 	var updated graphEvent
 	if err := p.doJSONWithETag(ctx, http.MethodPatch, path, patch, request.ExpectedETag, &updated); err != nil {
@@ -450,6 +509,9 @@ func toGraphCreateV2(event calendar.EventCreateV2) (graphEventCreate, error) {
 	body := graphEventCreate{Subject: event.Title, Body: &graphBody{ContentType: "text", Content: event.Description}, Start: start, End: end, IsAllDay: startAllDay, Attendees: toGraphAttendeesV2(event.Attendees)}
 	if event.SyncMarker != nil {
 		body.SingleValueExtendedProperties = []graphSingleValueProperty{{ID: microsoftSyncMarkerProperty, Value: calendar.SyncMarkerValue(event.SyncMarker.RuleID, event.SyncMarker.SourceEventID)}}
+	}
+	if event.GatewayWriteID != "" {
+		body.SingleValueExtendedProperties = append(body.SingleValueExtendedProperties, graphSingleValueProperty{ID: microsoftGatewayWriteProperty, Value: event.GatewayWriteID})
 	}
 	body.Recurrence, err = portableToGraphRecurrence(event.Recurrence, event.Start)
 	if err != nil {

@@ -77,6 +77,8 @@ func registerBoundedEvents(s *server.MCPServer, tool mcp.Tool, reader CachedEven
 				return mcp.NewToolResultError("scope_required: try fewer calendar IDs to fit the response budget"), nil
 			case errors.Is(err, storage.ErrExplicitCachedPageScope):
 				return mcp.NewToolResultError("scope_required: select at most 16 explicit calendar IDs"), nil
+			case errors.Is(err, storage.ErrGatewayQueryTooLarge) || errors.Is(err, cachedpages.ErrGatewayResultTooLarge):
+				return gatewayReadError(err), nil
 			case errors.Is(err, cachedpages.ErrInvalidArgument):
 				return cachedError("invalid_argument"), nil
 			case errors.Is(err, cachedpages.ErrCursorUnavailable):

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"calendar-mcp/internal/calendar"
 )
 
 var ErrExclusiveDispatchConflict = errors.New("exclusive dispatch fence unavailable or already reserved")
@@ -28,6 +30,7 @@ type ExclusiveDispatchRequest struct {
 	OperationID, TargetKey, RequestHash, Kind string
 	CalendarIDs                               []string
 	Now                                       time.Time
+	gatewayWrite                              *calendar.GatewayWriteScope
 }
 
 // BeginExclusiveDispatch atomically reserves one exact target key and fences
@@ -87,6 +90,11 @@ func (s *Store) BeginExclusiveDispatch(ctx context.Context, in ExclusiveDispatch
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, s.query(`INSERT INTO exclusive_dispatch_guard_members(operation_id,calendar_id) VALUES(?,?)`), in.OperationID, id); err != nil {
+			return err
+		}
+	}
+	if in.gatewayWrite != nil {
+		if err := s.insertGatewayWrite(ctx, tx, in.OperationID, *in.gatewayWrite, ids, in.Now); err != nil {
 			return err
 		}
 	}

@@ -134,7 +134,7 @@ make build
 
 The calendar error banner offers **Resume sync** for parked sources. One click queues the affected selected calendars through the existing authenticated refresh API, using saved encrypted credentials. It does not open provider sign-in or request an app-specific password. A queued request is not reported as a successful sync; cached events remain visible until the worker completes recovery. **Reconnect** on the Connections page remains a separate action for replacing credentials.
 
-Apple calendars parked after an `auth` error are automatically checked every 15 minutes while their connection is connected and the calendar is readable. The retry deadline is durable, survives worker restarts and daily projection-window changes, and existing parked Apple auth states are eligible after upgrade. Other parked error classes and other providers require explicit recovery. While waiting, the UI keeps the access error visible, shows the next check and last successful sync, and checks cached status once a minute. Resume does not enable paused event-copy rules or change notification policy.
+Apple calendars parked after an `auth` error are automatically checked every 15 minutes while their connection is connected and the calendar is readable. The retry deadline is durable, survives worker restarts and daily projection-window changes, and existing parked Apple auth states are eligible after upgrade. Other parked errors require explicit recovery. With strict Gateway preparation enabled, fresh scoped Graph evidence also restarts calendars parked on auth or permission. While waiting, the UI keeps the access error visible, shows the next check and last successful sync, and checks cached status once a minute. Resume does not enable paused event-copy rules or change notification policy.
 
 ### Local Calendar mock workbench
 
@@ -213,6 +213,8 @@ Health endpoints:
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
 | `ENABLE_V2` | `false` | Enables typed lifecycle MCP tools and REST V2 routes; required for the modern MCP catalog |
 | `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; modern requires `ENABLE_V2=true` |
+| `GATEWAY_CACHED_READS_PREPARE` | `false` | Warms local Calendar rights and event publications in the platform worker. Requires `EVENT_READ_MODEL_ENABLED=true`. |
+| `GATEWAY_CACHED_READS_ONLY` | `false` | Switches all six read tools on the main `/mcp` catalog together. Requires preparation, modern V2, platform storage, and a primary API key. |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
 Schema version 7 records Google primary-calendar discovery. An older binary rejects this newer schema, so rollback requires a separately planned database recovery as well as a compatible binary.
@@ -310,6 +312,18 @@ With `MCP_CATALOG_MODE=modern` and a ready event read model, `/mcp` exposes the 
 The response describes coverage and freshness per source. A known source parked on permission contributes status and no events. A terminal page is complete only when every selected range is covered and the traversal has no known omissions. `get_event` uses the existing detail path for full descriptions and checks after mutations.
 
 For a worker rollout, quiesce the old projection workers before starting the new build. Snapshots and staged pages with conference evidence use payload version 2. Before starting an older worker that only accepts version 1, verify that every page and snapshot it can read is compatible. Use a verified compatible backup or a separately approved rebuild of affected projections. Keep affected sync rules paused until their projections have been verified.
+
+### Strict cached reads on the main endpoint
+
+In strict mode, `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, and `search_events` read local publications. The background worker refreshes grants and event data. The existing input schemas, explicit modern and compatibility endpoints, and live write handlers still apply. Search matches a case-insensitive substring in authorized title, description, or location. Omitted search bounds use the configured cache window.
+
+Rights checks target five-minute intervals. Each calendar proof lasts 15 minutes from the start of its last successful check. An inconclusive Apple or Graph calendar probe retains only that calendar’s previous deadline while successful siblings renew independently. A check already in progress before expiry can keep that proof available for up to 60 additional seconds while it retains its lease. A failed or denied attempt ends the extension. A new check started after expiry cannot extend the expired proof. Event fields have a separate 15-minute publication limit. Event fan-out omits expired grants. Calendar listing returns a readiness error when it cannot certify the complete inventory. Apple closes the prior grant on confirmed account authentication failure and removes private access immediately when it observes a different collection owner. A fresh Graph proof triggers a replacement sync after an authorization failure.
+
+Strict cursors bind the tool, arguments, verified server credential, and the source grant and content versions. Restart at the first page if any of those change. Mutation fences hide an affected publication until the background refresh catches up.
+
+Strict writes reserve a durable operation before dispatch. A confirmed provider result can be read by event ID while the full snapshot catches up. Recovery reads the stored receipt or verifies a provider marker for create, supported import, and direct update. A dedicated background loop releases a write with inconclusive evidence after five minutes, records an unknown outcome, and schedules fresh snapshots for its affected calendars. A separate loop reads provider markers, so a slow marker lookup cannot delay expiration. The receipt transaction checks the deadline after acquiring its database lock. Recovery never replays a provider mutation.
+
+For Microsoft Graph, a fresh series-master cancellation list can establish complete cancellation coverage for that series. A missing event or a delta removal alone leaves deleted-event coverage incomplete.
 
 ### Modern catalog
 

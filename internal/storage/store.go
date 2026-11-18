@@ -179,6 +179,12 @@ func validateMigrationSchema(ctx context.Context, db interface {
 		{`SELECT stop_requested FROM sync_jobs WHERE 1=0`, "sync stop-request schema is missing"},
 		{`SELECT authorization_revision FROM connections WHERE 1=0`, "connection authority schema is missing"},
 		{`SELECT detail_receipt FROM calendars WHERE 1=0`, "calendar authority schema is missing"},
+		{`SELECT verified_until_ms, inventory_revision FROM gateway_account_checks WHERE 1=0`, "gateway account proof schema is missing"},
+		{`SELECT grant_revision, detail_receipt FROM gateway_calendar_grants WHERE 1=0`, "gateway calendar proof schema is missing"},
+		{`SELECT content_revision, mutation_epoch FROM gateway_event_publications WHERE 1=0`, "gateway publication schema is missing"},
+		{`SELECT event_id, series_id, oversized FROM gateway_event_rows WHERE 1=0`, "gateway event schema is missing"},
+		{`SELECT phase, receipt_ciphertext FROM gateway_writes WHERE 1=0`, "gateway write receipt schema is missing"},
+		{`SELECT mutation_epoch, settled FROM gateway_write_points WHERE 1=0`, "gateway write projection schema is missing"},
 	} {
 		rows, err := db.QueryContext(ctx, check.query)
 		if err != nil {
@@ -251,6 +257,8 @@ func migrationName(version int) string {
 		return "sync_stop_request"
 	case 29:
 		return "cached_detail_authority"
+	case 30:
+		return "gateway_cached_reads"
 	default:
 		return ""
 	}
