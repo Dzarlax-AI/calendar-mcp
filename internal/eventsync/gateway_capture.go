@@ -30,10 +30,15 @@ func RefreshGatewayPublication(ctx context.Context, store *storage.Store, provid
 		return errors.New("provider has no bounded event projection listing")
 	}
 	listPage := list.ListEventsV2
+	maxPages := 128
 	if listing, ok := provider.(interface {
 		NewGatewayEventListing() func(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error)
 	}); ok {
 		listPage = listing.NewGatewayEventListing()
+		// The Google snapshot walks the series and expanded streams in order.
+		// Previously one call could advance both, so reserve the equivalent
+		// budget for their separate pages, including one shared boundary call.
+		maxPages = 2*maxPages - 1
 	}
 	request := calendar.ListEventsRequestV2{CalendarID: rawID, Start: ticket.State.WindowStart, End: ticket.State.WindowEnd,
 		View: calendar.RecurrenceBoth, ShowDeleted: true, MaxResults: 250, AvailabilityStrict: true, GatewayCancellationInventory: provider.Name() == "microsoft"}
@@ -42,7 +47,7 @@ func RefreshGatewayPublication(ctx context.Context, store *storage.Store, provid
 	seenRows := map[string][32]byte{}
 	var size int
 	var verifiedSeries map[string]string
-	for i := 0; i < 128; i++ {
+	for i := 0; i < maxPages; i++ {
 		page, err := listPage(ctx, request)
 		if err != nil {
 			return err
