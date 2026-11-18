@@ -1,17 +1,26 @@
 package apple
 
 import (
-	"strconv"
+	"bufio"
+	"fmt"
+	"io"
 	"strings"
 	"time"
+
+	"calendar-mcp/internal/calendar"
 
 	"github.com/emersion/go-ical"
 	"github.com/teambition/rrule-go"
 )
 
 func calendarTimezone(value string) string {
-	data, err := ical.NewDecoder(strings.NewReader(strings.TrimSpace(value))).Decode()
+	input := bufio.NewReader(strings.NewReader(strings.TrimSpace(value)))
+	data, err := ical.NewDecoder(input).Decode()
 	if err != nil {
+		return ""
+	}
+
+	if _, err := input.Peek(1); err != io.EOF {
 		return ""
 	}
 
@@ -60,14 +69,17 @@ func calendarTimezone(value string) string {
 					namedMatches = false
 					break
 				}
-				if from != to {
-					transitions[at] = struct{}{}
-					if firstTransition.IsZero() || at.Before(firstTransition) {
-						firstTransition = at
-					}
-					if at.After(lastTransition) {
-						lastTransition = at
-					}
+				// Validate no-op observances without extending the span of
+				// actual transitions verified from the bounded samples.
+				if from == to {
+					continue
+				}
+				transitions[at] = struct{}{}
+				if firstTransition.IsZero() || at.Before(firstTransition) {
+					firstTransition = at
+				}
+				if lastTransition.IsZero() || at.After(lastTransition) {
+					lastTransition = at
 				}
 			}
 		}
@@ -82,14 +94,14 @@ func calendarTimezone(value string) string {
 			return "UTC"
 		}
 		if firstOffset%3600 == 0 {
-			name := "Etc/GMT" + strconv.Itoa(-firstOffset/3600)
+			name := fmt.Sprintf("Etc/GMT%+d", -firstOffset/3600)
 			if _, err := time.LoadLocation(name); err == nil {
 				return name
 			}
 		}
-		return ""
+		return calendar.FormatCollectionOffset(firstOffset)
 	}
-	if namedMatches && calendarTimezoneTransitionsMatch(location, firstTransition, lastTransition, transitions) {
+	if namedMatches && len(transitions) > 0 && calendarTimezoneTransitionsMatch(location, firstTransition, lastTransition, transitions) {
 		return tzid
 	}
 	return ""
@@ -127,8 +139,8 @@ func calendarTimezoneObservance(props ical.Props) (dates []time.Time, from, to i
 	}
 	const layout = "20060102T150405"
 	start, err := time.Parse(layout, props.Get(ical.PropDateTimeStart).Value)
-	from, fromOK := calendarUTCOffset(props.Get(ical.PropTimezoneOffsetFrom).Value)
-	to, toOK := calendarUTCOffset(props.Get(ical.PropTimezoneOffsetTo).Value)
+	from, fromOK := calendar.ParseICalendarOffset(props.Get(ical.PropTimezoneOffsetFrom).Value)
+	to, toOK := calendar.ParseICalendarOffset(props.Get(ical.PropTimezoneOffsetTo).Value)
 	if err != nil || !fromOK || !toOK {
 		return nil, 0, 0, false
 	}
@@ -170,26 +182,4 @@ func calendarTimezoneObservance(props ical.Props) (dates []time.Time, from, to i
 		}
 	}
 	return dates, from, to, true
-}
-
-func calendarUTCOffset(value string) (int, bool) {
-	if (len(value) != 5 && len(value) != 7) || (value[0] != '+' && value[0] != '-') {
-		return 0, false
-	}
-	for _, digit := range value[1:] {
-		if digit < '0' || digit > '9' {
-			return 0, false
-		}
-	}
-	hours, _ := strconv.Atoi(value[1:3])
-	minutes, _ := strconv.Atoi(value[3:5])
-	seconds, _ := strconv.Atoi(value[5:])
-	if hours > 23 || minutes > 59 || seconds > 59 {
-		return 0, false
-	}
-	offset := hours*3600 + minutes*60 + seconds
-	if value[0] == '-' {
-		return -offset, offset != 0
-	}
-	return offset, true
 }

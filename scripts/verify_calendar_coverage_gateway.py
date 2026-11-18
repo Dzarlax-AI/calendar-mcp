@@ -65,9 +65,11 @@ def tools_at(endpoint):
     return {tool['name']: tool for tool in result(response)['tools']}
 
 
-def walk(mode, info, gateway_url, all_ready):
+def walk(mode, info, gateway_url, all_ready, apple_offsets):
+    expect_complete = all_ready or apple_offsets
     token = ''
     ids, sizes = [], []
+    apple_all_day_ids = set()
     started = time.monotonic()
     first_ms = None
     while True:
@@ -100,11 +102,21 @@ def walk(mode, info, gateway_url, all_ready):
         page = tool_result.get('structuredContent') or json.loads(tool_result['content'][0]['text'])
         assert 'synthetic-description-' not in json.dumps(page)
         assert 'fixture-meeting' not in json.dumps(page)
-        assert page['partial'] is (not all_ready)
+        assert page['partial'] is (not expect_complete)
+        if apple_offsets:
+            assert len(page['sources']) == 7
+            assert all(source['coverage'] == 'covered' for source in page['sources'])
+            assert all(source['calendar_id'] != 'apple:apple-fixture:/home/cal-2' for source in page['sources'])
+            assert 'UTC+05:30:17' not in json.dumps(page) and 'UTC-00:19:32' not in json.dumps(page)
+            for item in page['items']:
+                if item['event_id'].startswith('apple:') and item['start'].get('date'):
+                    assert item['start']['date'] == info['start'][:10]
+                    assert item['end']['date'] == info['end'][:10]
+                    apple_all_day_ids.add(item['event_id'])
         assert len(page['items']) <= 5
         ids.extend(item['event_id'] for item in page['items'])
         token = page.get('next_page_token', '')
-        assert page['complete'] is (all_ready and not token)
+        assert page['complete'] is (expect_complete and not token)
         if not token:
             break
         assert len(sizes) < 30
@@ -113,12 +125,14 @@ def walk(mode, info, gateway_url, all_ready):
         for provider, count in [('google', 5), ('apple', 3 if all_ready else 2)]
         for index in range(count) for event in range(4)
     }
+    if apple_offsets:
+        assert apple_all_day_ids == {f'apple:event-apple-apple-fixture-cal-{i}-0' for i in range(2)}
     assert len(sizes) == (7 if all_ready else 6)
     assert len(ids) == len(expected) and set(ids) == expected
-    assert len(page['sources']) == 8
-    assert page['partial'] is not all_ready and page['complete'] is all_ready
+    assert len(page['sources']) == (7 if apple_offsets else 8)
+    assert page['partial'] is not expect_complete and page['complete'] is expect_complete
     assert sum(source['coverage'] == 'covered' for source in page['sources']) == (8 if all_ready else 7)
-    if not all_ready:
+    if not expect_complete:
         assert any(source['calendar_id'] == 'apple:apple-fixture:cal-2'
                    and source['status'] == 'parked' and source['error_code'] == 'permission'
                    for source in page['sources'])
@@ -133,9 +147,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fixture', default='/tmp/calendar-coverage-fixture')
     parser.add_argument('--gateway', default='/tmp/mcp-gateway')
+    parser.add_argument('--calendar-cli', help='path to a calendar binary built in your checkout or a private build directory')
     parser.add_argument('--warm-walks', type=int, default=5)
-    parser.add_argument('--all-ready', action='store_true')
+    scenario = parser.add_mutually_exclusive_group()
+    scenario.add_argument('--all-ready', action='store_true')
+    scenario.add_argument('--apple-offsets', action='store_true')
     args = parser.parse_args()
+    if args.apple_offsets and not args.calendar_cli:
+        parser.error('--apple-offsets requires --calendar-cli')
     assert 1 <= args.warm_walks <= 100
     processes = []
     logs = []
@@ -144,6 +163,8 @@ def main():
             fixture_command = [args.fixture]
             if args.all_ready:
                 fixture_command.append('-all-ready')
+            if args.apple_offsets:
+                fixture_command.extend(['-apple-offsets', '-calendar-cli', args.calendar_cli])
             fixture_log = tempfile.TemporaryFile(mode='w+t')
             logs.append(fixture_log)
             fixture = subprocess.Popen(fixture_command, stdout=subprocess.PIPE, stderr=fixture_log)
@@ -248,7 +269,7 @@ def main():
             reference = None
             for _ in range(args.warm_walks + 1):
                 for mode in measurements:
-                    sample = walk(mode, info, base + '/mcp', args.all_ready)
+                    sample = walk(mode, info, base + '/mcp', args.all_ready, args.apple_offsets)
                     if reference is None:
                         reference = sample['ids']
                     assert sample.pop('ids') == reference
@@ -293,7 +314,7 @@ def main():
             assert denied.get('result', {}).get('isError') is True
             assert any(part.get('text') == 'access denied' for part in denied['result'].get('content', []))
             report = {'synthetic': True, 'cold_search_ms': cold_search_ms, 'classification': classification,
-                      'coverage': '8/8' if args.all_ready else '7/8', 'events': len(reference), 'denied': True, 'separate_catalog_schemas': True,
+                      'coverage': '7/7' if args.apple_offsets else ('8/8' if args.all_ready else '7/8'), 'events': len(reference), 'denied': True, 'separate_catalog_schemas': True,
                       'detail_verified': True, 'live_direct_ms': live_ms, 'live_direct_frame_bytes': live_bytes,
                       'live_batch_frame_bytes': legacy_batch_bytes, 'live_batch_ms': legacy_batch_ms,
                       'live_batch_status': 'result_omitted'}

@@ -477,13 +477,9 @@ func (s *Store) scanConnection(row rowScanner) (Connection, error) {
 	return c, nil
 }
 
-// safeDiscoveryTimezone accepts only explicit, loadable IANA zone names.
-// Invalid or absent metadata never overwrites a previously known zone.
-func safeDiscoveryTimezone(zone string) string {
-	if zone == "" || zone == "Local" {
-		return ""
-	}
-	if _, err := time.LoadLocation(zone); err != nil {
+// Invalid or absent discovery metadata preserves previously known zones.
+func safeDiscoveryTimezone(provider, zone string) string {
+	if calendar.CollectionLocation(provider, zone) == nil {
 		return ""
 	}
 	return zone
@@ -510,7 +506,7 @@ func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
 		return err
 	}
 	transition := err == nil && provider != "google" && readable != c.CanRead
-	if err = upsertCalendarWithAuthority(ctx, s, tx, c); err != nil {
+	if err = upsertCalendarWithAuthority(ctx, s, tx, provider, c); err != nil {
 		return err
 	}
 	if transition {
@@ -521,15 +517,18 @@ func (s *Store) UpsertCalendar(ctx context.Context, c Calendar) error {
 	return tx.Commit()
 }
 
-func upsertCalendarWithAuthority(ctx context.Context, s *Store, db execer, c Calendar) error {
-	c.Timezone = safeDiscoveryTimezone(c.Timezone)
+func upsertCalendarWithAuthority(ctx context.Context, s *Store, db execer, provider string, c Calendar) error {
+	c.Timezone = safeDiscoveryTimezone(provider, c.Timezone)
 	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary, detail_receipt)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN (SELECT provider FROM connections WHERE id=?)<>'google' THEN ? ELSE '' END)
  ON CONFLICT(connection_id, provider_calendar_id) DO UPDATE SET
  name=excluded.name, timezone=CASE WHEN excluded.timezone<>'' THEN excluded.timezone ELSE calendars.timezone END, can_read=excluded.can_read, can_write=excluded.can_write,
  supports_recurrence=excluded.supports_recurrence, discovered_at=excluded.discovered_at, google_primary=excluded.google_primary,
- detail_receipt=CASE WHEN (SELECT provider FROM connections WHERE id=excluded.connection_id)<>'google' AND (calendars.can_read<>excluded.can_read OR calendars.detail_receipt='') THEN excluded.detail_receipt ELSE calendars.detail_receipt END`
-	_, err := db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone, c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary, c.ConnectionID, uuid.NewString())
+ detail_receipt=CASE
+ WHEN (SELECT provider FROM connections WHERE id=excluded.connection_id)<>'google' AND (calendars.can_read<>excluded.can_read OR calendars.detail_receipt='') THEN excluded.detail_receipt
+ WHEN ?='apple' AND excluded.timezone<>'' AND calendars.timezone<>excluded.timezone THEN excluded.detail_receipt
+ ELSE calendars.detail_receipt END`
+	_, err := db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone, c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary, c.ConnectionID, uuid.NewString(), provider)
 	if err != nil {
 		return fmt.Errorf("upsert calendar: %w", err)
 	}
@@ -605,7 +604,7 @@ func (s *Store) registerDiscoveredCalendar(ctx context.Context, db execer, provi
 	q := `INSERT INTO calendars(id, connection_id, provider_calendar_id, name, timezone, can_read, can_write, supports_recurrence, discovered_at, google_primary, detail_receipt)
 		SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM connections WHERE id=? AND provider=? AND status='connected'
 		ON CONFLICT(connection_id, provider_calendar_id) DO NOTHING`
-	_, err := db.ExecContext(ctx, s.query(q), calendar.AccountCalendarID(provider, connectionID, item.ID), item.ID, item.Name, safeDiscoveryTimezone(item.Timezone), readable, readable && !item.ReadOnly, false, time.Now().UTC(), false, receipt, connectionID, provider)
+	_, err := db.ExecContext(ctx, s.query(q), calendar.AccountCalendarID(provider, connectionID, item.ID), item.ID, item.Name, safeDiscoveryTimezone(provider, item.Timezone), readable, readable && !item.ReadOnly, false, time.Now().UTC(), false, receipt, connectionID, provider)
 	if err != nil {
 		return fmt.Errorf("register discovered calendar: %w", err)
 	}

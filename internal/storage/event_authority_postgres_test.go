@@ -16,6 +16,7 @@ import (
 
 	"calendar-mcp/internal/calendar"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Each authority integration fixture has its own schema in the disposable
@@ -27,8 +28,24 @@ func newAuthorityPostgresStore(t *testing.T, version int) *Store {
 		t.Skip("TEST_POSTGRES_URL is not configured")
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") || !strings.HasPrefix(u.Path, "/calendar_r6_") || u.User.Username() != "calendar_r6" {
-		t.Fatal("authority integration requires a disposable loopback calendar_r6 database")
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") ||
+		(u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") || u.Port() == "" ||
+		!strings.HasPrefix(u.Path, "/calendar_r6_") || u.User.Username() != "calendar_r6" {
+		t.Fatal("authority integration requires a disposable loopback calendar_r6 database and an explicit port")
+	}
+	for key := range u.Query() {
+		if key != "sslmode" {
+			t.Fatal("unsupported authority database connection option")
+		}
+	}
+	config, err := pgx.ParseConfig(raw)
+	if err != nil || config.Host != u.Hostname() || config.User != u.User.Username() || config.Database != u.Path[1:] {
+		t.Fatal("effective authority database does not match the disposable URL")
+	}
+	for _, fallback := range config.Fallbacks {
+		if fallback.Host != config.Host || fallback.Port != config.Port {
+			t.Fatal("authority PostgreSQL fallback must use the disposable endpoint")
+		}
 	}
 	ctx := t.Context()
 	admin, err := Open(ctx, raw)
