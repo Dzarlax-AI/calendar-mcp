@@ -1,9 +1,11 @@
 package apple
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -26,6 +28,8 @@ type calendarDiscoveryProps struct {
 	Timezone    []string   `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
 	Other       []struct{} `xml:",any"`
 }
+
+const maxGatewayDiscoveryBytes = 4 << 20
 
 type calendarInventory struct {
 	calendars          []calendar.Calendar
@@ -68,7 +72,18 @@ func (p *Provider) findCalendarInventory(ctx context.Context, homeSet string, al
 			} `xml:"DAV: propstat"`
 		} `xml:"DAV: response"`
 	}
-	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var body io.Reader = resp.Body
+	if allowPartial {
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxGatewayDiscoveryBytes+1))
+		if err != nil {
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND read: %w", err)
+		}
+		if len(data) > maxGatewayDiscoveryBytes {
+			return calendarInventory{}, fmt.Errorf("calendar PROPFIND exceeds read bounds")
+		}
+		body = bytes.NewReader(data)
+	}
+	if err := xml.NewDecoder(body).Decode(&result); err != nil {
 		return calendarInventory{}, fmt.Errorf("calendar PROPFIND parse: %w", err)
 	}
 

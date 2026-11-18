@@ -2,6 +2,7 @@ package apple
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -39,7 +40,15 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// We read the entire body to avoid truncation on streaming responses.
 	if resp.StatusCode >= 400 {
 		origStatus := resp.StatusCode
-		if body, ok := readIfMultiStatus(resp); ok {
+		limit := 0
+		if _, strict := req.Context().Value(gatewayRawStatusKey{}).(*discoveryStatus); strict {
+			limit = maxGatewayDiscoveryBytes
+		}
+		body, ok, err := readIfMultiStatus(resp, limit)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			// Do not log the CalDAV path: it can contain account and calendar
 			// identifiers. The status and bounded body length are sufficient for
 			// diagnosing the fallback.
@@ -55,21 +64,28 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 // readIfMultiStatus reads the full response body. If it contains a multistatus
 // element, returns the body bytes and true. Otherwise restores the body and
 // returns false so the caller can process the response normally.
-func readIfMultiStatus(resp *http.Response) ([]byte, bool) {
+func readIfMultiStatus(resp *http.Response, limit int) ([]byte, bool, error) {
 	if resp.Body == nil {
-		return nil, false
+		return nil, false, nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	var reader io.Reader = resp.Body
+	if limit > 0 {
+		reader = io.LimitReader(resp.Body, int64(limit)+1)
+	}
+	body, err := io.ReadAll(reader)
 	resp.Body.Close()
+	if limit > 0 && len(body) > limit {
+		return nil, false, errors.New("CalDAV authority response exceeds read bounds")
+	}
 	if err != nil || len(body) == 0 {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return nil, false
+		return nil, false, nil
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	if bytes.Contains(body, []byte("multistatus")) {
-		return body, true
+		return body, true, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 func newBasicAuthClient(username, password string) *http.Client {

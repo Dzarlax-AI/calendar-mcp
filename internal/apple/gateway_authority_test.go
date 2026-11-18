@@ -25,7 +25,7 @@ func TestGatewayEvidenceRequiresExplicitCalDAVPrivileges(t *testing.T) {
 <D:propstat><D:prop><D:owner><D:href>/principals/owner/</D:href></D:owner><D:current-user-privilege-set>
 <D:privilege><C:read-free-busy/></D:privilege>%s
 </D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
-</D:response></D:multistatus>`, r.URL.Path, map[string]string{"/owned/": "<D:privilege><D:read/></D:privilege><D:privilege><D:write/></D:privilege>"}[r.URL.Path])
+</D:response></D:multistatus>`, r.URL.EscapedPath(), map[string]string{"/owned/": "<D:privilege><D:read/></D:privilege><D:privilege><D:write/></D:privilege>"}[r.URL.Path])
 	}))
 	defer s.Close()
 	p := eventSyncProvider(t, s)
@@ -36,6 +36,9 @@ func TestGatewayEvidenceRequiresExplicitCalDAVPrivileges(t *testing.T) {
 	owned, err := p.gatewayCollectionAccess(t.Context(), "/owned/")
 	if err != nil || !owned.known || !owned.read || !owned.write || !appleSameCollectionPrincipal(s.URL, owned.owner, "/principals/owner/") {
 		t.Fatalf("owner privileges=%#v, error=%v", owned, err)
+	}
+	if _, err := p.gatewayCollectionAccess(t.Context(), "/home/team#ops?/"); err != nil {
+		t.Fatalf("escaped discovery path was rejected: %v", err)
 	}
 	if appleSameCollectionPrincipal(s.URL, owned.owner, "https://example.invalid/principals/owner/") {
 		t.Fatal("owner with a different origin accepted")
@@ -89,5 +92,67 @@ func TestGatewayObservedOwnerDowngradeSurvivesUnavailableProbe(t *testing.T) {
 	proof, err := p.checkGatewayCollection(ctx, ctx, &discoveryStatus{}, calendar.Calendar{ID: "/shared/"}, "/self/", time.Now())
 	if err != nil || !restricted || !proof.Unknown {
 		t.Fatalf("proof=%+v restriction=%t err=%v", proof, restricted, err)
+	}
+}
+
+func TestGatewayOwnedPrivateAccessProbesObjectWhenReportEmpty(t *testing.T) {
+	p, err := New("fixture", "fixture", "https://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objectReads int
+	p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+		status, media := http.StatusMultiStatus, "application/xml"
+		const open = `<D:multistatus xmlns:D="DAV:">`
+		const close = `</D:multistatus>`
+		var body string
+		switch {
+		case r.Method == "PROPFIND" && r.Header.Get("Depth") == "0":
+			body = open + `<D:response><D:href>/home/team/</D:href><D:propstat><D:prop>
+<D:owner><D:href>/owner/</D:href></D:owner><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>` + close
+		case r.Method == "REPORT":
+			body = open + close
+		case r.Method == "PROPFIND" && r.Header.Get("Depth") == "1":
+			body = open + `<D:response><D:href>/home/team/event.ics</D:href><D:propstat><D:prop><D:getetag>"event"</D:getetag></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>` + close
+		case r.Method == "GET":
+			if r.URL.EscapedPath() != "/home/team/event.ics" {
+				t.Fatalf("object path = %s", r.URL.EscapedPath())
+			}
+			objectReads++
+			status, media = http.StatusOK, "text/calendar"
+			body = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\nUID:private\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T101000Z\r\nCLASS:PRIVATE\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+		default:
+			t.Fatalf("unexpected request method or depth: %s %s", r.Method, r.Header.Get("Depth"))
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{media}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	proof, err := p.checkGatewayCollection(t.Context(), t.Context(), &discoveryStatus{}, calendar.Calendar{ID: "/home/team/"}, "/owner/", time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC))
+	if err != nil || proof.Unknown || !proof.ReadEvents || !proof.ReadPrivate || objectReads != 1 {
+		t.Fatalf("proof=%+v object reads=%d err=%v", proof, objectReads, err)
+	}
+}
+
+func TestGatewayWriteRejectsUppercaseCancelledReceipt(t *testing.T) {
+	p, err := New("fixture", "fixture", "https://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+		status, media := http.StatusMultiStatus, "application/xml"
+		body := `<D:multistatus xmlns:D="DAV:"><D:response><D:href>/home/owned/event.ics</D:href></D:response></D:multistatus>`
+		switch r.Method {
+		case "PROPFIND":
+		case "GET":
+			status, media = http.StatusOK, "text/calendar"
+			body = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\nUID:cancelled\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T101000Z\r\nSTATUS:CANCELLED\r\nX-CALENDAR-MCP-WRITE-DISPATCH:dispatch-id\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{media}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if receipt, err := p.FindGatewayWrite(t.Context(), "/home/owned/", "dispatch-id"); receipt != nil || err == nil {
+		t.Fatalf("cancelled object was accepted as confirmation: %+v error=%v", receipt, err)
 	}
 }

@@ -28,9 +28,10 @@ type GatewayWrite struct {
 }
 
 type gatewayWriteReservation struct {
-	store *Store
-	id    string
-	ids   []string
+	store      *Store
+	id         string
+	ids        []string
+	outcomeDue time.Time
 }
 
 func (s *Store) BeginGatewayWrite(ctx context.Context, ids []string, scope calendar.GatewayWriteScope) (calendar.GatewayWriteReservation, error) {
@@ -44,7 +45,9 @@ func (s *Store) BeginGatewayWrite(ctx context.Context, ids []string, scope calen
 	if err != nil {
 		return nil, err
 	}
-	return &gatewayWriteReservation{store: s, id: id, ids: slices.Clone(ids)}, nil
+	calendarIDs := slices.Clone(ids)
+	slices.Sort(calendarIDs)
+	return &gatewayWriteReservation{store: s, id: id, ids: slices.Compact(calendarIDs)}, nil
 }
 
 func (s *Store) insertGatewayWrite(ctx context.Context, tx *sql.Tx, id string, scope calendar.GatewayWriteScope, ids []string, now time.Time) error {
@@ -72,7 +75,7 @@ func (s *Store) insertGatewayWrite(ctx context.Context, tx *sql.Tx, id string, s
 	}
 	grants := map[string]string{}
 	for _, calendarID := range ids {
-		current, err := s.gatewayCalendarGrants(ctx, tx, now, calendarID, false)
+		current, err := s.gatewayCalendarGrants(ctx, tx, now, calendarID)
 		if err != nil {
 			return err
 		}
@@ -92,22 +95,66 @@ func (s *Store) insertGatewayWrite(ctx context.Context, tx *sql.Tx, id string, s
 
 func (r *gatewayWriteReservation) ID() string { return r.id }
 
+func (r *gatewayWriteReservation) OutcomeDeadline() time.Time { return r.outcomeDue }
+
 func (r *gatewayWriteReservation) Authorize(ctx context.Context) error {
-	now := time.Now()
+	s := r.store
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if s.dialect == DialectSQLite {
+		// Acquire the writer before taking a snapshot of the scope.
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE gateway_writes SET next_check_ms=next_check_ms WHERE operation_id=?`), r.id); err != nil {
+			return err
+		}
+	}
+	if err := s.lockMutationConnectionsAndCalendars(ctx, tx, r.ids); err != nil {
+		return err
+	}
 	var raw string
-	if err := r.store.db.QueryRowContext(ctx, r.store.query(`SELECT scope_json FROM gateway_writes WHERE operation_id=?`), r.id).Scan(&raw); err != nil {
+	query := `SELECT scope_json FROM gateway_writes WHERE operation_id=?`
+	if s.dialect == DialectPostgres {
+		query += ` FOR UPDATE`
+	}
+	if err := tx.QueryRowContext(ctx, s.query(query), r.id).Scan(&raw); err != nil {
 		return err
 	}
 	var scope calendar.GatewayWriteScope
 	if err := json.Unmarshal([]byte(raw), &scope); err != nil {
 		return err
 	}
-	res, err := r.store.db.ExecContext(ctx, r.store.query(`UPDATE gateway_writes SET phase='dispatched',next_check_ms=?,outcome_due_ms=?
-	WHERE operation_id=? AND phase='reserved' AND dispatch_by_ms>?
-	AND EXISTS(SELECT 1 FROM calendars c JOIN connections a ON a.id=c.connection_id
-	WHERE c.id=? AND c.enabled=TRUE AND a.status='connected' AND a.authorization_revision=?)`),
-		now.Add(gatewayRecheckDelay).UnixMilli(), now.Add(gatewayWriteOutcomeTimeout).UnixMilli(), r.id, now.UnixMilli(), scope.CalendarID, scope.AuthorizationRevision)
-	return oneGatewayAuthorityRow(res, err)
+	// Evaluate the clock after waiting for all relevant database locks. The
+	// same timestamp controls dispatch admission and the durable outcome.
+	query = `WITH clock AS MATERIALIZED (SELECT ` + s.gatewayDatabaseClockMS() + ` AS now_ms)
+	UPDATE gateway_writes SET phase='dispatched',next_check_ms=(SELECT now_ms FROM clock)+?,outcome_due_ms=(SELECT now_ms FROM clock)+?
+	WHERE operation_id=? AND phase='reserved' AND dispatch_by_ms>(SELECT now_ms FROM clock)
+	AND EXISTS(SELECT 1 FROM calendars src JOIN connections a ON a.id=src.connection_id
+	WHERE src.id=? AND src.enabled=TRUE AND a.status='connected' AND a.authorization_revision=?
+	AND (?='' OR EXISTS(SELECT 1 FROM calendars dst WHERE dst.id=? AND dst.enabled=TRUE AND dst.connection_id=src.connection_id)))
+	RETURNING outcome_due_ms`
+	var dueMS int64
+	err = tx.QueryRowContext(ctx, s.query(query), gatewayRecheckDelay.Milliseconds(), gatewayWriteOutcomeTimeout.Milliseconds(), r.id,
+		scope.CalendarID, scope.AuthorizationRevision, scope.DestinationCalendarID, scope.DestinationCalendarID).Scan(&dueMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAuthorityChanged
+	}
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.outcomeDue = time.UnixMilli(dueMS).UTC()
+	return nil
+}
+
+func (s *Store) gatewayDatabaseClockMS() string {
+	if s.dialect == DialectPostgres {
+		return "CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000) AS BIGINT)"
+	}
+	return "(CAST(strftime('%s','now') AS INTEGER) * 1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))"
 }
 
 func (r *gatewayWriteReservation) Complete(ctx context.Context, result any, notSent bool) error {
@@ -145,16 +192,14 @@ func (s *Store) RecordGatewayWriteConfirmation(ctx context.Context, id string, r
 		return err
 	}
 	defer tx.Rollback()
-	dbNow := "(CAST(strftime('%s','now') AS INTEGER) * 1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))"
 	if s.dialect == DialectPostgres {
 		var locked string
 		if err := tx.QueryRowContext(ctx, s.query(`SELECT operation_id FROM gateway_writes WHERE operation_id=? FOR UPDATE`), id).Scan(&locked); err != nil {
 			return err
 		}
-		dbNow = "FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)"
 	}
 	query := `UPDATE gateway_writes SET phase='confirmed',confirmed_ms=?,receipt_ciphertext=?,next_check_ms=?
-	WHERE operation_id=? AND phase='dispatched' AND outcome_due_ms>? AND outcome_due_ms>` + dbNow
+	WHERE operation_id=? AND phase='dispatched' AND outcome_due_ms>? AND outcome_due_ms>` + s.gatewayDatabaseClockMS()
 	res, err := tx.ExecContext(ctx, s.query(query), now.UnixMilli(), base64.StdEncoding.EncodeToString(ciphertext), now.UnixMilli(), id, now.UnixMilli())
 	if err := oneGatewayAuthorityRow(res, err); err != nil {
 		if !errors.Is(err, ErrAuthorityChanged) {

@@ -83,10 +83,10 @@ func checkGatewayAccount(ctx context.Context, store *storage.Store, checker gate
 		checkErr = call.Err()
 	}
 	cancel()
-	finish, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer finishCancel()
 	if checkErr == nil && ctx.Err() == nil {
+		finish, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		err = store.PublishGatewayAuthority(finish, lease, proofs, time.Now())
+		finishCancel()
 		if err == nil {
 			return
 		}
@@ -96,7 +96,9 @@ func checkGatewayAccount(ctx context.Context, store *storage.Store, checker gate
 	}
 	var denial *storage.GatewayAuthorityDenial
 	_ = errors.As(checkErr, &denial)
-	if err := store.FailGatewayAuthorityCheck(finish, lease, denial, time.Now()); err != nil && !errors.Is(err, storage.ErrAuthorityChanged) {
+	release, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer releaseCancel()
+	if err := store.FailGatewayAuthorityCheck(release, lease, denial, time.Now()); err != nil && !errors.Is(err, storage.ErrAuthorityChanged) {
 		log.Print("gateway calendar authorization claim release failed")
 	}
 }

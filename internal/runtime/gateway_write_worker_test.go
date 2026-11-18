@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -74,6 +75,9 @@ func TestGatewayWriteSchedulerExpiresWhileLookupBlocked(t *testing.T) {
 	case <-finder.started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("lookup did not start")
+	}
+	if _, err := db.BeginGatewayWrite(ctx, []string{id}, scope); !errors.Is(err, storage.ErrExclusiveDispatchConflict) {
+		t.Fatalf("dispatch fence did not block another reservation before expiry: %v", err)
 	}
 	offset.Store(int64(6 * time.Minute))
 	deadline := time.Now().Add(2 * time.Second)

@@ -3,6 +3,7 @@ package apple
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"calendar-mcp/internal/calendar"
 	"github.com/emersion/go-ical"
@@ -42,7 +43,7 @@ func (p *Provider) FindGatewayWrite(ctx context.Context, calendarID, id string) 
 				result.OriginalStart = &original
 				result.InstanceKind = "exception"
 			}
-			if result.ID == "" || result.Status == "cancelled" {
+			if result.ID == "" || strings.EqualFold(result.Status, "cancelled") {
 				return nil, errors.New("invalid CalDAV write receipt")
 			}
 			found = &result

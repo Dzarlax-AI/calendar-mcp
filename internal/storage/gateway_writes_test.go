@@ -60,6 +60,16 @@ func testGatewayWriteReceipt(t *testing.T, db *Store) {
 	if len(point.Items) != 1 || point.Items[0].Event.Title != e.Title {
 		t.Fatalf("invalid point snapshot: %#v", point.Items)
 	}
+	failedScope := calendar.GatewayWriteScope{Kind: "update", CalendarID: id, EventID: "other"}
+	failed, err := db.BeginGatewayWrite(ctx, []string{id}, failedScope)
+	must(err)
+	must(failed.Authorize(ctx))
+	must(failed.Complete(ctx, nil, true))
+	point, err = db.ReadGatewayEvents(ctx, req, time.Now(), false)
+	must(err)
+	if len(point.Items) != 1 || point.Items[0].Event.Title != e.Title {
+		t.Fatalf("no-dispatch release discarded the confirmed receipt: %#v", point)
+	}
 	scope.Kind, scope.EventID, scope.Scope = "delete", "event", calendar.ScopeSingle
 	reservation, err = db.BeginGatewayWrite(ctx, []string{id}, scope)
 	must(err)
@@ -252,7 +262,11 @@ func testGatewayConfirmationChecksDatabaseClock(t *testing.T, db *Store) {
 	if err = reservation.Authorize(ctx); err != nil {
 		t.Fatal(err)
 	}
-	due := time.Now().Add(150 * time.Millisecond)
+	delay := 150 * time.Millisecond
+	if db.dialect == DialectPostgres {
+		delay = 2 * time.Second
+	}
+	due := time.Now().Add(delay)
 	if _, err = db.db.ExecContext(ctx, db.query(`UPDATE gateway_writes SET outcome_due_ms=? WHERE operation_id=?`), due.UnixMilli(), reservation.ID()); err != nil {
 		t.Fatal(err)
 	}
@@ -263,9 +277,9 @@ func testGatewayConfirmationChecksDatabaseClock(t *testing.T, db *Store) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	var lockOwner int
 	if db.dialect == DialectPostgres {
-		var locked string
-		if err := tx.QueryRowContext(ctx, db.query(`SELECT operation_id FROM gateway_writes WHERE operation_id=? FOR UPDATE`), reservation.ID()).Scan(&locked); err != nil {
+		if err := tx.QueryRowContext(ctx, db.query(`SELECT pg_backend_pid() FROM gateway_writes WHERE operation_id=? FOR UPDATE`), reservation.ID()).Scan(&lockOwner); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -273,6 +287,29 @@ func testGatewayConfirmationChecksDatabaseClock(t *testing.T, db *Store) {
 	go func() {
 		result <- db.RecordGatewayWriteConfirmation(ctx, reservation.ID(), &calendar.OperationResult{Status: "completed"}, now)
 	}()
+	if lockOwner != 0 {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(time.Until(due))
+		defer timer.Stop()
+		waiting := false
+		for !waiting {
+			select {
+			case err := <-result:
+				t.Fatalf("confirmation did not wait on the row lock: %v", err)
+			case <-timer.C:
+				t.Fatal("confirmation did not reach the PostgreSQL row lock before its deadline")
+			case <-ticker.C:
+				if err := db.db.QueryRowContext(ctx, db.query(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+				WHERE ?=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock')`), lockOwner).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if !time.Now().Before(due) {
+					t.Fatal("could not establish pre-deadline lock wait")
+				}
+			}
+		}
+	}
 	time.Sleep(time.Until(due) + 50*time.Millisecond)
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
@@ -283,8 +320,110 @@ func testGatewayConfirmationChecksDatabaseClock(t *testing.T, db *Store) {
 	if err = db.ExpireOneGatewayWrite(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	var phase string
+	var resolved bool
+	if err := db.db.QueryRowContext(ctx, db.query(`SELECT w.phase,o.resolved_at IS NOT NULL FROM gateway_writes w
+	JOIN projection_mutation_operations o ON o.operation_id=w.operation_id WHERE w.operation_id=?`), reservation.ID()).Scan(&phase, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "outcome_unknown" || !resolved {
+		t.Fatalf("expiry left write phase=%s resolved=%t", phase, resolved)
+	}
 	err = db.RecordGatewayWriteConfirmation(ctx, reservation.ID(), &calendar.OperationResult{Status: "completed"}, now.Add(-time.Minute))
 	if !errors.Is(err, ErrAuthorityChanged) {
 		t.Fatalf("unknown outcome changed: %v", err)
+	}
+}
+
+func TestGatewayWritePointHonorsGooglePermissionPark(t *testing.T) {
+	db := openSQLiteForMigration(t, 29)
+	ctx := t.Context()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.Migrate(ctx))
+	cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	must(err)
+	db.SetArtifactCipher(cipher)
+	now := time.Now().UTC().Truncate(time.Second)
+	const account = "point-permission"
+	id := calendar.AccountCalendarID("google", account, "cal")
+	must(db.CreateConnection(ctx, Connection{ID: account, Provider: "google", Status: "connected", EncryptedCredentials: []byte("fixture"),
+		CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}))
+	lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, now, time.Minute)
+	must(err)
+	proof := GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "google"},
+		Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "google"}, Class: GatewayPrivateAccess, GoogleRole: "owner"}
+	must(db.PublishGatewayAuthority(ctx, lease, []GatewayCalendarProof{proof}, now))
+	scope := calendar.GatewayWriteScope{Kind: "create", CalendarID: id}
+	reservation, err := db.BeginGatewayWrite(ctx, []string{id}, scope)
+	must(err)
+	must(reservation.Authorize(ctx))
+	event := &calendar.EventV2{ID: "private-point", Visibility: "private", Start: calendar.EventTime{DateTime: now.Format(time.RFC3339), TimeZone: "UTC"},
+		End: calendar.EventTime{DateTime: now.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"}}
+	must(reservation.Complete(ctx, event, false))
+	at := time.Now().UTC().Add(time.Second)
+	query := GatewayEventQuery{CalendarRef: id, EventID: event.ID}
+	before, err := db.ReadGatewayEvents(ctx, query, at, false)
+	must(err)
+	if len(before.Items) != 1 {
+		t.Fatal("fixture has no readable write point")
+	}
+	must(db.EnsureCalendarSyncStates(ctx, at, SyncWindow{Start: at.Add(-time.Hour), End: at.Add(2 * time.Hour)}))
+	claim, err := db.ClaimDueCalendarSync(ctx, "permission", at, at.Add(time.Minute))
+	must(err)
+	if claim == nil {
+		t.Fatal("fixture sync not scheduled")
+	}
+	must(db.ParkCalendarSync(ctx, *claim, "permission", at))
+	_, err = db.GatewayCalendarGrant(ctx, id, at)
+	must(err) // The park, rather than expired authorization, must fence the point.
+	after, err := db.ReadGatewayEvents(ctx, query, at, false)
+	must(err)
+	if len(after.Items) != 0 || !after.Incomplete {
+		t.Fatalf("permission park exposed a private write point: %#v", after)
+	}
+}
+
+func TestGatewayMoveCannotAuthorizeDisabledDestination(t *testing.T) {
+	db := openSQLiteForMigration(t, 29)
+	ctx := t.Context()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.Migrate(ctx))
+	cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	must(err)
+	db.SetArtifactCipher(cipher)
+	now := time.Now().UTC().Truncate(time.Second)
+	const account = "move-authority"
+	src := calendar.AccountCalendarID("microsoft", account, "src")
+	dst := calendar.AccountCalendarID("microsoft", account, "dst")
+	must(db.CreateConnection(ctx, Connection{ID: account, Provider: "microsoft", Status: "connected", EncryptedCredentials: []byte("fixture"),
+		CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}))
+	lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, now, time.Minute)
+	must(err)
+	ids := []string{src, dst}
+	var proofs []GatewayCalendarProof
+	for _, id := range ids {
+		proofs = append(proofs, GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "microsoft"},
+			Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "microsoft"}, Class: GatewayPrivateAccess})
+	}
+	must(db.PublishGatewayAuthority(ctx, lease, proofs, now))
+	scope := calendar.GatewayWriteScope{Kind: "move", CalendarID: src, DestinationCalendarID: dst}
+	reservation, err := db.BeginGatewayWrite(ctx, ids, scope)
+	must(err)
+	must(db.SetCalendarEnabled(ctx, dst, false, now))
+	if err := reservation.Authorize(ctx); !errors.Is(err, ErrAuthorityChanged) {
+		t.Fatalf("move admitted an inactive destination: %v", err)
+	}
+	if !reservation.OutcomeDeadline().IsZero() {
+		t.Fatal("failed authorization set an outcome deadline")
 	}
 }

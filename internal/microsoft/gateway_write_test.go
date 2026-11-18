@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"calendar-mcp/internal/calendar"
 )
@@ -17,6 +18,7 @@ import (
 type syntheticGraphReservation struct{}
 
 func (syntheticGraphReservation) ID() string                                { return "synthetic-update-marker" }
+func (syntheticGraphReservation) OutcomeDeadline() time.Time                { return time.Now().Add(time.Minute) }
 func (syntheticGraphReservation) Authorize(context.Context) error           { return nil }
 func (syntheticGraphReservation) Complete(context.Context, any, bool) error { return nil }
 

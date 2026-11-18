@@ -406,7 +406,7 @@ func (s *Store) GatewayCalendarInventory(ctx context.Context, now time.Time) ([]
 	if missing {
 		return nil, ErrAuthorityChanged
 	}
-	grants, err := s.gatewayCalendarGrants(ctx, tx, now, "", false)
+	grants, err := s.gatewayCalendarGrants(ctx, tx, now, "")
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func (s *Store) GatewayCalendarGrant(ctx context.Context, id string, now time.Ti
 	if id == "" {
 		return GatewayCalendarGrant{}, ErrAuthorityChanged
 	}
-	grants, err := s.gatewayCalendarGrants(ctx, s.db, now, id, false)
+	grants, err := s.gatewayCalendarGrants(ctx, s.db, now, id)
 	if err != nil {
 		return GatewayCalendarGrant{}, err
 	}
@@ -429,29 +429,63 @@ func (s *Store) GatewayCalendarGrant(ctx context.Context, id string, now time.Ti
 	return grants[0], nil
 }
 
-// GatewayCalendarGrantByReference resolves a local legacy alias only if it
-// selects one currently authorized calendar. No provider is consulted.
+// GatewayCalendarGrantByReference resolves a local legacy alias before checking
+// its grant. An expired proof must not make an ambiguous alias unambiguous.
 func (s *Store) GatewayCalendarGrantByReference(ctx context.Context, reference string, now time.Time) (GatewayCalendarGrant, error) {
 	if reference == "" {
 		return GatewayCalendarGrant{}, ErrAuthorityChanged
 	}
-	exact, err := s.GatewayCalendarGrant(ctx, reference, now)
-	if err == nil || !errors.Is(err, ErrAuthorityChanged) {
-		return exact, err
+	tx, err := s.db.BeginTx(ctx, cachedPageReadTxOptions(s.dialect))
+	if err != nil {
+		return GatewayCalendarGrant{}, err
 	}
-	grants, err := s.gatewayCalendarGrants(ctx, s.db, now, reference, true)
+	defer tx.Rollback()
+	grants, err := s.gatewayGrantByReference(ctx, tx, reference, now)
 	if err != nil {
 		return GatewayCalendarGrant{}, err
 	}
 	if len(grants) != 1 {
 		return GatewayCalendarGrant{}, ErrAuthorityChanged
 	}
-	return grants[0], nil
+	return grants[0], tx.Commit()
+}
+
+func (s *Store) gatewayGrantByReference(ctx context.Context, tx *sql.Tx, reference string, now time.Time) ([]GatewayCalendarGrant, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, s.query(`SELECT id FROM calendars WHERE id=?`), reference).Scan(&id)
+	if err == nil {
+		return s.gatewayCalendarGrants(ctx, tx, now, id)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, s.query(`SELECT cal.id FROM calendars cal JOIN connections c ON c.id=cal.connection_id
+	WHERE c.status='connected' AND ((c.provider || ':' || cal.provider_calendar_id)=?
+	OR (c.provider='google' AND cal.google_primary=TRUE AND (?='google:primary' OR ?=('google:' || c.id || ':primary'))))
+	ORDER BY cal.id LIMIT 2`), reference, reference, reference)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var matches []string
+	for rows.Next() {
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		matches = append(matches, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(matches) != 1 {
+		return nil, nil
+	}
+	return s.gatewayCalendarGrants(ctx, tx, now, matches[0])
 }
 
 func (s *Store) gatewayCalendarGrants(ctx context.Context, db interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, now time.Time, id string, aliases bool) ([]GatewayCalendarGrant, error) {
+}, now time.Time, id string) ([]GatewayCalendarGrant, error) {
 	query := `SELECT g.metadata_json,g.capabilities_json,g.access_class,g.grant_revision,
 	c.authorization_revision,g.detail_receipt,(` + gatewaySourceDeadline + `),g.verified_until_ms
 	FROM gateway_calendar_grants g
@@ -462,14 +496,8 @@ func (s *Store) gatewayCalendarGrants(ctx context.Context, db interface {
 	AND (` + gatewaySourceDeadline + `)>? AND a.verified_until_ms>0`
 	args := []any{now.UnixMilli()}
 	if id != "" {
-		if aliases {
-			query += ` AND (cal.id=? OR (c.provider || ':' || cal.provider_calendar_id)=?
-			OR (c.provider='google' AND cal.google_primary=TRUE AND (?='google:primary' OR ?=('google:' || c.id || ':primary'))))`
-			args = append(args, id, id, id, id)
-		} else {
-			query += ` AND cal.id=?`
-			args = append(args, id)
-		}
+		query += ` AND cal.id=?`
+		args = append(args, id)
 	}
 	query += ` ORDER BY cal.id`
 	if id != "" {
@@ -510,8 +538,8 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 		return "", ErrAuthorityChanged
 	}
 	var receipt string
-	var readable bool
-	err := tx.QueryRowContext(ctx, s.query(`SELECT detail_receipt,can_read FROM calendars WHERE id=? AND connection_id=? AND provider_calendar_id=?`), id, lease.ConnectionID, raw).Scan(&receipt, &readable)
+	var readable, writable bool
+	err := tx.QueryRowContext(ctx, s.query(`SELECT detail_receipt,can_read,can_write FROM calendars WHERE id=? AND connection_id=? AND provider_calendar_id=?`), id, lease.ConnectionID, raw).Scan(&receipt, &readable, &writable)
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return "", err
@@ -555,11 +583,14 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 			read, write, proof.Capabilities.Fields.Recurrence, now, lease.Provider == "google" && proof.Metadata.Primary, finalReceipt)
 		return finalReceipt, err
 	}
-	if finalReceipt != receipt || accessChanged {
+	readBindingChanged := finalReceipt != receipt || accessChanged
+	if readBindingChanged || writable != write {
 		_, err = tx.ExecContext(ctx, s.query(`UPDATE calendars SET can_read=?,can_write=?,detail_receipt=? WHERE id=?`), read, write, finalReceipt, id)
 		if err != nil {
 			return "", err
 		}
+	}
+	if readBindingChanged {
 		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1,cursor='',status='pending',
 			lease_owner=NULL,lease_until=NULL,last_success_at=NULL,last_error_code=NULL,next_sync_at=?,updated_at=? WHERE calendar_id=?`), now, now, id); err != nil {
 			return "", err

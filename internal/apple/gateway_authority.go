@@ -78,7 +78,8 @@ func (p *Provider) checkGatewayCollection(ctx, probeCtx context.Context, status 
 		}
 		return unknown, nil
 	}
-	if access.owner != "" && !appleSameCollectionPrincipal(p.caldavURL, access.owner, principal) {
+	owned := appleSameCollectionPrincipal(p.caldavURL, access.owner, principal)
+	if access.owner != "" && !owned {
 		if err := calendar.RestrictGatewayCalendarRead(ctx, item.ID, false); err != nil {
 			return unknown, err
 		}
@@ -89,7 +90,7 @@ func (p *Provider) checkGatewayCollection(ctx, probeCtx context.Context, status 
 	}
 	proof := calendar.CalendarReadEvidence{Calendar: item, Capabilities: caps}
 	if !access.known || access.read {
-		events, err := p.probeGatewayEventRead(probeCtx, item.ID, now)
+		events, err := p.probeGatewayEventRead(probeCtx, item.ID, now, owned && access.read)
 		if status.code.Load() == http.StatusUnauthorized {
 			return unknown, calendar.NewAPIError(calendar.ErrorPermissionDenied, "Apple calendar authentication failed")
 		}
@@ -102,7 +103,7 @@ func (p *Provider) checkGatewayCollection(ctx, probeCtx context.Context, status 
 			return unknown, nil
 		}
 		proof.ReadEvents = err == nil && (access.read || events)
-		proof.ReadPrivate = proof.ReadEvents && events && appleSameCollectionPrincipal(p.caldavURL, access.owner, principal)
+		proof.ReadPrivate = proof.ReadEvents && events && owned
 	}
 	if !proof.ReadEvents {
 		if err := calendar.RestrictGatewayCalendarRead(ctx, item.ID, true); err != nil {
@@ -165,7 +166,7 @@ func (p *Provider) gatewayCollectionAccess(ctx context.Context, id string) (appl
 			} `xml:"DAV: propstat"`
 		} `xml:"DAV: response"`
 	}
-	if err := xml.Unmarshal(data, &result); err != nil || len(result.Responses) != 1 || !appleSameCollectionPrincipal(p.caldavURL, id, result.Responses[0].Href) {
+	if err := xml.Unmarshal(data, &result); err != nil || len(result.Responses) != 1 || !appleSameCollectionPrincipal(p.caldavURL, endpoint.String(), result.Responses[0].Href) {
 		return appleCollectionAccess{}, fmt.Errorf("invalid Apple privilege response")
 	}
 	var access appleCollectionAccess
@@ -209,18 +210,23 @@ func appleSameCollectionPrincipal(server, first, second string) bool {
 	return a != "" && a == b
 }
 
-func (p *Provider) probeGatewayEventRead(ctx context.Context, id string, start time.Time) (bool, error) {
+func (p *Provider) probeGatewayEventRead(ctx context.Context, id string, start time.Time, proveOwnedAccess bool) (bool, error) {
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{
 		{Name: "VEVENT", Start: start, End: start.Add(time.Minute)},
 	}}}
 	objects, malformed, err := p.queryCalendarForEventSync(ctx, id, query)
-	if err == nil && !malformed {
+	querySucceeded := err == nil && !malformed
+	if querySucceeded {
 		for i := range objects {
 			if objects[i].Data != nil && normalizeAppleFixedOffsetTimezone(&objects[i]) == nil && len(objects[i].Data.Events()) > 0 {
 				return true, nil
 			}
 		}
-		return false, nil
+		if !proveOwnedAccess {
+			return false, nil
+		}
+		// A narrow empty REPORT says nothing about access to private
+		// content elsewhere in an owned collection.
 	}
 	if err != nil {
 		if class, ok := appleCalendarQueryErrorClass(err); ok {
@@ -241,6 +247,9 @@ func (p *Provider) probeGatewayEventRead(ctx context.Context, id string, start t
 		return false, err
 	}
 	if len(inventory) == 0 {
+		if querySucceeded {
+			return false, nil
+		}
 		return false, errors.New("Apple fallback event access unconfirmed")
 	}
 	item := inventory[0]

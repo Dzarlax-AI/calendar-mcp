@@ -103,6 +103,12 @@ func Worker(ctx context.Context) error {
 			runGatewayWriteRecovery(waitCtx, store, factory)
 		}()
 		defer func() { stop(); <-writeDone }()
+		publicationDone := make(chan struct{})
+		go func() {
+			defer close(publicationDone)
+			runGatewayPublication(waitCtx, store, factory, gatewayAuthorityTick)
+		}()
+		defer func() { stop(); <-publicationDone }()
 		authorityDone := make(chan struct{})
 		go func() {
 			defer close(authorityDone)
@@ -212,22 +218,7 @@ func runOneEventSync(ctx context.Context, store *storage.Store, factory provider
 	}
 	registry := workerCalendarRegistry(providers, factory, nil)
 	service := eventsync.NewService(store, registry, eventSyncPolicyFor(cfg))
-	if err := runClaimedEventSync(ctx, store, service, *state); err != nil {
-		return err
-	}
-	if cfg.GatewayCachedReadsPrepare {
-		call, cancel := context.WithTimeout(ctx, gatewayAuthorityTimeout)
-		defer cancel()
-		provider, raw, err := registry.ResolveContext(call, state.CalendarID)
-		if err == nil {
-			err = eventsync.RefreshGatewayPublication(call, store, provider, raw, state.CalendarID, time.Now)
-		}
-		if err != nil && !errors.Is(err, storage.ErrAuthorityChanged) && ctx.Err() == nil {
-			// Provider details and page tokens stay out of worker logs.
-			log.Print("gateway event snapshot refresh failed")
-		}
-	}
-	return nil
+	return runClaimedEventSync(ctx, store, service, *state)
 }
 
 // eventReadModelWindow freezes the projection to UTC calendar days. Repeated

@@ -1,6 +1,9 @@
 package calendar
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 const GatewayWritePendingWarning = "Calendar changes are awaiting local publication."
 
@@ -48,6 +51,7 @@ func (t *GatewayWriteTracking) PendingPublication() bool { return t.pending }
 type GatewayWriteReservation interface {
 	ID() string
 	Authorize(context.Context) error
+	OutcomeDeadline() time.Time
 	Complete(context.Context, any, bool) error
 }
 

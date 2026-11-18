@@ -8,6 +8,7 @@ import pathlib
 import select
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -170,7 +171,7 @@ def verify(info, gateway):
 
 
 
-def verify_pending_write(info, gateway, operation):
+def verify_pending_write(info, gateway, operation, applied_write=False):
     affected, destination, healthy = (info[key] for key in ('affected', 'destination', 'healthy'))
     calendars = {affected, destination, healthy, info['sibling']}
     touched = {affected, destination} if operation == 'move_event' else {affected}
@@ -183,7 +184,7 @@ def verify_pending_write(info, gateway, operation):
         }})
         return response
 
-    def check_reads(pending, *, after_timeout=False, fresh=(), hidden=frozenset()):
+    def check_reads(pending, *, after_timeout=False, fresh=(), hidden=frozenset(), removed=frozenset()):
         before = fixture_state(control)
         listing = call('list_calendars', {})
         if hidden:
@@ -199,6 +200,8 @@ def verify_pending_write(info, gateway, operation):
                 if calendar_id in pending:
                     expected = 'unavailable' if after_timeout else 'cache_pending'
                     assert error_code(point) == expected, point
+                elif calendar_id in removed and event_id == 'apple:instance':
+                    assert error_code(point) == 'cache_miss', point
                 else:
                     event = response_data(point)
                     assert event['id'] == event_id
@@ -208,21 +211,21 @@ def verify_pending_write(info, gateway, operation):
                 ('search_events', {**args, 'query': 'needle'}, {calendar_id}),
                 ('get_events', {'calendar_ids': [calendar_id]}, {calendar_id}),
             ):
-                check_page(call(tool, {**base, **query}), pending, scope, after_timeout)
+                check_page(call(tool, {**base, **query}), pending, scope, after_timeout, removed=removed)
         for calendar_id in hidden:
             assert error_code(call('get_event', {'calendar_id': calendar_id, 'event_id': 'apple:instance'})) == 'unavailable'
         for tool, query in (
             ('get_events', base),
             ('search_events', {**base, 'query': 'needle'}),
         ):
-            check_page(call(tool, query), pending, calendars - hidden, after_timeout, bool(hidden))
+            check_page(call(tool, query), pending, calendars - hidden, after_timeout, bool(hidden), removed)
         assert fixture_state(control) == before
 
-    def check_page(response, pending, scope, after_timeout, missing=False):
+    def check_page(response, pending, scope, after_timeout, missing=False, removed=frozenset()):
         out = response_data(response)
         partial = missing or bool(pending & scope)
         assert out['partial'] is partial and out['complete'] is (not partial), out
-        assert {item['calendar_id'] for item in out['items']} == scope - pending, out
+        assert {item['calendar_id'] for item in out['items']} == scope - pending - removed, out
         sources = {source['calendar_id']: source for source in out['sources']}
         assert set(sources) == scope, out
         for calendar_id, source in sources.items():
@@ -269,7 +272,11 @@ def verify_pending_write(info, gateway, operation):
     recovered = fixture_state(control, 'resynced')
     assert recovered['writes'] == 1 and recovered['lookups'] == 0, recovered
     assert recovered['failures'] == state['failures']
-    check_reads(set(), after_timeout=True, fresh=touched)
+    removed = {affected} if applied_write else set()
+    check_reads(set(), after_timeout=True, fresh=touched, removed=removed)
+    if applied_write and operation == 'move_event':
+        moved = response_data(call('get_event', {'calendar_id': destination, 'event_id': 'apple:moved-instance'}))
+        assert moved['calendar_id'] == destination and moved['title'] == 'needle affected fresh', moved
     assert call('get_events', {**base, 'page_size': 1, 'page_token': old_page['next_page_token']})['result']['isError']
 
 
@@ -337,6 +344,10 @@ def verify_authority_adapters(info, gateway):
 
     assert response_data(point(graph))['visibility'] == 'private'
     assert response_data(point(blocked))['calendar_id'] == blocked
+    known_search = response_data(call('search_events', {**base, 'query': 'needle', 'calendar_id': info['healthy']}))
+    assert known_search['partial'] and not known_search['complete']
+    assert [event['title'] for event in known_search['items']] == ['needle healthy'], known_search
+    assert known_search['sources'][0]['error_code'] == 'result_too_large', known_search
     first = fixture_state(control, 'apple-fallback')
     assert first['adapter_calls'][0] >= 2 and first['adapter_calls'][2] == 0, first
     check_family_and_sibling()
@@ -369,16 +380,17 @@ def go_json(value, *, sort_keys=False):
     return text.encode()
 
 
-def classifications(endpoint):
-    main, direct = tools_at(endpoint), tools_at(f'{endpoint}/modern')
+def classifications(endpoint, baseline):
+    main, previous = tools_at(endpoint), tools_at(baseline)
     binding = hashlib.sha256(go_json(dict(
         ID='calendar', URL=endpoint, Header='', Source=chr(0) + 'FIXTURE_UPSTREAM',
         Token=UPSTREAM, Allowlist=None,
     ))).hexdigest()
-    # Five existing modern definitions keep their hints and schemas. The
-    # pre-cutover main get_events already has the compact coverage contract.
-    definitions = {name: direct[name] for name in READS if name != 'get_events'}
-    definitions['get_events'] = main['get_events']
+    for name in READS:
+        for field in ('inputSchema', 'outputSchema'):
+            assert main[name].get(field) == previous[name].get(field), (name, field)
+        assert main[name].get('annotations', {}).get('readOnlyHint') == previous[name].get('annotations', {}).get('readOnlyHint'), name
+    definitions = {name: previous[name] for name in READS}
     return {name: {'enabled': True, 'access_mode': 'shared', 'operation_kind': 'read',
                    'operation_contract_hash': hashlib.sha256(go_json({
                        'name': name, 'inputSchema': definition['inputSchema'],
@@ -389,6 +401,8 @@ def classifications(endpoint):
 
 
 def main():
+    if sys.flags.optimize:
+        raise SystemExit('Gateway verification requires Python assertions.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--fixture', required=True)
     parser.add_argument('--gateway', required=True)
@@ -396,7 +410,10 @@ def main():
     scenario.add_argument('--pending-write', choices=('delete_event', 'move_event'))
     scenario.add_argument('--graph-recovery', action='store_true')
     scenario.add_argument('--authority-adapters', action='store_true')
+    parser.add_argument('--applied-write', action='store_true')
     args = parser.parse_args()
+    if args.applied_write and not args.pending_write:
+        parser.error('--applied-write requires --pending-write')
     with tempfile.TemporaryDirectory(prefix='strict-gateway-verification-') as temporary:
         root = pathlib.Path(temporary)
         with (root/'fixture.log').open('w+') as fixture_log, (root/'gateway.log').open('w+') as gateway_log:
@@ -406,6 +423,8 @@ def main():
             elif args.graph_recovery:
                 name = 'graph-recovery'
             fixture_args = [args.fixture, name] if name else [args.fixture]
+            if args.applied_write:
+                fixture_args.append('--applied-write')
             fixture = subprocess.Popen(fixture_args, stdout=subprocess.PIPE, stderr=fixture_log)
             gateway = None
             try:
@@ -418,7 +437,7 @@ def main():
                 write_tools = {name: {'enabled': True, 'access_mode': 'shared', 'operation_kind': 'write'} for name in writes}
                 registry = {'registry_version': 2, 'servers': {
                     'calendar': {'url': info['endpoint'], 'token_env': 'FIXTURE_UPSTREAM', 'enabled': True,
-                                 'tools': {**classifications(info['endpoint']), **write_tools}},
+                                 'tools': {**classifications(info['endpoint'], info['pre_cutover']), **write_tools}},
                 }, 'principals': {
                     'allowed': {'token_env': 'FIXTURE_ALLOWED', 'access_policy': 'restricted',
                                 'tool_allowlist': {'calendar': [*READS, *writes]}, 'grants': {}},
@@ -445,7 +464,7 @@ def main():
                 else:
                     raise RuntimeError('Gateway did not become healthy')
                 if args.pending_write:
-                    verify_pending_write(info, f'{url}/mcp', args.pending_write)
+                    verify_pending_write(info, f'{url}/mcp', args.pending_write, args.applied_write)
                 elif args.graph_recovery:
                     verify_graph_recovery(info, f'{url}/mcp')
                 elif args.authority_adapters:
@@ -468,7 +487,7 @@ def main():
         print('Verified Graph recovery from delta 401 and 403 after positive authority, with uninterrupted neighboring reads and zero writes.')
         return
     if args.pending_write:
-        print(f'Verified {args.pending_write}: expiration while the normal worker was blocked, 24-hour source isolation, and scheduled read-only recovery. One synthetic write, zero repeats.')
+        print(f'Verified {args.pending_write} (applied={args.applied_write}): expiration while the normal worker was blocked, 24-hour source isolation, and scheduled read-only recovery. One synthetic write, zero repeats.')
         return
     print('Verified six reads, grace, source expiry and recovery, cursor fencing, batch, ACL, write warnings and lost receipt recovery. Zero provider calls during reads and zero repeat dispatches.')
 

@@ -26,7 +26,16 @@ func (s *Store) publishGatewayWriteReceipt(ctx context.Context, tx *sql.Tx, oper
 		return err
 	}
 	if phase == "not_dispatched" {
-		return nil
+		// Reservation and release each advance the epoch. Carry forward
+		// only live points from before this reservation; an intervening
+		// mutation has its own epoch and does not revive older points.
+		_, err := tx.ExecContext(ctx, s.query(`UPDATE gateway_write_points
+		SET mutation_epoch=(SELECT g.epoch FROM projection_mutation_guards g WHERE g.calendar_id=gateway_write_points.calendar_id)
+		WHERE calendar_id IN (SELECT calendar_id FROM exclusive_dispatch_guard_members WHERE operation_id=?)
+		AND confirmed_ms>? AND mutation_epoch=(SELECT g.epoch-2 FROM projection_mutation_guards g WHERE g.calendar_id=gateway_write_points.calendar_id)
+		AND grant_revision=(SELECT grant_revision FROM gateway_calendar_grants g WHERE g.calendar_id=gateway_write_points.calendar_id)`),
+			operationID, now.Add(-GatewayAuthorityLifetime).UnixMilli())
+		return err
 	}
 	if phase != "confirmed" || s.artifactCipher == nil || len(encoded) > 2*gatewayReceiptBytes {
 		return ErrExclusiveDispatchConflict
@@ -55,7 +64,7 @@ func (s *Store) publishGatewayWriteReceipt(ctx context.Context, tx *sql.Tx, oper
 		return err
 	}
 	for _, point := range points {
-		current, err := s.gatewayCalendarGrants(ctx, tx, now, point.calendarID, false)
+		current, err := s.gatewayCalendarGrants(ctx, tx, now, point.calendarID)
 		if err != nil {
 			return err
 		}
@@ -134,7 +143,8 @@ func (s *Store) gatewayReadWritePoint(ctx context.Context, tx *sql.Tx, grant Gat
 	err := tx.QueryRowContext(ctx, s.query(`SELECT p.operation_id,p.deleted,p.oversized,p.payload_json FROM gateway_write_points p
 	WHERE p.calendar_id=? AND p.event_id=? AND p.grant_revision=? AND p.confirmed_ms>?
 	AND (NOT p.settled OR p.deleted) AND p.mutation_epoch=COALESCE((SELECT g.epoch FROM projection_mutation_guards g WHERE g.calendar_id=p.calendar_id),0)
-	AND NOT EXISTS(SELECT 1 FROM projection_mutation_intents i WHERE i.calendar_id=p.calendar_id)`),
+	AND NOT EXISTS(SELECT 1 FROM projection_mutation_intents i WHERE i.calendar_id=p.calendar_id)
+	AND NOT EXISTS(SELECT 1 FROM calendar_sync_state ss WHERE ss.calendar_id=p.calendar_id AND ss.last_error_code IN ('auth','permission'))`),
 		grant.Metadata.ID, id, grant.Revision, now.Add(-GatewayAuthorityLifetime).UnixMilli()).Scan(&receipt, &item.Cancelled, &item.Oversized, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, "", nil

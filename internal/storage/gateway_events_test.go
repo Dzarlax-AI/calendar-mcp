@@ -71,8 +71,10 @@ func testGatewayPublication(t *testing.T, db *Store) {
 	}
 	public.Start.DateTime = now.Add(15 * time.Minute).Format(time.RFC3339)
 	must(db.PublishGatewayEvents(ctx, ticket, []calendar.EventV2{public, hidden}, true, grantTime.Add(2*time.Second), grantTime.Add(2*time.Second), nil))
-	if next := project(grantTime.Add(2 * time.Second)).Sources[0].Version; next == revision {
-		t.Fatal("moving event kept publication version")
+	moved := project(grantTime.Add(2 * time.Second))
+	if len(moved.Sources) != 1 || moved.Sources[0].Version == "" || moved.Sources[0].Version == revision ||
+		len(moved.Items) != 1 || moved.Items[0].Event.Start.DateTime != public.Start.DateTime {
+		t.Fatalf("moving event failed to expose the updated publication: %#v", moved)
 	}
 	firstGrant, err := db.GatewayCalendarGrant(ctx, id, grantTime)
 	must(err)
@@ -95,5 +97,26 @@ func testGatewayPublication(t *testing.T, db *Store) {
 	}
 	if err := db.PublishGatewayEvents(ctx, ticket, []calendar.EventV2{public}, true, grantTime.Add(4*time.Second), grantTime.Add(4*time.Second), nil); !errors.Is(err, ErrAuthorityChanged) {
 		t.Fatalf("late projection crossed mutation fence: %v", err)
+	}
+	resolvedAt := renewAt.Add(2 * time.Second)
+	must(db.ResolveProjectionMutationManyAndSchedule(ctx, []string{id}, "synthetic-write-reservation", resolvedAt))
+	state, err = db.ClaimDueCalendarSync(ctx, "replacement", resolvedAt, resolvedAt.Add(time.Minute))
+	must(err)
+	if state == nil {
+		t.Fatal("missing replacement sync after intent cleared")
+	}
+	at := resolvedAt.Add(time.Second)
+	must(db.ApplyEventSyncPage(ctx, *state, EventSyncBatch{}, true, at))
+	if err := db.PublishGatewayEvents(ctx, ticket, []calendar.EventV2{public}, true, at, at, nil); !errors.Is(err, ErrAuthorityChanged) {
+		t.Fatalf("old capture ticket survived resolved intent and replacement sync: %v", err)
+	}
+
+	public.End = public.Start
+	fresh, err := db.CaptureGatewayPublication(ctx, id, at)
+	must(err)
+	must(db.PublishGatewayEvents(ctx, fresh, []calendar.EventV2{public}, true, at, at, nil))
+	point := project(at)
+	if len(point.Items) != 1 || point.Items[0].Event.Start.DateTime != point.Items[0].Event.End.DateTime {
+		t.Fatalf("zero-duration event was lost or changed: %#v", point)
 	}
 }

@@ -269,3 +269,77 @@ func TestGatewayPartialEvidenceRetainsOnlyOriginalSourceDeadline(t *testing.T) {
 		t.Fatalf("healthy sibling expired: %v", err)
 	}
 }
+
+func TestGatewayAliasesRemainAmbiguousAfterProofExpiry(t *testing.T) {
+	db := openSQLiteForMigration(t, 29)
+	ctx := t.Context()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.Migrate(ctx))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for i, account := range []string{"first", "second"} {
+		at := now.Add(time.Duration(i) * time.Minute)
+		id := calendar.AccountCalendarID("google", account, "owner@example.invalid")
+		must(db.CreateConnection(ctx, Connection{ID: account, Provider: "google", Status: "connected", EncryptedCredentials: []byte("fixture"),
+			CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: at, UpdatedAt: at}))
+		lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, at, time.Minute)
+		must(err)
+		proof := GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "google", Primary: true},
+			Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "google"}, Class: GatewayPrivateAccess, GoogleRole: "owner"}
+		must(db.PublishGatewayAuthority(ctx, lease, []GatewayCalendarProof{proof}, at))
+	}
+	checkAt := now.Add(GatewayAuthorityLifetime + 30*time.Second)
+	for _, alias := range []string{"google:primary", "google:owner@example.invalid"} {
+		if _, err := db.GatewayCalendarGrantByReference(ctx, alias, checkAt); !errors.Is(err, ErrAuthorityChanged) {
+			t.Fatalf("unavailable peer made alias %q unique: %v", alias, err)
+		}
+		out, err := db.ReadGatewayEvents(ctx, GatewayEventQuery{CalendarRef: alias}, checkAt, false)
+		must(err)
+		if !out.Incomplete || len(out.Sources) != 0 {
+			t.Fatalf("event read silently selected an alternate account: %#v", out)
+		}
+	}
+	id := calendar.AccountCalendarID("google", "second", "owner@example.invalid")
+	grant, err := db.GatewayCalendarGrantByReference(ctx, id, checkAt)
+	must(err)
+	if grant.Metadata.ID != id {
+		t.Fatalf("canonical reference resolved to %s", grant.Metadata.ID)
+	}
+}
+
+func TestGatewayWriteCapabilityUpdatesWithoutReadBindingChange(t *testing.T) {
+	db := openSQLiteForMigration(t, 29)
+	ctx := t.Context()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.Migrate(ctx))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	const account = "writable"
+	id := calendar.AccountCalendarID("microsoft", account, "calendar")
+	must(db.CreateConnection(ctx, Connection{ID: account, Provider: "microsoft", Status: "connected", EncryptedCredentials: []byte("fixture"),
+		CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}))
+	proof := GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "microsoft"},
+		Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "microsoft"}, Class: GatewayEventAccess}
+	for i, canEdit := range []bool{false, true, false} {
+		at := now.Add(time.Duration(i) * GatewayAuthorityInterval)
+		lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, at, time.Minute)
+		must(err)
+		proof.Capabilities.Operations.Update = canEdit
+		must(db.PublishGatewayAuthority(ctx, lease, []GatewayCalendarProof{proof}, at))
+		result, err := db.ListCalendars(ctx, account)
+		must(err)
+		if len(result) != 1 || result[0].CanWrite != canEdit || result[0].DetailReceipt == "" ||
+			i > 0 && result[0].DetailReceipt != proof.DetailReceipt {
+			t.Fatalf("edit permission and read receipt diverged: canEdit=%t calendars=%#v", canEdit, result)
+		}
+		proof.DetailReceipt = result[0].DetailReceipt
+	}
+}

@@ -136,6 +136,15 @@ func (s *Service) GatewayDetails(ctx context.Context, tool string, req GatewayDe
 	if err != nil {
 		return GatewayDetailsPage{}, err
 	}
+	oversizedSources := map[string]bool{}
+	if tool == "search_events" {
+		read.Items = slices.DeleteFunc(read.Items, func(item storage.GatewayReadItem) bool {
+			if item.Oversized {
+				oversizedSources[item.Event.CalendarID] = true
+			}
+			return item.Oversized
+		})
+	}
 	items, carried, err := s.gatewayContinuation(read.Items, binding, req.PageToken)
 	if err != nil {
 		return GatewayDetailsPage{}, err
@@ -143,8 +152,14 @@ func (s *Service) GatewayDetails(ctx context.Context, tool string, req GatewayDe
 	if req.CalendarID != "" && len(read.Sources) == 0 {
 		return GatewayDetailsPage{}, ErrUnavailable
 	}
-	page := GatewayDetailsPage{Items: []calendar.EventV2{}, Sources: []GatewayDetailSource{}, Partial: read.Incomplete || carried}
+	page := GatewayDetailsPage{Items: []calendar.EventV2{}, Sources: []GatewayDetailSource{}, Partial: read.Incomplete || carried || len(oversizedSources) != 0}
 	for _, src := range read.Sources {
+		if oversizedSources[src.Source.CalendarID] {
+			src.Source.Coverage = "partial"
+			if src.Source.ErrorCode == "" {
+				src.Source.ErrorCode = "result_too_large"
+			}
+		}
 		page.Sources = append(page.Sources, GatewayDetailSource{Source: src.Source, Complete: src.Source.Coverage == "covered"})
 	}
 	mint := s.gatewayMint(binding, at)
@@ -234,12 +249,10 @@ func (s *Service) gatewayRead(ctx context.Context, query *gatewayQuery) (storage
 		return empty, [32]byte{}, now, err
 	}
 	if query.Tool == "search_events" {
-		for _, item := range read.Items {
-			if item.Oversized {
-				return empty, [32]byte{}, now, ErrGatewayResultTooLarge
-			}
-		}
 		read.Items = slices.DeleteFunc(read.Items, func(item storage.GatewayReadItem) bool {
+			if item.Oversized {
+				return false
+			}
 			e := item.Event
 			eventType := "default"
 			if e.Google != nil && e.Google.EventType != "" {

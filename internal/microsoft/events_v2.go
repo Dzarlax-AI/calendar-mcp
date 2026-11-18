@@ -153,6 +153,9 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 					return calendar.Page[calendar.EventV2]{}, err
 				}
 			}
+			if request.GatewayCancellationInventory && len(response.Value)+len(following.Value) > 16000 {
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph event snapshot exceeds its limit")
+			}
 			response.Value = append(response.Value, following.Value...)
 			response.NextLink = following.NextLink
 		}
@@ -161,7 +164,6 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 	masters := map[string]struct{}{}
 	presentOccurrences := map[string]bool{}
 	cancelledOccurrences := map[string]bool{}
-	var verifiedCancellationSeries map[string]string
 	for i := range response.Value {
 		item, err := response.Value[i].toEventV2(request.CalendarID)
 		if err != nil {
@@ -176,13 +178,15 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 			masters[response.Value[i].SeriesMasterID] = struct{}{}
 		}
 	}
-	if request.View == calendar.RecurrenceBoth {
-		if request.GatewayCancellationInventory {
-			verifiedCancellationSeries = make(map[string]string)
-			if err := p.addGatewaySeriesInventory(ctx, request.CalendarID, masters); err != nil {
-				return calendar.Page[calendar.EventV2]{}, err
-			}
+	if request.View == calendar.RecurrenceBoth && request.GatewayCancellationInventory {
+		series, verified, err := p.gatewayCancellationEvidence(ctx, request, masters, presentOccurrences, cancelledOccurrences)
+		if err != nil {
+			return calendar.Page[calendar.EventV2]{}, err
 		}
+		items = append(series, items...)
+		return calendar.Page[calendar.EventV2]{Items: items, Complete: true, VerifiedCancellationSeries: verified}, nil
+	}
+	if request.View == calendar.RecurrenceBoth {
 		ids := make([]string, 0, len(masters))
 		for id := range masters {
 			ids = append(ids, id)
@@ -194,57 +198,30 @@ func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEvents
 			if err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
 			}
-			if request.GatewayCancellationInventory && (master.ID != masterID || master.Type != "seriesMaster") {
-				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("Graph returned mismatched series master")
-			}
 			converted, err := master.toEventV2(request.CalendarID)
 			if err != nil {
 				return calendar.Page[calendar.EventV2]{}, err
 			}
 			seriesItems = append(seriesItems, converted)
-			zone := ""
-			if request.GatewayCancellationInventory && master.Recurrence != nil && master.Recurrence.Range.RecurrenceTimeZone != "" {
-				zone, err = graphIANAZone(master.Recurrence.Range.RecurrenceTimeZone)
-				if err != nil {
-					return calendar.Page[calendar.EventV2]{}, err
-				}
-			}
-			verified := master.CancelledOccurrences != nil
 			seen := map[string]bool{}
 			for _, occurrenceID := range master.CancelledOccurrences {
 				if seen[occurrenceID] {
 					continue
 				}
 				seen[occurrenceID] = true
-				if request.GatewayCancellationInventory && presentOccurrences[occurrenceID] {
-					verified = verified && cancelledOccurrences[occurrenceID]
-					continue
-				}
-				if request.GatewayCancellationInventory && !master.IsAllDay && zone == "" {
-					verified = false
-					continue
-				}
 				cancelled, err := cancelledOccurrence(*master, request.CalendarID, occurrenceID)
 				if err != nil {
-					if request.GatewayCancellationInventory {
-						verified = false
-						continue
-					}
 					return calendar.Page[calendar.EventV2]{}, err
 				}
-				if eventTimeInWindow(cancelled.OriginalStart, request.Start, request.End) || request.GatewayCancellationInventory &&
-					gatewayCancelledDateOverlaps(cancelled.OriginalStart, zone, request.Start, request.End) {
+				if eventTimeInWindow(cancelled.OriginalStart, request.Start, request.End) {
 					cancelled.Visibility = master.Sensitivity
 					seriesItems = append(seriesItems, cancelled)
 				}
 			}
-			if request.GatewayCancellationInventory && verified {
-				verifiedCancellationSeries[masterID] = zone
-			}
 		}
 		items = append(seriesItems, items...)
 	}
-	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true, VerifiedCancellationSeries: verifiedCancellationSeries}, nil
+	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextLink, Complete: true}, nil
 }
 
 func (p *Provider) validateGraphPageURL(value string) error {

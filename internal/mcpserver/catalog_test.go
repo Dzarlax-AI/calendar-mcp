@@ -351,3 +351,18 @@ func serveDirect(handler http.Handler, request *http.Request) *http.Response {
 	handler.ServeHTTP(response, request)
 	return response.Result()
 }
+
+// Embedding exactly the strict contract deliberately leaves out ReadCoverage.
+type strictOnlyTestReader struct{ gatewayCatalogReader }
+
+func (strictOnlyTestReader) Ready() bool { return true }
+
+func TestStrictCatalogDoesNotRequireLegacyCoverage(t *testing.T) {
+	reg := calendar.NewRegistry(nil, calendar.RegistryOptions{})
+	err := RegisterWithOptions(http.NewServeMux(), reg, application.New(reg), auth.Options{APIKey: "fixture"}, Options{
+		EnableV2: true, CatalogMode: CatalogModern, EventReadModelEnabled: true, GatewayCachedReadsOnly: true, CachedEvents: strictOnlyTestReader{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

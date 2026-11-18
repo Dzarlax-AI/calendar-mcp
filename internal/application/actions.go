@@ -78,7 +78,9 @@ func (s *Service) RespondToEvent(ctx context.Context, request calendar.RespondTo
 	}
 	request.Ref = rawRef
 	calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "respond", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID})
-	result, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, func() (*calendar.OperationResult, error) { return responder.RespondToEventV2(ctx, request) }, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
+	result, err := calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, func(ctx context.Context) (*calendar.OperationResult, error) {
+		return responder.RespondToEventV2(ctx, request)
+	}, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
 	}
@@ -112,7 +114,7 @@ func (s *Service) MoveEvent(ctx context.Context, request calendar.MoveEventReque
 	request.Ref = rawRef
 	request.DestinationCalendarID = rawDestination
 	calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "move", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID, DestinationCalendarID: calendar.CanonicalCalendarID(destinationProvider, rawDestination)})
-	result, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID), calendar.CanonicalCalendarID(destinationProvider, rawDestination)}, func() (*calendar.OperationResult, error) { return mover.MoveEventV2(ctx, request) }, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
+	result, err := calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID), calendar.CanonicalCalendarID(destinationProvider, rawDestination)}, func(ctx context.Context) (*calendar.OperationResult, error) { return mover.MoveEventV2(ctx, request) }, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedDestination, err)
 	}
@@ -144,7 +146,7 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 	prefixedCalendarID := request.CalendarID
 	request.CalendarID = rawCalendarID
 	calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "import", CalendarID: calendar.CanonicalCalendarID(provider, rawCalendarID)})
-	event, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func() (*calendar.EventV2, error) {
+	event, err := calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func(ctx context.Context) (*calendar.EventV2, error) {
 		request.Event.GatewayWriteID = calendar.GatewayWriteDispatchID(ctx)
 		return importer.ImportEventV2(ctx, request)
 	}, func(event *calendar.EventV2) bool { return event != nil && event.ID != "" })

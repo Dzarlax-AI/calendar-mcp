@@ -69,7 +69,7 @@ func RegisterWithOptions(mux *http.ServeMux, reg *calendar.Registry, app *applic
 		if cachedEnabled {
 			modernHandler = observeCachedRequestBody(modernHandler)
 		}
-		if mode == CatalogModern {
+		if mode == CatalogModern && !opts.GatewayCachedReadsOnly {
 			defaultHandler = modernHandler
 			if cachedEnabled {
 				coverage, ok := opts.CachedEvents.(coverageEventReader)

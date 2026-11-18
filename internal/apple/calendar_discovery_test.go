@@ -98,3 +98,17 @@ func TestGatewayDiscoveryIsolatesTemporaryCollectionFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayDiscoveryRejectsOversizedTrailingResponse(t *testing.T) {
+	p, err := New("fixture", "fixture", "https://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+		body := `<D:multistatus xmlns:D="DAV:"/>` + strings.Repeat(" ", maxGatewayDiscoveryBytes+1)
+		return &http.Response{StatusCode: http.StatusMultiStatus, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if _, err := p.findCalendarInventory(t.Context(), "/home/", true); err == nil || !strings.Contains(err.Error(), "exceeds read bounds") {
+		t.Fatalf("oversized response accepted: %v", err)
+	}
+}

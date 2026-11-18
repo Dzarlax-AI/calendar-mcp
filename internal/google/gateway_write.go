@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"calendar-mcp/internal/calendar"
 	gcal "google.golang.org/api/calendar/v3"
@@ -20,6 +21,9 @@ func setGatewayWriteMarker(event *gcal.Event, id string) {
 	if event.ExtendedProperties.Private == nil {
 		event.ExtendedProperties.Private = map[string]string{}
 	}
+	// Clearing the user's values still requires sending the private
+	// dispatch marker in the update payload.
+	event.NullFields = slices.DeleteFunc(event.NullFields, func(field string) bool { return field == "ExtendedProperties" })
 	event.ExtendedProperties.Private[googleGatewayWriteProperty] = id
 }
 

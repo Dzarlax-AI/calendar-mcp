@@ -40,7 +40,7 @@ func (s *Store) CaptureGatewayPublication(ctx context.Context, calendarID string
 		return GatewayPublicationTicket{}, err
 	}
 	defer tx.Rollback()
-	grants, err := s.gatewayCalendarGrants(ctx, tx, now, calendarID, false)
+	grants, err := s.gatewayCalendarGrants(ctx, tx, now, calendarID)
 	if err != nil {
 		return GatewayPublicationTicket{}, err
 	}
@@ -167,7 +167,7 @@ func (s *Store) PublishGatewayEvents(ctx context.Context, ticket GatewayPublicat
 	if epoch != ticket.MutationEpoch {
 		return ErrAuthorityChanged
 	}
-	current, err := s.gatewayCalendarGrants(ctx, tx, now, id, false)
+	current, err := s.gatewayCalendarGrants(ctx, tx, now, id)
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,10 @@ func gatewayEventForPublication(grant GatewayCalendarGrant, event calendar.Event
 		}
 		row.Kind, row.Start, row.End = "date", event.Start.Date, event.End.Date
 	} else if start, err := event.Start.Instant(); err == nil {
-		if end, err := event.End.Instant(); err == nil && end.After(start) {
+		if end, err := event.End.Instant(); err == nil && !end.Before(start) {
+			if end.Equal(start) {
+				end = end.Add(time.Nanosecond)
+			}
 			row.Kind, row.Start, row.End = "timed", gatewayInstant(start), gatewayInstant(end)
 		}
 	}

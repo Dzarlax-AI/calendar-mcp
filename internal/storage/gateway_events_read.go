@@ -111,20 +111,12 @@ func (s *Store) ReadGatewayEvents(ctx context.Context, req GatewayEventQuery, no
 
 func (s *Store) gatewayReadGrants(ctx context.Context, tx *sql.Tx, req GatewayEventQuery, now time.Time) ([]GatewayCalendarGrant, error) {
 	if req.CalendarRef != "" {
-		grants, err := s.gatewayCalendarGrants(ctx, tx, now, req.CalendarRef, false)
-		if err != nil || len(grants) != 0 {
-			return grants, err
-		}
-		grants, err = s.gatewayCalendarGrants(ctx, tx, now, req.CalendarRef, true)
-		if len(grants) > 1 {
-			return nil, ErrAuthorityChanged
-		}
-		return grants, err
+		return s.gatewayGrantByReference(ctx, tx, req.CalendarRef, now)
 	}
 	if len(req.CalendarIDs) > 0 {
 		var out []GatewayCalendarGrant
 		for _, id := range req.CalendarIDs {
-			grants, err := s.gatewayCalendarGrants(ctx, tx, now, id, false)
+			grants, err := s.gatewayCalendarGrants(ctx, tx, now, id)
 			if err != nil {
 				return nil, err
 			}
@@ -132,7 +124,7 @@ func (s *Store) gatewayReadGrants(ctx context.Context, tx *sql.Tx, req GatewayEv
 		}
 		return out, nil
 	}
-	grants, err := s.gatewayCalendarGrants(ctx, tx, now, "", false)
+	grants, err := s.gatewayCalendarGrants(ctx, tx, now, "")
 	if err != nil {
 		return nil, err
 	}

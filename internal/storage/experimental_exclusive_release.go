@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -56,36 +55,17 @@ func (s *Store) releaseExclusiveDispatch(ctx context.Context, operationID string
 	if err != nil {
 		return err
 	}
-	if err = lockMutationCalendars(ctx, s, tx, ids); err != nil {
+	if err = s.lockMutationConnectionsAndCalendars(ctx, tx, ids); err != nil {
 		return err
-	}
-	connectionSet := map[string]struct{}{}
-	for _, id := range ids {
-		var connectionID string
-		if err = tx.QueryRowContext(ctx, s.query(`SELECT connection_id FROM calendars WHERE id=?`), id).Scan(&connectionID); err != nil {
-			return err
-		}
-		connectionSet[connectionID] = struct{}{}
-	}
-	connections := make([]string, 0, len(connectionSet))
-	for id := range connectionSet {
-		connections = append(connections, id)
-	}
-	sort.Strings(connections)
-	for _, id := range connections {
-		q = `SELECT id FROM connections WHERE id=?`
-		if s.dialect == DialectPostgres {
-			q += ` FOR NO KEY UPDATE`
-		}
-		var found string
-		if err = tx.QueryRowContext(ctx, s.query(q), id).Scan(&found); err != nil {
-			return err
-		}
 	}
 	// Missing sync state is allowed: guard epoch still invalidates any snapshot.
 	// An existing state is reset even if the calendar has since been disabled.
 	for _, id := range ids {
-		if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET cursor='',generation=generation+1,status='pending',next_sync_at=?,last_error_code=NULL,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE calendar_id=?`), now.UTC(), now.UTC(), id); err != nil {
+		if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET cursor='',generation=generation+1,
+			status=CASE WHEN last_error_code IN ('auth','permission') THEN status ELSE 'pending' END,
+			next_sync_at=CASE WHEN last_error_code IN ('auth','permission') THEN next_sync_at ELSE ? END,
+			last_error_code=CASE WHEN last_error_code IN ('auth','permission') THEN last_error_code ELSE NULL END,
+			lease_owner=NULL,lease_until=NULL,updated_at=? WHERE calendar_id=?`), now.UTC(), now.UTC(), id); err != nil {
 			return err
 		}
 	}

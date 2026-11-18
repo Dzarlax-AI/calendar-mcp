@@ -304,6 +304,7 @@ func main() {
 	}
 	pendingWrite := scenario == "delete_event" || scenario == "move_event"
 	moving := scenario == "move_event"
+	appliedWrite := pendingWrite && len(os.Args) > 2 && os.Args[2] == "--applied-write"
 	graphRecovery := scenario == "graph-recovery"
 	authorityAdapters := scenario == "authority-adapters"
 	var authorityHTTP *authorityTransport
@@ -369,6 +370,12 @@ func main() {
 		cancelled := event
 		cancelled.ID, cancelled.Status = "cancelled-instance", "cancelled"
 		providers[name] = &fixtureProvider{account: account, backend: backend, events: []calendar.EventV2{event, master, cancelled}}
+		if authorityAdapters && name == "healthy" {
+			oversized := event
+			oversized.ID, oversized.RecurringEventID, oversized.InstanceKind = "oversized-unrelated", "", "single"
+			oversized.Title, oversized.Description = "Unrelated attachment", strings.Repeat("x", 96<<10)
+			providers[name].events = append(providers[name].events, oversized)
+		}
 	}
 	checkAuthority := func(account string, at time.Time) {
 		lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, at, time.Minute)
@@ -486,8 +493,14 @@ func main() {
 		return p, nil
 	})
 	mux := http.NewServeMux()
-	require(mcpserver.RegisterWithOptions(mux, reg, application.New(reg), auth.Options{APIKey: "synthetic-upstream-key"}, mcpserver.Options{
-		EnableV2: true, CatalogMode: mcpserver.CatalogModern, EventReadModelEnabled: true, GatewayCachedReadsOnly: true, CachedEvents: svc}))
+	app := application.New(reg)
+	authOptions := auth.Options{APIKey: "synthetic-upstream-key"}
+	options := mcpserver.Options{EnableV2: true, CatalogMode: mcpserver.CatalogModern, EventReadModelEnabled: true, CachedEvents: svc}
+	baseline := http.NewServeMux()
+	require(mcpserver.RegisterWithOptions(baseline, reg, app, authOptions, options))
+	mux.Handle("/fixture/pre-cutover/", http.StripPrefix("/fixture/pre-cutover", baseline))
+	options.GatewayCachedReadsOnly = true
+	require(mcpserver.RegisterWithOptions(mux, reg, app, authOptions, options))
 	var busyDone chan struct{}
 	var busy atomic.Bool
 	if pendingWrite {
@@ -595,6 +608,15 @@ func main() {
 					require(errors.New("normal sync completed before timeout verification"))
 				}
 			case pendingWrite && phase == "after-timeout" && after == "offline-1h":
+				if appliedWrite {
+					source := providers["affected"]
+					if moving {
+						event := source.events[0]
+						event.ID, event.RecurringEventID, event.InstanceKind = "moved-instance", "", "single"
+						providers["destination"].events = append(providers["destination"].events, event)
+					}
+					source.events = slices.DeleteFunc(source.events, func(event calendar.EventV2) bool { return event.ID == "instance" })
+				}
 				for _, name := range touched {
 					providers[name].offline.Store(true)
 				}
@@ -653,7 +675,7 @@ func main() {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	info := map[string]any{"endpoint": server.URL + "/mcp", "control": server.URL + "/fixture/state",
-		"start": day, "end": day.AddDate(0, 0, 1), "affected": ids[0], "healthy": ids[1]}
+		"start": day, "end": day.AddDate(0, 0, 1), "affected": ids[0], "healthy": ids[1], "pre_cutover": server.URL + "/fixture/pre-cutover/mcp"}
 	if pendingWrite || graphRecovery {
 		info["destination"] = ids[2]
 		info["sibling"] = ids[3]
