@@ -43,7 +43,8 @@ func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	calendars, _, err := p.findCalendars(t.Context(), "/home/")
+	inventory, err := p.findCalendarInventory(t.Context(), "/home/", false)
+	calendars := inventory.calendars
 	if err != nil || len(calendars) != 6 {
 		t.Fatalf("findCalendars = %v, %v", calendars, err)
 	}
@@ -54,5 +55,60 @@ func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 		if cal.Timezone != "" {
 			t.Errorf("expected missing timezone for %s, got %q", cal.ID, cal.Timezone)
 		}
+	}
+}
+
+func TestGatewayDiscoveryIsolatesTemporaryCollectionFailures(t *testing.T) {
+	const healthy = `<D:response><D:href>/home/ok/</D:href><D:propstat><D:prop><D:resourcetype><C:calendar/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
+	const unavailable = `<D:status>HTTP/1.1 503 Service Unavailable</D:status>`
+	for _, tc := range []struct {
+		name, href, status string
+		partial            bool
+	}{
+		{"collection status", "/home/failing/", unavailable, true},
+		{"collection properties", "/home/failing/", `<D:propstat><D:prop/>` + unavailable + `</D:propstat>`, true},
+		{"home failure", "/home/", unavailable, false},
+		{"foreign href", "https://example.invalid/home/failing/", unavailable, false},
+		{"duplicate href", "/home/ok", unavailable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusMultiStatus)
+				fmt.Fprintf(w, `<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">%s<D:response><D:href>%s</D:href>%s</D:response></D:multistatus>`, healthy, tc.href, tc.status)
+			}))
+			defer s.Close()
+			p, err := New("fixture", "fixture", s.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.findCalendarInventory(t.Context(), "/home/", false); err == nil {
+				t.Fatal("legacy discovery accepted an incomplete response")
+			}
+			inventory, err := p.findCalendarInventory(t.Context(), "/home/", true)
+			if !tc.partial {
+				if err == nil {
+					t.Fatalf("incomplete account inventory accepted: %+v", inventory)
+				}
+				return
+			}
+			if err != nil || len(inventory.calendars) != 1 || inventory.calendars[0].ID != "/home/ok/" ||
+				len(inventory.unknown) != 1 || inventory.unknown[0] != tc.href {
+				t.Fatalf("inventory=%+v error=%v", inventory, err)
+			}
+		})
+	}
+}
+
+func TestGatewayDiscoveryRejectsOversizedTrailingResponse(t *testing.T) {
+	p, err := New("fixture", "fixture", "https://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+		body := `<D:multistatus xmlns:D="DAV:"/>` + strings.Repeat(" ", maxGatewayDiscoveryBytes+1)
+		return &http.Response{StatusCode: http.StatusMultiStatus, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if _, err := p.findCalendarInventory(t.Context(), "/home/", true); err == nil || !strings.Contains(err.Error(), "exceeds read bounds") {
+		t.Fatalf("oversized response accepted: %v", err)
 	}
 }

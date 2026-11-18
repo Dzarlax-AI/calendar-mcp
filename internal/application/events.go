@@ -195,7 +195,9 @@ func (s *Service) CreateEventWithReconciliation(ctx context.Context, request cal
 	providerRequest := request
 	providerRequest.CalendarID = rawCalendarID
 	var warnings []string
-	event, err := calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func() (*calendar.EventV2, error) {
+	calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "create", CalendarID: calendar.CanonicalCalendarID(provider, rawCalendarID)})
+	event, err := calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawCalendarID)}, func(ctx context.Context) (*calendar.EventV2, error) {
+		providerRequest.Event.GatewayWriteID = calendar.GatewayWriteDispatchID(ctx)
 		event, err := v2.CreateEventV2(ctx, providerRequest)
 		if err == nil && event != nil && event.ID != "" {
 			normalizeEvent(event, provider.Name(), request.CalendarID)
@@ -236,7 +238,7 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 	}
 	request.Ref = rawRef
 	var result *calendar.OperationResult
-	call := func() (*calendar.OperationResult, error) {
+	call := func(ctx context.Context) (*calendar.OperationResult, error) {
 		var result *calendar.OperationResult
 		var err error
 		if request.Scope == calendar.ScopeFollowing {
@@ -251,9 +253,10 @@ func (s *Service) UpdateEvent(ctx context.Context, request calendar.UpdateEventR
 		return result, err
 	}
 	if request.PreviewOnly {
-		result, err = call()
+		result, err = call(ctx)
 	} else {
-		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
+		calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "update", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID, Scope: request.Scope})
+		result, err = calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)
@@ -288,7 +291,7 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 	}
 	request.Ref = rawRef
 	var result *calendar.OperationResult
-	call := func() (*calendar.OperationResult, error) {
+	call := func(ctx context.Context) (*calendar.OperationResult, error) {
 		var result *calendar.OperationResult
 		var err error
 		if request.Scope == calendar.ScopeFollowing {
@@ -303,9 +306,10 @@ func (s *Service) DeleteEvent(ctx context.Context, request calendar.DeleteEventR
 		return result, err
 	}
 	if request.PreviewOnly {
-		result, err = call()
+		result, err = call(ctx)
 	} else {
-		result, err = calendar.GuardedWrite(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
+		calendar.DescribeGatewayWrite(ctx, provider, calendar.GatewayWriteScope{Kind: "delete", CalendarID: calendar.CanonicalCalendarID(provider, rawRef.CalendarID), EventID: rawRef.EventID, Scope: request.Scope})
+		result, err = calendar.GuardedWriteContext(ctx, s.registry.WriteGuard(), []string{calendar.CanonicalCalendarID(provider, rawRef.CalendarID)}, call, func(result *calendar.OperationResult) bool { return result != nil && result.Status == "completed" })
 	}
 	if err != nil {
 		return nil, providerFailure(provider.Name(), prefixedCalendarID, err)

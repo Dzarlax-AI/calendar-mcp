@@ -185,6 +185,7 @@ type EventV2 struct {
 }
 
 type EventCreateV2 struct {
+	GatewayWriteID   string                `json:"-"`
 	ICalUID          string                `json:"ical_uid,omitempty"`
 	Title            string                `json:"title,omitempty"`
 	Description      string                `json:"description,omitempty"`
@@ -239,6 +240,7 @@ type EventRef struct {
 }
 
 type ListEventsRequestV2 struct {
+	GatewayCancellationInventory bool `json:"-"`
 	// AvailabilityStrict is internal-only; strict REST uses it to reject races.
 	AvailabilityStrict bool           `json:"-"`
 	CalendarID         string         `json:"calendar_id,omitempty"`
@@ -350,8 +352,9 @@ type SourceStatus struct {
 }
 
 type Page[T any] struct {
-	Items         []T            `json:"items"`
-	NextPageToken string         `json:"next_page_token,omitempty"`
-	Complete      bool           `json:"complete"`
-	Sources       []SourceStatus `json:"sources,omitempty"`
+	VerifiedCancellationSeries map[string]string `json:"-"`
+	Items                      []T               `json:"items"`
+	NextPageToken              string            `json:"next_page_token,omitempty"`
+	Complete                   bool              `json:"complete"`
+	Sources                    []SourceStatus    `json:"sources,omitempty"`
 }

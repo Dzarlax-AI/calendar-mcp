@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -24,6 +23,11 @@ func (s *Store) ReleaseExclusiveAfterConfirmedRun(ctx context.Context, operation
 // It never resolves an operation protected by another guard link. It does not
 // authorize runtime dispatch and is not a reconciliation protocol.
 func (s *Store) experimentalReleaseExclusiveAfterConfirmedRun(ctx context.Context, operationID string, calendarIDs []string, now time.Time) error {
+	return s.releaseExclusiveDispatch(ctx, operationID, calendarIDs, now, nil)
+}
+
+func (s *Store) releaseExclusiveDispatch(ctx context.Context, operationID string, calendarIDs []string, now time.Time,
+	publish func(context.Context, *sql.Tx, string, time.Time) error) error {
 	ids, encoded, err := normalizeMutationCalendars(calendarIDs)
 	if err != nil || !validProjectionMutationID(operationID) || now.IsZero() {
 		return ErrExclusiveDispatchConflict
@@ -51,36 +55,17 @@ func (s *Store) experimentalReleaseExclusiveAfterConfirmedRun(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if err = lockMutationCalendars(ctx, s, tx, ids); err != nil {
+	if err = s.lockMutationConnectionsAndCalendars(ctx, tx, ids); err != nil {
 		return err
-	}
-	connectionSet := map[string]struct{}{}
-	for _, id := range ids {
-		var connectionID string
-		if err = tx.QueryRowContext(ctx, s.query(`SELECT connection_id FROM calendars WHERE id=?`), id).Scan(&connectionID); err != nil {
-			return err
-		}
-		connectionSet[connectionID] = struct{}{}
-	}
-	connections := make([]string, 0, len(connectionSet))
-	for id := range connectionSet {
-		connections = append(connections, id)
-	}
-	sort.Strings(connections)
-	for _, id := range connections {
-		q = `SELECT id FROM connections WHERE id=?`
-		if s.dialect == DialectPostgres {
-			q += ` FOR NO KEY UPDATE`
-		}
-		var found string
-		if err = tx.QueryRowContext(ctx, s.query(q), id).Scan(&found); err != nil {
-			return err
-		}
 	}
 	// Missing sync state is allowed: guard epoch still invalidates any snapshot.
 	// An existing state is reset even if the calendar has since been disabled.
 	for _, id := range ids {
-		if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET cursor='',generation=generation+1,status='pending',next_sync_at=?,last_error_code=NULL,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE calendar_id=?`), now.UTC(), now.UTC(), id); err != nil {
+		if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET cursor='',generation=generation+1,
+			status=CASE WHEN last_error_code IN ('auth','permission') THEN status ELSE 'pending' END,
+			next_sync_at=CASE WHEN last_error_code IN ('auth','permission') THEN next_sync_at ELSE ? END,
+			last_error_code=CASE WHEN last_error_code IN ('auth','permission') THEN last_error_code ELSE NULL END,
+			lease_owner=NULL,lease_until=NULL,updated_at=? WHERE calendar_id=?`), now.UTC(), now.UTC(), id); err != nil {
 			return err
 		}
 	}
@@ -89,6 +74,12 @@ func (s *Store) experimentalReleaseExclusiveAfterConfirmedRun(ctx context.Contex
 			return err
 		}
 	}
+	if publish != nil {
+		if err := publish(ctx, tx, operationID, now); err != nil {
+			return err
+		}
+	}
+
 	res, err := tx.ExecContext(ctx, s.query(`DELETE FROM exclusive_dispatch_guard_members WHERE operation_id=?`), operationID)
 	if err != nil {
 		return err

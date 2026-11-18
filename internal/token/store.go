@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -118,32 +119,29 @@ func (s *FileStore) TokenSource(cfg *oauth2.Config, initial *oauth2.Token) oauth
 	return TokenSource(s, cfg, initial)
 }
 
+const oauthRefreshTimeout = 10 * time.Second
+
 func TokenSource(store Store, cfg *oauth2.Config, initial *oauth2.Token) oauth2.TokenSource {
-	if initial == nil {
-		initial = &oauth2.Token{}
-	}
-	return &persistingTokenSource{
-		store: store,
-		src:   cfg.TokenSource(context.Background(), initial),
-	}
+	return &persistingTokenSource{store: store, config: cfg, current: initial}
 }
 
 type persistingTokenSource struct {
 	store          Store
-	src            oauth2.TokenSource
+	config         *oauth2.Config
+	current        *oauth2.Token
 	mu             sync.Mutex
 	last           *oauth2.Token
 	expectedScopes []string
 }
 
 func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
-	tok, _, _, err := p.TokenWithBinding()
+	tok, _, _, err := p.TokenWithBinding(context.Background())
 	return tok, err
 }
 
 // TokenWithBinding serializes token selection/persistence with its exact
 // credential snapshot. On refresh failure it returns the attempted binding.
-func (p *persistingTokenSource) TokenWithBinding() (*oauth2.Token, string, [32]byte, error) {
+func (p *persistingTokenSource) TokenWithBinding(ctx context.Context) (*oauth2.Token, string, [32]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var revision string
@@ -151,10 +149,18 @@ func (p *persistingTokenSource) TokenWithBinding() (*oauth2.Token, string, [32]b
 	if bound, ok := p.store.(interface{ CredentialBinding() (string, [32]byte) }); ok {
 		revision, digest = bound.CredentialBinding()
 	}
-	tok, err := p.src.Token()
+	if err := ctx.Err(); err != nil {
+		return nil, revision, digest, err
+	}
+	refresh, cancel := context.WithTimeout(ctx, oauthRefreshTimeout)
+	tok, err := p.config.TokenSource(refresh, p.current).Token()
+	cancel()
 	if err != nil {
 		return nil, revision, digest, err
 	}
+	// Keep the selected token for the next call, including when persistence
+	// fails after a server rotates its refresh token.
+	p.current = tok
 	if p.expectedScopes != nil {
 		if observed := tok.Extra("scope"); observed != nil {
 			value, ok := observed.(string)
@@ -203,13 +209,13 @@ func RequestBindingFromContext(ctx context.Context) *RequestBinding {
 // revision/ciphertext binding selected under the same token-source mutex.
 type BoundTransport struct {
 	Source interface {
-		TokenWithBinding() (*oauth2.Token, string, [32]byte, error)
+		TokenWithBinding(context.Context) (*oauth2.Token, string, [32]byte, error)
 	}
 	Base http.RoundTripper
 }
 
 func (t *BoundTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	tok, revision, digest, err := t.Source.TokenWithBinding()
+	tok, revision, digest, err := t.Source.TokenWithBinding(r.Context())
 	if b := RequestBindingFromContext(r.Context()); b != nil {
 		b.Revision, b.Digest, b.Set = revision, digest, true
 	}

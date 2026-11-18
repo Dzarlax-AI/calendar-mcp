@@ -1,7 +1,10 @@
 package token
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,11 +80,12 @@ func TestPersistingTokenSourceReturnsSaveFailure(t *testing.T) {
 	}
 	store := NewFileStore(filepath.Join(blockingFile, "tokens"), "google")
 	source := &persistingTokenSource{
-		store: store,
-		src: staticTokenSource{token: &oauth2.Token{
+		store:  store,
+		config: &oauth2.Config{},
+		current: &oauth2.Token{
 			AccessToken: "new-access",
 			Expiry:      time.Now().Add(time.Hour),
-		}},
+		},
 	}
 
 	if _, err := source.Token(); err == nil {
@@ -97,17 +101,45 @@ func TestTokenSourceAcceptsMissingInitialToken(t *testing.T) {
 	}
 }
 
-type staticTokenSource struct {
-	token *oauth2.Token
-	err   error
-}
-
-func (s staticTokenSource) Token() (*oauth2.Token, error) {
-	if s.err != nil {
-		return nil, s.err
+func TestSnapshotTransportCancelsStalledTokenRefresh(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client := &http.Client{Transport: SnapshotTransport(NewFileStore(t.TempDir(), "google"), &oauth2.Config{
+		Endpoint: oauth2.Endpoint{TokenURL: server.URL, AuthStyle: oauth2.AuthStyleInParams},
+	}, &oauth2.Token{RefreshToken: "fixture-refresh"})}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unreachable.invalid/events", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if s.token == nil {
-		return nil, errors.New("missing token")
+	done := make(chan error, 1)
+	go func() {
+		response, err := client.Do(req)
+		if response != nil {
+			response.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not start")
 	}
-	return s.token, nil
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancelled refresh, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh remained blocked after request cancellation")
+	}
 }

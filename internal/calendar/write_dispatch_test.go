@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type testDispatchGuard struct {
@@ -50,5 +51,42 @@ func TestGuardedWriteNoDispatchContract(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type testGatewayReservation struct {
+	deadline time.Time
+	cleanup  error
+}
+
+func (r testGatewayReservation) ID() string                                { return "synthetic" }
+func (r testGatewayReservation) Authorize(context.Context) error           { return nil }
+func (r testGatewayReservation) OutcomeDeadline() time.Time                { return r.deadline }
+func (r testGatewayReservation) Complete(context.Context, any, bool) error { return r.cleanup }
+
+type testGatewayGuard struct {
+	testDispatchGuard
+	reservation testGatewayReservation
+}
+
+func (g *testGatewayGuard) BeginGatewayWrite(context.Context, []string, GatewayWriteScope) (GatewayWriteReservation, error) {
+	return g.reservation, nil
+}
+
+func TestTrackedGatewayDispatchUsesReservationDeadlineAndReportsRetainedFence(t *testing.T) {
+	ctx, _ := EnableGatewayWriteTracking(t.Context())
+	DescribeGatewayWrite(ctx, nil, GatewayWriteScope{Kind: "create", CalendarID: "fixture"})
+	guard := &testGatewayGuard{reservation: testGatewayReservation{
+		deadline: time.Now().Add(time.Minute), cleanup: errors.New("storage unavailable"),
+	}}
+	_, err := GuardedWriteContext(ctx, guard, []string{"fixture"}, func(call context.Context) (bool, error) {
+		if got, ok := call.Deadline(); !ok || !got.Equal(guard.reservation.deadline) {
+			t.Fatalf("provider deadline = %v (present=%v)", got, ok)
+		}
+		return false, DefinitiveNoDispatch(errors.New("preflight rejected"))
+	}, func(v bool) bool { return v })
+	var api *APIError
+	if !errors.As(err, &api) || api.Code != ErrorConflict || api.Retryable || !errors.Is(err, guard.reservation.cleanup) {
+		t.Fatalf("retained reservation error = %v", err)
 	}
 }

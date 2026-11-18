@@ -73,7 +73,7 @@ func runAuthorityMigration28To29(t *testing.T, store *Store) {
 	if err = store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertSchemaVersion(t, store, 29)
+	assertSchemaVersion(t, store, SchemaVersion)
 	con, err := store.ConnectionByID(ctx, "legacy")
 	if err != nil || con.AuthorizationRevision != "" || con.LastVerifiedAt == nil || !verified.Equal(*con.LastVerifiedAt) {
 		t.Fatalf("legacy account proof=%q, verified=%v, error=%v", con.AuthorizationRevision, con.LastVerifiedAt, err)

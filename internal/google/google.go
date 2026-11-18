@@ -157,7 +157,7 @@ func (p *Provider) SetRoute(route string, calendarIDs []string) {
 
 func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, error) {
 	var cals []calendar.Calendar
-	err := p.listCalendarPages(ctx, 0, func(list *gcal.CalendarList, binding *token.RequestBinding) error {
+	err := p.listCalendarPages(ctx, 0, nil, func(list *gcal.CalendarList, binding *token.RequestBinding) error {
 		for _, c := range list.Items {
 			if c == nil {
 				continue
@@ -186,9 +186,13 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 
 // DiscoverDetailCalendars stages a complete, bounded raw-role listing.
 func (p *Provider) DiscoverDetailCalendars(ctx context.Context) ([]calendar.DetailDiscoveryEntry, error) {
+	return p.discoverDetailCalendars(ctx, nil)
+}
+
+func (p *Provider) discoverDetailCalendars(ctx context.Context, observe func(context.Context, string, string) error) ([]calendar.DetailDiscoveryEntry, error) {
 	result := make([]calendar.DetailDiscoveryEntry, 0)
 	seen := map[string]bool{}
-	err := p.listCalendarPages(ctx, 64, func(response *gcal.CalendarList, _ *token.RequestBinding) error {
+	err := p.listCalendarPages(ctx, 64, observe, func(response *gcal.CalendarList, _ *token.RequestBinding) error {
 		for _, c := range response.Items {
 			if c == nil || c.Id == "" || seen[c.Id] || len(result) >= 256 {
 				return fmt.Errorf("invalid or oversized calendar discovery")
@@ -204,7 +208,7 @@ func (p *Provider) DiscoverDetailCalendars(ctx context.Context) ([]calendar.Deta
 	return result, nil
 }
 
-func (p *Provider) listCalendarPages(ctx context.Context, maxPages int, consume func(*gcal.CalendarList, *token.RequestBinding) error) error {
+func (p *Provider) listCalendarPages(ctx context.Context, maxPages int, observeGateway func(context.Context, string, string) error, consume func(*gcal.CalendarList, *token.RequestBinding) error) error {
 	var observe func(context.Context, string, string, string, [32]byte) error
 	var err error
 	if p.accountRoleObserver != nil {
@@ -229,16 +233,24 @@ func (p *Provider) listCalendarPages(ctx context.Context, maxPages int, consume 
 		if err != nil {
 			return authorityError(pageCtx, err)
 		}
-		if observe != nil {
-			if !binding.Set {
+		if observe != nil || observeGateway != nil {
+			if observe != nil && !binding.Set {
 				return fmt.Errorf("request credential binding unavailable")
 			}
 			// Start the local deadline only after a response supplies evidence.
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(pageCtx), 5*time.Second)
 			var observationErrors []error
 			for _, c := range response.Items {
-				if c != nil && c.Id != "" {
+				if c == nil || c.Id == "" {
+					continue
+				}
+				if observe != nil {
 					if err := observe(closeCtx, c.Id, c.AccessRole, binding.Revision, binding.Digest); err != nil {
+						observationErrors = append(observationErrors, err)
+					}
+				}
+				if observeGateway != nil {
+					if err := observeGateway(closeCtx, c.Id, c.AccessRole); err != nil {
 						observationErrors = append(observationErrors, err)
 					}
 				}

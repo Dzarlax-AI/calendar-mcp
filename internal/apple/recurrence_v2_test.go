@@ -14,6 +14,7 @@ func TestAppleEventsFromObjectExpandsSeriesExceptionsAndExdates(t *testing.T) {
 	master := ical.NewEvent()
 	master.Props.SetText(ical.PropUID, "series")
 	master.Props.SetText(ical.PropSummary, "Daily")
+	master.Props.SetText(ical.PropClass, "PUBLIC")
 	master.Props.SetDateTime(ical.PropDateTimeStart, time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC))
 	master.Props.SetDateTime(ical.PropDateTimeEnd, time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC))
 	rule := ical.NewProp(ical.PropRecurrenceRule)
@@ -32,13 +33,16 @@ func TestAppleEventsFromObjectExpandsSeriesExceptionsAndExdates(t *testing.T) {
 	exception.Props.SetText(ical.PropSummary, "Moved")
 	container := ical.NewCalendar()
 	container.Children = append(container.Children, master.Component, exception.Component)
-	items, err := appleEventsFromObject(caldav.CalendarObject{Path: "/cal/series.ics", ETag: "one", Data: container}, calendar.ListEventsRequestV2{CalendarID: "/cal", Start: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth, ShowDeleted: true})
+	items, err := appleEventsFromObject(caldav.CalendarObject{Path: "/cal/series.ics", ETag: "one", Data: container}, calendar.ListEventsRequestV2{CalendarID: "/cal", Start: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC), View: calendar.RecurrenceBoth, ShowDeleted: true, AvailabilityStrict: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	kinds := map[string]int{}
 	for _, item := range items {
 		kinds[item.InstanceKind]++
+		if item.InstanceKind == "cancelled" && item.Visibility != "PUBLIC" {
+			t.Fatalf("EXDATE did not retain its master’s visibility: %+v", item)
+		}
 	}
 	if kinds["seriesMaster"] != 1 || kinds["occurrence"] != 1 || kinds["exception"] != 1 || kinds["cancelled"] != 1 {
 		t.Fatalf("instance kinds = %#v, items = %#v", kinds, items)

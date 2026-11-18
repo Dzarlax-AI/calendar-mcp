@@ -4,6 +4,7 @@ import (
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/token"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"golang.org/x/oauth2"
@@ -251,5 +252,49 @@ func TestSyncEventsPreservesRoleOnMalformedItem(t *testing.T) {
 	page, err := (&Provider{svc: svc}).SyncEvents(context.Background(), calendar.EventSyncRequest{CalendarID: "a", Window: calendar.EventSyncWindow{Start: now, End: now.Add(time.Hour)}, Mode: calendar.EventSyncReplacement})
 	if err == nil || !page.RoleConfirmed || page.AccessRole != "freeBusyReader" || page.CredentialRevision != "used" {
 		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
+func TestGatewayDiscoveryRestrictsObservedRoleAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	client := &http.Client{Transport: discoveryRoundTrip(func(r *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"items":[{"id":"cal","accessRole":"reader"}]}`)), Request: r}, nil
+	})}
+	svc, err := gcal.NewService(t.Context(), option.WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restricted bool
+	ctx = calendar.WithGatewayReadRestriction(ctx, func(call context.Context, id string, denied bool) error {
+		if call.Err() != nil || id != "cal" || denied {
+			t.Fatalf("bad restriction context: %v, %s, %t", call.Err(), id, denied)
+		}
+		restricted = true
+		return nil
+	})
+	p := &Provider{svc: svc}
+	if _, err := p.CheckCalendarReadEvidence(ctx); err == nil || !restricted {
+		t.Fatalf("cancelled check must restrict observed role without publishing full evidence, restricted=%t err=%v", restricted, err)
+	}
+}
+
+func TestGatewayWriteMarkerSurvivesClearedProperties(t *testing.T) {
+	event := &gcal.Event{NullFields: []string{"ExtendedProperties", "Description"}}
+	setGatewayWriteMarker(event, "operation-id")
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		ExtendedProperties gcal.EventExtendedProperties
+		Description        json.RawMessage
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ExtendedProperties.Private[googleGatewayWriteProperty] != "operation-id" || string(result.Description) != "null" {
+		t.Fatalf("encoded patch: %s", raw)
 	}
 }

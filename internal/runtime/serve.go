@@ -189,7 +189,7 @@ func Serve(_ context.Context) error {
 }
 
 func runtimeMCPOptions(cfg *config.Config, store *storage.Store, cipher *credentials.Cipher, now func() time.Time) (mcpserver.Options, error) {
-	opts := mcpserver.Options{EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode), EventReadModelEnabled: cfg.EventReadModelEnabled}
+	opts := mcpserver.Options{EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode), EventReadModelEnabled: cfg.EventReadModelEnabled, GatewayCachedReadsOnly: cfg.GatewayCachedReadsOnly}
 	if !cfg.EnableV2 || !cfg.EventReadModelEnabled || store == nil || cipher == nil || cfg.APIKey == "" {
 		return opts, nil
 	}

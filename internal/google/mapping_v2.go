@@ -83,6 +83,7 @@ func fromGoogleEventV2(event *gcal.Event, calendarID, fallbackTimeZone string) c
 	}
 	if event.ExtendedProperties != nil {
 		result.Google.PrivateProperties = cloneMap(event.ExtendedProperties.Private)
+		delete(result.Google.PrivateProperties, googleGatewayWriteProperty)
 		result.Google.SharedProperties = cloneMap(event.ExtendedProperties.Shared)
 	}
 	if event.Start != nil {
@@ -204,6 +205,7 @@ func toGoogleEventV2(input calendar.EventCreateV2) (*gcal.Event, error) {
 		event.ExtendedProperties.Private["calendar_sync_rule"] = input.SyncMarker.RuleID
 		event.ExtendedProperties.Private["calendar_source_event"] = input.SyncMarker.SourceEventID
 	}
+	setGatewayWriteMarker(event, input.GatewayWriteID)
 	return event, nil
 }
 

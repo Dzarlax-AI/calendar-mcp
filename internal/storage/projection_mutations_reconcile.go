@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -41,37 +40,14 @@ func (s *Store) ResolveProjectionMutationManyAndSchedule(ctx context.Context, ca
 	if err != nil {
 		return err
 	}
-	if err = lockMutationCalendars(ctx, s, tx, ids); err != nil {
+	if err = s.lockMutationConnectionsAndCalendars(ctx, tx, ids); err != nil {
 		return err
 	}
-	// Match the global lock order: calendar(s), connection(s), sync state(s),
-	// then projection guards. A stale live worker is fenced by generation below.
-	connections := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		var connection string
-		var enabled, readable bool
-		err = tx.QueryRowContext(ctx, s.query(`SELECT connection_id,enabled,can_read FROM calendars WHERE id=?`), id).Scan(&connection, &enabled, &readable)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && (!enabled || !readable) {
-			return ErrCalendarSyncIneligible
-		}
-		if err != nil {
-			return err
-		}
-		connections[connection] = struct{}{}
-	}
-	connIDs := make([]string, 0, len(connections))
-	for id := range connections {
-		connIDs = append(connIDs, id)
-	}
-	sort.Strings(connIDs)
-	for _, id := range connIDs {
-		q = `SELECT status FROM connections WHERE id=?`
-		if s.dialect == DialectPostgres {
-			q += ` FOR NO KEY UPDATE`
-		}
-		var status string
-		err = tx.QueryRowContext(ctx, s.query(q), id).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && status != "connected" {
+		var eligible bool
+		err = tx.QueryRowContext(ctx, s.query(`SELECT c.enabled AND c.can_read AND a.status='connected'
+		FROM calendars c JOIN connections a ON a.id=c.connection_id WHERE c.id=?`), id).Scan(&eligible)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !eligible {
 			return ErrCalendarSyncIneligible
 		}
 		if err != nil {

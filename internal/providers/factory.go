@@ -105,6 +105,15 @@ func (f *Factory) Build(ctx context.Context) ([]calendar.Provider, error) {
 // BuildGoogleVerification constructs only from the caller's captured snapshot;
 // it does not re-read credentials or admit pending providers into the registry.
 func (f *Factory) BuildGoogleVerification(snapshot storage.CredentialSnapshot) (calendar.Provider, error) {
+	p, err := f.buildGoogleVerification(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	f.attachGoogleRoleObserver(p, snapshot.ConnectionID)
+	return p, nil
+}
+
+func (f *Factory) buildGoogleVerification(snapshot storage.CredentialSnapshot) (*google.Provider, error) {
 	if snapshot.Provider != "google" || f.config.GoogleClientID == "" || f.config.GoogleClientSecret == "" {
 		return nil, fmt.Errorf("Google verification unavailable")
 	}
@@ -113,7 +122,6 @@ func (f *Factory) BuildGoogleVerification(snapshot storage.CredentialSnapshot) (
 		return nil, err
 	}
 	p.SetRoute("google@"+snapshot.ConnectionID, nil)
-	f.attachGoogleRoleObserver(p, snapshot.ConnectionID)
 	return p, nil
 }
 

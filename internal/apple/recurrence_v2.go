@@ -230,7 +230,16 @@ func appleEventsFromObjectWithBoundary(object caldav.CalendarObject, request cal
 		instant, _ := original.Instant()
 		if !instant.Before(request.Start) && instant.Before(request.End) {
 			copy := original
-			result = append(result, calendar.EventV2{ID: appleInstanceID(object.Path, original), CalendarID: request.CalendarID, RecurringEventID: object.Path, OriginalStart: &copy, InstanceKind: "cancelled", Status: "cancelled"})
+			item := calendar.EventV2{ID: appleInstanceID(object.Path, original), CalendarID: request.CalendarID, RecurringEventID: object.Path, OriginalStart: &copy, InstanceKind: "cancelled", Status: "cancelled"}
+			if request.AvailabilityStrict {
+				// This tombstone is an EXDATE on the master, so its
+				// classification comes from the same observed event.
+				item.Visibility = base.Visibility
+				if item.Visibility == "" {
+					item.Visibility = "PUBLIC"
+				}
+			}
+			result = append(result, item)
 		}
 	}
 	for _, exception := range exceptions {

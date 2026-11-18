@@ -283,6 +283,9 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 			return nil, calendar.DefinitiveNoDispatch(invalidApple(err))
 		}
 	}
+	if id := calendar.GatewayUpdateDispatchID(ctx); id != "" {
+		selected.Props.SetText(appleGatewayWriteProperty, id)
+	}
 	object, err := p.client.PutCalendarObject(ctx, path, objects[0].Data)
 	if err != nil {
 		return nil, err
@@ -421,6 +424,9 @@ func appleEventFromCreate(uid string, input calendar.EventCreateV2) (*ical.Event
 	}
 	if input.SyncMarker != nil {
 		event.Props.SetText(appleSyncMarkerProperty, calendar.SyncMarkerValue(input.SyncMarker.RuleID, input.SyncMarker.SourceEventID))
+	}
+	if input.GatewayWriteID != "" {
+		event.Props.SetText(appleGatewayWriteProperty, input.GatewayWriteID)
 	}
 	if err := setAppleRecurrence(event, input.Recurrence); err != nil {
 		return nil, err

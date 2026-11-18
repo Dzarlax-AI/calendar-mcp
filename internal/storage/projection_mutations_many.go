@@ -125,6 +125,53 @@ func lockMutationCalendars(ctx context.Context, s *Store, tx *sql.Tx, ids []stri
 	return nil
 }
 
+// Lock the entire connection set before the calendar rows, in stable order,
+// and verify every input binding after locking. Authority changes already
+// take connection locks before they modify calendars and sync state.
+func (s *Store) lockMutationConnectionsAndCalendars(ctx context.Context, tx *sql.Tx, ids []string) error {
+	bindings := make(map[string]string, len(ids))
+	connectionSet := map[string]struct{}{}
+	for _, id := range ids {
+		var connectionID string
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT connection_id FROM calendars WHERE id=?`), id).Scan(&connectionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrProjectionMutationManyConflict
+			}
+			return err
+		}
+		bindings[id] = connectionID
+		connectionSet[connectionID] = struct{}{}
+	}
+	connections := make([]string, 0, len(connectionSet))
+	for id := range connectionSet {
+		connections = append(connections, id)
+	}
+	sort.Strings(connections)
+	for _, id := range connections {
+		query := `SELECT id FROM connections WHERE id=?`
+		if s.dialect == DialectPostgres {
+			query += ` FOR NO KEY UPDATE`
+		}
+		var found string
+		if err := tx.QueryRowContext(ctx, s.query(query), id).Scan(&found); err != nil {
+			return err
+		}
+	}
+	if err := lockMutationCalendars(ctx, s, tx, ids); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		var connectionID string
+		if err := tx.QueryRowContext(ctx, s.query(`SELECT connection_id FROM calendars WHERE id=?`), id).Scan(&connectionID); err != nil {
+			return err
+		}
+		if connectionID != bindings[id] {
+			return ErrAuthorityChanged
+		}
+	}
+	return nil
+}
+
 // ProjectionMutationManyState is a diagnostic point-in-time view. An absent
 // operation does not rule out a concurrent in-flight commit, and Pending is
 // never evidence that a provider call was or was not sent.

@@ -45,6 +45,8 @@ type Config struct {
 	// Event read model is deliberately opt-in. It only reads provider event
 	// data; event mutations continue to use the existing notification-safe
 	// application path.
+	GatewayCachedReadsPrepare  bool
+	GatewayCachedReadsOnly     bool
 	EventReadModelEnabled      bool
 	EventCacheLookbackDays     int
 	EventCacheLookaheadDays    int
@@ -95,6 +97,8 @@ func Load() *Config {
 		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
 		NativeAppWritesEnabled: envBool("NATIVE_APP_WRITES_ENABLED", false),
 
+		GatewayCachedReadsPrepare:  envBool("GATEWAY_CACHED_READS_PREPARE", false),
+		GatewayCachedReadsOnly:     envBool("GATEWAY_CACHED_READS_ONLY", false),
 		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
 		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),
 		EventCacheLookaheadDays:    envInt("EVENT_CACHE_LOOKAHEAD_DAYS", defaultEventCacheLookaheadDays),
@@ -126,6 +130,9 @@ func Load() *Config {
 
 func (c *Config) Validate() error {
 	if err := c.ValidateMCPCatalog(); err != nil {
+		return err
+	}
+	if err := c.ValidateGatewayCachePreparation(); err != nil {
 		return err
 	}
 	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
@@ -304,4 +311,14 @@ func envList(key string) []string {
 		}
 	}
 	return out
+}
+
+func (c *Config) ValidateGatewayCachePreparation() error {
+	if c.GatewayCachedReadsOnly && (!c.GatewayCachedReadsPrepare || !c.EnableV2 || c.MCPCatalogMode != "modern") {
+		return fmt.Errorf("GATEWAY_CACHED_READS_ONLY requires preparation and the modern V2 catalog")
+	}
+	if c.GatewayCachedReadsPrepare && (c.DatabaseURL == "" || !c.EventReadModelEnabled) {
+		return fmt.Errorf("GATEWAY_CACHED_READS_PREPARE requires DATABASE_URL and EVENT_READ_MODEL_ENABLED=true")
+	}
+	return nil
 }
