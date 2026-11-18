@@ -12,15 +12,16 @@ import (
 )
 
 type discoveryFixture struct {
-	mu         sync.Mutex
-	counts     map[string]int
-	home       string
-	count      int
-	failPath   string
-	failStatus int
-	block      chan struct{}
-	entered    chan struct{}
-	server     *httptest.Server
+	mu                  sync.Mutex
+	counts              map[string]int
+	home                string
+	count               int
+	failPath            string
+	failStatus          int
+	deniedCalendarProps string
+	block               chan struct{}
+	entered             chan struct{}
+	server              *httptest.Server
 }
 
 func newDiscoveryFixture(t *testing.T) *discoveryFixture {
@@ -32,7 +33,7 @@ func newDiscoveryFixture(t *testing.T) *discoveryFixture {
 func (f *discoveryFixture) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.counts[r.URL.Path]++
-	home, count, status, fail, block := f.home, f.count, f.failStatus, f.failPath, f.block
+	home, count, status, fail, block, denied := f.home, f.count, f.failStatus, f.failPath, f.block, f.deniedCalendarProps
 	f.mu.Unlock()
 	if r.URL.Path == "/" {
 		f.entered <- struct{}{}
@@ -52,7 +53,11 @@ func (f *discoveryFixture) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">`)
 	response := func(href, props string) {
-		fmt.Fprintf(w, `<d:response><d:href>%s</d:href><d:propstat><d:prop>%s</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`, href, props)
+		fmt.Fprintf(w, `<d:response><d:href>%s</d:href><d:propstat><d:prop>%s</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>`, href, props)
+		if r.URL.Path == fail && denied != "" {
+			fmt.Fprintf(w, `<d:propstat><d:prop>%s</d:prop><d:status>HTTP/1.1 403 Forbidden</d:status></d:propstat>`, denied)
+		}
+		fmt.Fprint(w, `</d:response>`)
 	}
 	switch r.URL.Path {
 	case "/":
@@ -180,6 +185,44 @@ func TestDiscoveryInvalidStatusNoRetry(t *testing.T) {
 		})
 	}
 }
+func TestDiscoveryOuterForbiddenWithPropertyDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name, denied string
+		wantError    bool
+	}{
+		{"optional timezone only", "<c:calendar-timezone/>", false},
+		{"timezone and unrelated property", "<c:calendar-timezone/><d:getetag/>", true},
+		{"required listing property", "<c:calendar-timezone/><d:resourcetype/>", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDiscoveryFixture(t)
+			p := f.provider(t)
+			f.mu.Lock()
+			f.failPath = "/home/"
+			f.failStatus = http.StatusForbidden
+			f.deniedCalendarProps = tc.denied
+			f.mu.Unlock()
+			for range 2 {
+				calendars, err := p.ListCalendars(t.Context())
+				if tc.wantError {
+					if err == nil || calendars != nil {
+						t.Fatalf("discovery = %v, %v; want failure", calendars, err)
+					}
+				} else if err != nil || len(calendars) != 1 || calendars[0].Timezone != "" {
+					t.Fatalf("discovery = %v, %v; want calendar with unknown timezone", calendars, err)
+				}
+			}
+			wantDiscoveryCalls := 1
+			if tc.wantError {
+				wantDiscoveryCalls = 2
+			}
+			if got := f.calls("/"); got != wantDiscoveryCalls {
+				t.Fatalf("principal discovery calls = %d, want %d", got, wantDiscoveryCalls)
+			}
+		})
+	}
+}
+
 func TestDiscoveryErrorsIsolationAndGeneration(t *testing.T) {
 	f := newDiscoveryFixture(t)
 	p := f.provider(t)

@@ -84,9 +84,9 @@ func (p *Provider) ListCalendars(ctx context.Context) ([]calendar.Calendar, erro
 	}
 	status := &discoveryStatus{}
 	readCtx := context.WithValue(ctx, discoveryStatusKey{}, status)
-	calendars, err := p.findCalendars(readCtx, homeSet)
+	calendars, timezoneOnlyDenied, err := p.findCalendars(readCtx, homeSet)
 	code := status.code.Load()
-	if code == 404 || code == 410 || code == 401 || code == 403 {
+	if code == 404 || code == 410 || code == 401 || (code == 403 && !timezoneOnlyDenied) {
 		p.invalidateDiscovery(generation)
 		if err == nil {
 			err = fmt.Errorf("CalDAV discovery HTTP %d", code)

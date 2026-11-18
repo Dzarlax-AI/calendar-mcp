@@ -9,8 +9,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/emersion/go-ical"
-
 	"calendar-mcp/internal/calendar"
 )
 
@@ -24,14 +22,15 @@ type calendarDiscoveryProps struct {
 	ResourceType *struct {
 		Calendar *struct{} `xml:"urn:ietf:params:xml:ns:caldav calendar"`
 	} `xml:"DAV: resourcetype"`
-	DisplayName *string `xml:"DAV: displayname"`
-	Timezone    *string `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
+	DisplayName *string    `xml:"DAV: displayname"`
+	Timezone    *string    `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
+	Other       []struct{} `xml:",any"`
 }
 
-func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calendar.Calendar, error) {
+func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calendar.Calendar, bool, error) {
 	base, err := url.Parse(p.caldavURL)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !strings.HasPrefix(homeSet, "/") {
 		homeSet = path.Join(base.Path, homeSet)
@@ -39,17 +38,17 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 	endpoint := url.URL{Scheme: base.Scheme, User: base.User, Host: base.Host, Path: homeSet}
 	req, err := http.NewRequestWithContext(ctx, "PROPFIND", endpoint.String(), strings.NewReader(calendarDiscoveryRequest))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", "1")
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMultiStatus {
-		return nil, fmt.Errorf("calendar PROPFIND returned HTTP %d", resp.StatusCode)
+		return nil, false, fmt.Errorf("calendar PROPFIND returned HTTP %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -64,32 +63,39 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 		} `xml:"DAV: response"`
 	}
 	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("calendar PROPFIND parse: %w", err)
+		return nil, false, fmt.Errorf("calendar PROPFIND parse: %w", err)
 	}
 
 	var calendars []calendar.Calendar
+	sawTimezoneDenial, sawOtherFailure := false, false
 	for _, entry := range result.Responses {
 		if entry.Status != "" && webDAVStatus(entry.Status)/100 != 2 {
-			return nil, fmt.Errorf("calendar PROPFIND entry returned HTTP %d", webDAVStatus(entry.Status))
+			return nil, false, fmt.Errorf("calendar PROPFIND entry returned HTTP %d", webDAVStatus(entry.Status))
 		}
 		if len(entry.Hrefs) != 1 {
-			return nil, fmt.Errorf("calendar PROPFIND entry must have one href")
+			return nil, false, fmt.Errorf("calendar PROPFIND entry must have one href")
 		}
 		href, err := url.Parse(strings.TrimSpace(entry.Hrefs[0]))
 		if err != nil || href.Path == "" {
-			return nil, fmt.Errorf("calendar PROPFIND entry has an invalid href")
+			return nil, false, fmt.Errorf("calendar PROPFIND entry has an invalid href")
 		}
 		var props calendarDiscoveryProps
 		var displayNameStatus int
 		for _, stat := range entry.PropStats {
 			code := webDAVStatus(stat.Status)
 			if stat.Props.ResourceType != nil && code/100 != 2 {
-				return nil, fmt.Errorf("calendar PROPFIND resourcetype returned HTTP %d", code)
+				return nil, false, fmt.Errorf("calendar PROPFIND resourcetype returned HTTP %d", code)
 			}
 			if stat.Props.DisplayName != nil && code/100 != 2 && code != http.StatusNotFound {
 				displayNameStatus = code
 			}
 			if code/100 != 2 {
+				if code == http.StatusForbidden && stat.Props.Timezone != nil &&
+					stat.Props.ResourceType == nil && stat.Props.DisplayName == nil && len(stat.Props.Other) == 0 {
+					sawTimezoneDenial = true
+				} else if code != http.StatusNotFound {
+					sawOtherFailure = true
+				}
 				continue
 			}
 			if stat.Props.ResourceType != nil {
@@ -103,13 +109,13 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 			}
 		}
 		if props.ResourceType == nil {
-			return nil, fmt.Errorf("calendar PROPFIND entry is missing resourcetype")
+			return nil, false, fmt.Errorf("calendar PROPFIND entry is missing resourcetype")
 		}
 		if props.ResourceType.Calendar == nil {
 			continue
 		}
 		if displayNameStatus != 0 {
-			return nil, fmt.Errorf("calendar PROPFIND displayname returned HTTP %d", displayNameStatus)
+			return nil, false, fmt.Errorf("calendar PROPFIND displayname returned HTTP %d", displayNameStatus)
 		}
 		item := calendar.Calendar{ID: href.Path}
 		if props.DisplayName != nil {
@@ -120,22 +126,5 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 		}
 		calendars = append(calendars, item)
 	}
-	return calendars, nil
-}
-
-func calendarTimezone(value string) string {
-	data, err := ical.NewDecoder(strings.NewReader(strings.TrimSpace(value))).Decode()
-	if err != nil || len(data.Children) != 1 || data.Children[0].Name != ical.CompTimezone {
-		return ""
-	}
-	props := data.Children[0].Props
-	tzid, err := props.Text(ical.PropTimezoneID)
-	if err != nil || len(props[ical.PropTimezoneID]) != 1 || tzid == "" || tzid == "Local" {
-		return ""
-	}
-	zone, err := appleFixedOffsetTimezoneName(data, tzid)
-	if err != nil {
-		return ""
-	}
-	return zone
+	return calendars, len(calendars) > 0 && sawTimezoneDenial && !sawOtherFailure, nil
 }

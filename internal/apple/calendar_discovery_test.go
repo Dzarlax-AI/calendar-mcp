@@ -11,7 +11,7 @@ import (
 
 func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 	const zone = "Europe/Belgrade"
-	ical := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:" + zone + "\r\n" +
+	ical := "BEGIN:VCALENDAR\r\nPRODID:-//Synthetic//Calendar Discovery//EN\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:" + zone + "\r\n" +
 		"BEGIN:STANDARD\r\nDTSTART:20261025T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\n" +
 		"END:VTIMEZONE\r\nEND:VCALENDAR\r\n"
 	propstat := func(status, props string) string {
@@ -42,7 +42,7 @@ func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	calendars, err := p.findCalendars(t.Context(), "/home/")
+	calendars, _, err := p.findCalendars(t.Context(), "/home/")
 	if err != nil || len(calendars) != 5 {
 		t.Fatalf("findCalendars = %v, %v", calendars, err)
 	}
