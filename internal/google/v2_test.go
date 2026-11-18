@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -444,5 +445,48 @@ func TestGoogleInstanceDiffersClassifiesOnlyOverrides(t *testing.T) {
 	renamed.Title = "One-off title"
 	if !googleInstanceDiffers(master, renamed) {
 		t.Fatal("renamed instance was not classified as exception")
+	}
+}
+
+func TestGatewayEventListingReusesMasterAcrossPagesAndUsesListTimeZone(t *testing.T) {
+	var masterReads, metadataReads atomic.Int32
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/events/master"):
+			masterReads.Add(1)
+			_, _ = io.WriteString(w, `{"id":"master","summary":"Series","recurrence":["RRULE:FREQ=DAILY"],"start":{"dateTime":"2026-09-01T08:00:00Z"},"end":{"dateTime":"2026-09-01T09:00:00Z"}}`)
+		case !strings.HasSuffix(r.URL.Path, "/events"):
+			metadataReads.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+		case r.URL.Query().Get("singleEvents") != "true":
+			_, _ = io.WriteString(w, `{"items":[]}`)
+		default:
+			date, end, cursor := "2026-10-01T08:00:00Z", "2026-10-01T09:00:00Z", "second"
+			if r.URL.Query().Get("pageToken") == "second" {
+				date, end, cursor = "2026-10-02T08:00:00Z", "2026-10-02T09:00:00Z", ""
+			}
+			_, _ = fmt.Fprintf(w, `{"timeZone":"Europe/Belgrade","items":[{"id":%q,"summary":"Series","recurringEventId":"master","originalStartTime":{"dateTime":%q},"start":{"dateTime":%q},"end":{"dateTime":%q}}],"nextPageToken":%q}`, date, date, date, end, cursor)
+		}
+	})
+	defer closeServer()
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	for snapshot := int32(1); snapshot <= 2; snapshot++ {
+		list := provider.NewGatewayEventListing()
+		request := calendar.ListEventsRequestV2{CalendarID: "primary", Start: start,
+			End: start.AddDate(0, 0, 2), View: calendar.RecurrenceBoth, AvailabilityStrict: true}
+		for pageNumber := 1; pageNumber <= 2; pageNumber++ {
+			page, err := list(t.Context(), request)
+			if err != nil || !page.Complete || len(page.Items) != 1 || (page.NextPageToken == "") != (pageNumber == 2) {
+				t.Fatalf("snapshot %d page %d: %+v err=%v", snapshot, pageNumber, page, err)
+			}
+			if event := page.Items[0]; event.InstanceKind != "occurrence" || event.Start.TimeZone != "Europe/Belgrade" {
+				t.Fatalf("unexpected occurrence: %+v", event)
+			}
+			request.PageToken = page.NextPageToken
+		}
+		if masterReads.Load() != snapshot || metadataReads.Load() != 0 {
+			t.Fatalf("after snapshot %d: master GETs=%d metadata GETs=%d", snapshot, masterReads.Load(), metadataReads.Load())
+		}
 	}
 }

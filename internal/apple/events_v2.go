@@ -71,16 +71,25 @@ func (p *Provider) listEventsV2(ctx context.Context, request calendar.ListEvents
 		return calendar.Page[calendar.EventV2]{}, unsupportedApple("unsupported Apple recurrence view")
 	}
 	query := &caldav.CalendarQuery{CompFilter: caldav.CompFilter{Name: "VCALENDAR", Comps: []caldav.CompFilter{{Name: "VEVENT", Start: request.Start, End: request.End}}}}
-	objects, err := p.client.QueryCalendar(ctx, request.CalendarID, query)
-	if err != nil {
-		if !strings.Contains(err.Error(), "XML syntax error") && !strings.Contains(err.Error(), "unexpected EOF") {
-			return calendar.Page[calendar.EventV2]{}, err
+	var objects []caldav.CalendarObject
+	var err error
+	var fallback bool
+	if request.AvailabilityStrict {
+		objects, fallback, err = p.queryGatewayCalendar(ctx, request.CalendarID, query)
+	} else {
+		objects, err = p.client.QueryCalendar(ctx, request.CalendarID, query)
+		fallback = err != nil && (strings.Contains(err.Error(), "XML syntax error") || strings.Contains(err.Error(), "unexpected EOF"))
+	}
+	if fallback {
+		if request.AvailabilityStrict {
+			ctx = context.WithValue(ctx, gatewayEventStatusKey{}, &discoveryStatus{})
+		} else {
+			log.Printf("apple: calendar %s V2 REPORT failed, trying PROPFIND+GET fallback: %v", request.CalendarID, err)
 		}
-		log.Printf("apple: calendar %s V2 REPORT failed, trying PROPFIND+GET fallback: %v", request.CalendarID, err)
 		objects, err = p.getCalendarObjectsFallbackWithCompleteness(ctx, request.CalendarID, requireComplete || request.AvailabilityStrict)
-		if err != nil {
-			return calendar.Page[calendar.EventV2]{}, err
-		}
+	}
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{}, err
 	}
 	items, skipped := appleEventsFromObjects(objects, request)
 	if skipped > 0 {

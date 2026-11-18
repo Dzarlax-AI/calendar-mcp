@@ -139,12 +139,13 @@ func (p *Provider) FindEventBySyncMarkerV2(ctx context.Context, calendarID, rule
 
 func (p *Provider) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
 	if request.View == calendar.RecurrenceBoth {
-		return p.listBothViews(ctx, request)
+		return p.listBothViews(ctx, request, nil)
 	}
-	return p.listOneView(ctx, request, request.View, request.PageToken, googlePageSize(request.MaxResults))
+	page, _, err := p.listOneView(ctx, request, request.View, request.PageToken, googlePageSize(request.MaxResults))
+	return page, err
 }
 
-func (p *Provider) listOneView(ctx context.Context, request calendar.ListEventsRequestV2, view calendar.RecurrenceView, pageToken string, pageSize int64) (calendar.Page[calendar.EventV2], error) {
+func (p *Provider) listOneView(ctx context.Context, request calendar.ListEventsRequestV2, view calendar.RecurrenceView, pageToken string, pageSize int64) (calendar.Page[calendar.EventV2], string, error) {
 	call := p.svc.Events.List(request.CalendarID).
 		TimeMin(request.Start.Format(time.RFC3339)).
 		TimeMax(request.End.Format(time.RFC3339)).
@@ -160,20 +161,20 @@ func (p *Provider) listOneView(ctx context.Context, request calendar.ListEventsR
 	}
 	ctx, observe, err := p.startRoleObservation(ctx, request.CalendarID)
 	if err != nil {
-		return calendar.Page[calendar.EventV2]{}, err
+		return calendar.Page[calendar.EventV2]{}, "", err
 	}
 	response, err := call.Context(ctx).Do()
 	if err != nil {
-		return calendar.Page[calendar.EventV2]{}, authorityError(ctx, err)
+		return calendar.Page[calendar.EventV2]{}, "", authorityError(ctx, err)
 	}
 	if err := observeRole(ctx, observe, response.AccessRole); err != nil {
-		return calendar.Page[calendar.EventV2]{}, err
+		return calendar.Page[calendar.EventV2]{}, "", err
 	}
 	items := make([]calendar.EventV2, 0, len(response.Items))
 	for _, event := range response.Items {
 		items = append(items, fromGoogleEventV2(event, request.CalendarID, response.TimeZone))
 	}
-	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextPageToken, Complete: true}, nil
+	return calendar.Page[calendar.EventV2]{Items: items, NextPageToken: response.NextPageToken, Complete: true}, response.TimeZone, nil
 }
 
 type bothPageState struct {
@@ -183,7 +184,25 @@ type bothPageState struct {
 	ExpandedDone  bool   `json:"expanded_done,omitempty"`
 }
 
-func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+type googleSeriesCache struct {
+	masters     map[string]calendar.EventV2
+	unavailable map[string]bool
+}
+
+func newGoogleSeriesCache() *googleSeriesCache {
+	return &googleSeriesCache{masters: make(map[string]calendar.EventV2), unavailable: make(map[string]bool)}
+}
+
+// NewGatewayEventListing scopes recurring master evidence to one snapshot.
+// The worker calls it once and walks the continuation sequentially.
+func (p *Provider) NewGatewayEventListing() func(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	cache := newGoogleSeriesCache()
+	return func(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+		return p.listBothViews(ctx, request, cache)
+	}
+}
+
+func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEventsRequestV2, snapshot *googleSeriesCache) (calendar.Page[calendar.EventV2], error) {
 	state, err := decodeBothPageToken(request.PageToken)
 	if err != nil {
 		return calendar.Page[calendar.EventV2]{}, err
@@ -193,8 +212,9 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		pageSize /= 2
 	}
 	var items []calendar.EventV2
+	var expandedZone string
 	if !state.SeriesDone {
-		page, err := p.listOneView(ctx, request, calendar.RecurrenceSeries, state.SeriesToken, pageSize)
+		page, _, err := p.listOneView(ctx, request, calendar.RecurrenceSeries, state.SeriesToken, pageSize)
 		if err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
 		}
@@ -202,10 +222,15 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		state.SeriesToken = page.NextPageToken
 		state.SeriesDone = page.NextPageToken == ""
 	}
-	if !state.ExpandedDone {
-		page, err := p.listOneView(ctx, request, calendar.RecurrenceExpanded, state.ExpandedToken, pageSize)
+	// Read the series stream first during a snapshot so a later series page
+	// can supply masters without one-off GETs for earlier expanded pages.
+	if !state.ExpandedDone && (snapshot == nil || state.SeriesDone) {
+		page, zone, err := p.listOneView(ctx, request, calendar.RecurrenceExpanded, state.ExpandedToken, pageSize)
 		if err != nil {
 			return calendar.Page[calendar.EventV2]{}, err
+		}
+		if snapshot != nil {
+			expandedZone = zone
 		}
 		// The series view already contains every standalone event. Keep only
 		// recurrence instances from the expanded view, which makes the two
@@ -218,11 +243,13 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		state.ExpandedToken = page.NextPageToken
 		state.ExpandedDone = page.NextPageToken == ""
 	}
-	masters := map[string]calendar.EventV2{}
-	unavailable := map[string]bool{}
+	cache := snapshot
+	if cache == nil {
+		cache = newGoogleSeriesCache()
+	}
 	for _, item := range items {
 		if item.InstanceKind == "seriesMaster" {
-			masters[item.ID] = item
+			cache.masters[item.ID] = item
 		}
 	}
 	for i := range items {
@@ -230,24 +257,26 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		if item.InstanceKind != "occurrence" || item.RecurringEventID == "" {
 			continue
 		}
-		master, ok := masters[item.RecurringEventID]
+		id := item.RecurringEventID
+		master, ok := cache.masters[id]
 		if !ok {
-			if unavailable[item.RecurringEventID] {
+			if cache.unavailable[id] {
 				item.InstanceKind = calendar.OrphanOccurrence
 				continue
 			}
-			loaded, loadErr := p.GetEventV2(ctx, calendar.EventRef{CalendarID: request.CalendarID, EventID: item.RecurringEventID})
+			ref := calendar.EventRef{CalendarID: request.CalendarID, EventID: id}
+			loaded, loadErr := p.getEventV2(ctx, ref, expandedZone, snapshot == nil)
 			if loadErr != nil {
 				var apiErr *googleapi.Error
 				if errors.As(loadErr, &apiErr) && apiErr.Code == http.StatusNotFound {
-					unavailable[item.RecurringEventID] = true
+					cache.unavailable[id] = true
 					item.InstanceKind = calendar.OrphanOccurrence
 					continue
 				}
-				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("load Google series master %q: %w", item.RecurringEventID, loadErr)
+				return calendar.Page[calendar.EventV2]{}, fmt.Errorf("load Google series master %q: %w", id, loadErr)
 			}
 			master = *loaded
-			masters[item.RecurringEventID] = master
+			cache.masters[id] = master
 		}
 		if googleInstanceDiffers(master, *item) {
 			item.InstanceKind = "exception"
@@ -290,12 +319,21 @@ func sameGoogleEventTime(left, right calendar.EventTime) bool {
 }
 
 func (p *Provider) GetEventV2(ctx context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
+	return p.getEventV2(ctx, ref, "", true)
+}
+
+func (p *Provider) getEventV2(ctx context.Context, ref calendar.EventRef, fallbackZone string, lookupZone bool) (*calendar.EventV2, error) {
+	if !lookupZone {
+		ctx = token.WithRequestBinding(ctx, &token.RequestBinding{})
+	}
 	event, err := p.svc.Events.Get(ref.CalendarID, ref.EventID).Context(ctx).Do()
 	if err != nil {
+		if !lookupZone {
+			err = authorityError(ctx, err)
+		}
 		return nil, err
 	}
-	fallbackZone := ""
-	if event.Start == nil || event.Start.TimeZone == "" {
+	if lookupZone && (event.Start == nil || event.Start.TimeZone == "") {
 		if cal, err := p.svc.Calendars.Get(ref.CalendarID).Context(ctx).Do(); err == nil {
 			fallbackZone = cal.TimeZone
 		}

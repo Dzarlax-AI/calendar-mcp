@@ -156,3 +156,79 @@ func TestGatewayWriteRejectsUppercaseCancelledReceipt(t *testing.T) {
 		t.Fatalf("cancelled object was accepted as confirmation: %+v error=%v", receipt, err)
 	}
 }
+
+func TestGatewayEmptyOwnedCalendarCanReadWithoutPrivateEvidence(t *testing.T) {
+	p, err := New("fixture", "fixture", "https://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const collection = "/home/owned/"
+	const open = `<D:multistatus xmlns:D="DAV:">`
+	const closeTag = `</D:multistatus>`
+	p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+		status, media := http.StatusMultiStatus, "application/xml"
+		body := open + closeTag
+		switch {
+		case r.Method == "PROPFIND" && r.Header.Get("Depth") == "0":
+			body = open + `<D:response><D:href>/home/owned/</D:href><D:propstat><D:prop>
+<D:owner><D:href>/owner/</D:href></D:owner><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>` + closeTag
+		case r.Method == "REPORT":
+		case r.Method == "PROPFIND" && r.Header.Get("Depth") == "1":
+			body = open + `<D:response><D:href>/home/owned/task.ics</D:href></D:response>` + closeTag
+		case r.Method == "GET" && r.URL.Path == collection+"task.ics":
+			status, media = http.StatusOK, "text/calendar"
+			body = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VTODO\r\nUID:task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {media}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	proof, err := p.checkGatewayCollection(t.Context(), t.Context(), &discoveryStatus{},
+		calendar.Calendar{ID: collection}, "/owner/", time.Now())
+	if err != nil || proof.Unknown || !proof.ReadEvents || proof.ReadPrivate {
+		t.Fatalf("empty calendar proof=%+v err=%v", proof, err)
+	}
+}
+
+func TestGatewayStrictAppleListingFallsBackOnRaw500Only(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			p, err := New("fixture", "fixture", "https://example.invalid")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var inventoryCalls int
+			p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+				switch r.Method {
+				case "REPORT":
+					body := `<D:error xmlns:D="DAV:">`
+					if status == http.StatusForbidden {
+						body = `<D:multistatus xmlns:D="DAV:"/>`
+					}
+					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
+				case "PROPFIND":
+					inventoryCalls++
+					return &http.Response{StatusCode: http.StatusMultiStatus, Body: io.NopCloser(strings.NewReader(
+						`<D:multistatus xmlns:D="DAV:"/>`))}, nil
+				default:
+					t.Fatalf("unexpected %s", r.Method)
+					return nil, nil
+				}
+			})
+			now := time.Now()
+			page, err := p.ListEventsV2(t.Context(), calendar.ListEventsRequestV2{CalendarID: "/owned/",
+				Start: now, End: now.Add(time.Hour), View: calendar.RecurrenceBoth, AvailabilityStrict: true})
+			if status == http.StatusInternalServerError {
+				if err != nil || !page.Complete || inventoryCalls != 1 {
+					t.Fatalf("page=%+v err=%v inventory=%d", page, err, inventoryCalls)
+				}
+				return
+			}
+			var denied *calendar.EventSyncError
+			if !errors.As(err, &denied) || denied.Class != calendar.EventSyncPermission || inventoryCalls != 0 {
+				t.Fatalf("err=%v inventory=%d", err, inventoryCalls)
+			}
+		})
+	}
+}

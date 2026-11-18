@@ -10,6 +10,7 @@ import (
 )
 
 type gatewayRawStatusKey struct{}
+type gatewayEventStatusKey struct{}
 
 type basicAuthTransport struct {
 	username string
@@ -26,6 +27,15 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	if status, ok := req.Context().Value(gatewayRawStatusKey{}).(*discoveryStatus); ok && resp.StatusCode == http.StatusUnauthorized {
 		status.code.CompareAndSwap(0, int32(resp.StatusCode))
+	}
+	if status, ok := req.Context().Value(gatewayEventStatusKey{}).(*discoveryStatus); ok {
+		status.code.Store(int32(resp.StatusCode))
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusTooManyRequests, http.StatusInternalServerError:
+			// Strict event reads classify the original response before
+			// trusting a body the compatibility transport might normalize.
+			return resp, nil
+		}
 	}
 	// Preserve the original status for listing only. Event fallback behavior is unchanged.
 	if status, ok := req.Context().Value(discoveryStatusKey{}).(*discoveryStatus); ok {
