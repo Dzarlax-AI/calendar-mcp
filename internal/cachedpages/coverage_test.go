@@ -43,7 +43,7 @@ func newCoverageFixtureAt(t *testing.T, size int, databaseURL string) serviceFix
 	for i := 0; i < size; i++ {
 		provider := coverageProvider(i)
 		connection, rawID := fmt.Sprintf("conn-%02d", i), "calendar"
-		model := storage.Calendar{ID: provider + ":" + connection + ":" + rawID, ProviderCalendarID: rawID, ConnectionID: connection, Name: "Synthetic", CanRead: true, DiscoveredAt: now}
+		model := storage.Calendar{ID: provider + ":" + connection + ":" + rawID, ProviderCalendarID: rawID, ConnectionID: connection, Name: "Synthetic", Timezone: "UTC", CanRead: true, DiscoveredAt: now}
 		if err := db.CreateConnection(ctx, storage.Connection{ID: connection, Provider: provider, DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
@@ -362,5 +362,98 @@ func TestCoverageDefaultScopeRequiresExplicitSelectionAboveLimit(t *testing.T) {
 		if !errors.Is(err, ErrUnavailable) || len(page.Items) != 0 || len(page.Sources) != 0 {
 			t.Fatalf("unavailable explicit scope was distinguishable: %v %+v", err, page)
 		}
+	}
+}
+
+func TestCoverageFanOutPolicyBeforeLimit(t *testing.T) {
+	f := newCoverageFixture(t, 17)
+	f.svc.excludeCalendarIDs = []string{"google:calendar"}
+	page, _, err := f.svc.ReadCoverage(f.ctx, f.page, "")
+	if err != nil || len(page.Sources) != 12 {
+		t.Fatalf("legacy exclusion before limit: %v sources=%d", err, len(page.Sources))
+	}
+	request := f.page
+	request.CalendarIDs = []string{"google:conn-00:calendar"}
+	page, _, err = f.svc.ReadCoverage(f.ctx, request, "")
+	if err != nil || len(page.Sources) != 1 {
+		t.Fatalf("explicit bypass: %v %+v", err, page)
+	}
+	f.svc.excludeCalendarIDs = []string{"microsoft:conn-16:calendar"}
+	page, _, err = f.svc.ReadCoverage(f.ctx, f.page, "")
+	if err != nil || len(page.Sources) != 16 {
+		t.Fatalf("canonical exclusion before limit: %v sources=%d", err, len(page.Sources))
+	}
+}
+
+func TestCoverageRejectsEmptyCivilRangeButAcceptsDSTDay(t *testing.T) {
+	f := newCoverageFixture(t, 1)
+	if _, _, err := f.svc.ReadCoverage(f.ctx, f.page, ""); err != nil {
+		t.Fatalf("25-hour DST day: %v", err)
+	}
+	f.page.Start = time.Date(2026, 10, 25, 0, 30, 0, 0, time.FixedZone("east", 14*3600))
+	f.page.End = time.Date(2026, 10, 25, 0, 0, 0, 0, time.FixedZone("west", -12*3600))
+	if _, _, err := f.svc.ReadCoverage(f.ctx, f.page, ""); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty civil range: %v", err)
+	}
+}
+
+func TestCoverageUnknownTimezoneIsPartial(t *testing.T) {
+	f := newCoverageFixture(t, 1)
+	// A separate source without discovered timezone cannot prove civil coverage.
+	model := storage.Calendar{ID: "apple:extra:calendar", ProviderCalendarID: "calendar", ConnectionID: "extra", Name: "Synthetic", CanRead: true, DiscoveredAt: f.now}
+	if err := f.store.CreateConnection(t.Context(), storage.Connection{ID: "extra", Provider: "apple", DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: f.now, UpdatedAt: f.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpsertCalendar(t.Context(), model); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.EnsureCalendarSyncStates(t.Context(), f.now, storage.SyncWindow{Start: f.now.AddDate(0, 0, -2), End: f.now.AddDate(0, 0, 3)}); err != nil {
+		t.Fatal(err)
+	}
+	state := claimCoverageSource(t, f.store, f.now)
+	finishCoverageSource(t, f.store, state, f.now)
+	request := f.page
+	request.CalendarIDs = []string{model.ID}
+	page, _, err := f.svc.ReadCoverage(f.ctx, request, "")
+	if err != nil || !page.Partial || page.Sources[0].Coverage != "outside_window" {
+		t.Fatalf("unknown timezone: %v %+v", err, page)
+	}
+}
+
+func TestCoverageImportedCalendarPolicy(t *testing.T) {
+	f := newCoverageFixture(t, 16)
+	raw := "feed@import.calendar.google.com"
+	id := "google:imported:" + raw
+	if err := f.store.CreateConnection(t.Context(), storage.Connection{ID: "imported", Provider: "google", DisplayName: "Synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: f.now, UpdatedAt: f.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpsertCalendar(t.Context(), storage.Calendar{ID: id, ProviderCalendarID: raw, ConnectionID: "imported", Name: "Synthetic", Timezone: "UTC", CanRead: true, DiscoveredAt: f.now}); err != nil {
+		t.Fatal(err)
+	}
+	page, _, err := f.svc.ReadCoverage(f.ctx, f.page, "")
+	if err != nil || len(page.Sources) != 16 {
+		t.Fatalf("default imported exclusion: %v sources=%d", err, len(page.Sources))
+	}
+	f.svc.includeImportedCalendars = true
+	if _, _, err = f.svc.ReadCoverage(f.ctx, f.page, ""); !errors.Is(err, storage.ErrExplicitCachedPageScope) {
+		t.Fatalf("included imported calendar did not count: %v", err)
+	}
+	request := f.page
+	request.CalendarIDs = []string{id}
+	f.svc.includeImportedCalendars = false
+	page, _, err = f.svc.ReadCoverage(f.ctx, request, "")
+	if err != nil || len(page.Sources) != 1 {
+		t.Fatalf("explicit imported bypass: %v %+v", err, page)
+	}
+}
+
+func TestCoverageExpiryDuringFinalValidation(t *testing.T) {
+	f := newCoverageFixture(t, 2)
+	now := f.now
+	f.svc.now = func() time.Time { return now }
+	f.svc.testBeforeFinalValidation = func() { now = now.Add(cursorLifetime + time.Second) }
+	page, _, err := f.svc.ReadCoverage(f.ctx, f.page, "")
+	if !errors.Is(err, ErrUnavailable) || len(page.Items) != 0 {
+		t.Fatalf("expired page released: %v %+v", err, page)
 	}
 }

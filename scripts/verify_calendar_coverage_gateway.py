@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import pathlib
+import select
 import socket
 import statistics
 import subprocess
@@ -17,14 +18,25 @@ ALLOWED = 'synthetic-allowed-key-123456'
 DENIED = 'synthetic-denied-key-123456'
 SESSIONS = {}
 
+if not __debug__:
+    raise RuntimeError('verification requires Python assertions; do not use -O')
+
 
 def rpc(url, token, method, params):
     identity = (url, token)
     if identity not in SESSIONS and method != 'initialize':
-        rpc(url, token, 'initialize', {
+        initialized, _ = rpc(url, token, 'initialize', {
             'protocolVersion': '2025-03-26', 'capabilities': {},
             'clientInfo': {'name': 'fixture', 'version': '1'},
         })
+        result(initialized)
+        notification = json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'}).encode()
+        headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                   'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-03-26'}
+        if SESSIONS[identity]:
+            headers['Mcp-Session-Id'] = SESSIONS[identity]
+        with urllib.request.urlopen(urllib.request.Request(url, data=notification, headers=headers), timeout=10) as response:
+            response.read()
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode()
     headers = {
         'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
@@ -88,8 +100,11 @@ def walk(mode, info, gateway_url, all_ready):
         page = tool_result.get('structuredContent') or json.loads(tool_result['content'][0]['text'])
         assert 'synthetic-description-' not in json.dumps(page)
         assert 'fixture-meeting' not in json.dumps(page)
+        assert page['partial'] is (not all_ready)
+        assert len(page['items']) <= 5
         ids.extend(item['event_id'] for item in page['items'])
         token = page.get('next_page_token', '')
+        assert page['complete'] is (all_ready and not token)
         if not token:
             break
         assert len(sizes) < 30
@@ -98,6 +113,7 @@ def walk(mode, info, gateway_url, all_ready):
         for provider, count in [('google', 5), ('apple', 3 if all_ready else 2)]
         for index in range(count) for event in range(4)
     }
+    assert len(sizes) == (7 if all_ready else 6)
     assert len(ids) == len(expected) and set(ids) == expected
     assert len(page['sources']) == 8
     assert page['partial'] is not all_ready and page['complete'] is all_ready
@@ -122,17 +138,30 @@ def main():
     args = parser.parse_args()
     assert 1 <= args.warm_walks <= 100
     processes = []
+    logs = []
     try:
         with tempfile.TemporaryDirectory(prefix='calendar-coverage-gateway-') as temporary:
             fixture_command = [args.fixture]
             if args.all_ready:
                 fixture_command.append('-all-ready')
-            fixture = subprocess.Popen(fixture_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            fixture_log = tempfile.TemporaryFile(mode='w+t')
+            logs.append(fixture_log)
+            fixture = subprocess.Popen(fixture_command, stdout=subprocess.PIPE, stderr=fixture_log)
             processes.append(fixture)
-            line = fixture.stdout.readline()
-            if not line:
-                raise RuntimeError('fixture failed: ' + fixture.stderr.read())
-            info = json.loads(line)
+            deadline = time.monotonic() + 15
+            line = b''
+            while b'\n' not in line:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([fixture.stdout], [], [], remaining)[0]:
+                    raise RuntimeError('fixture startup timed out')
+                chunk = os.read(fixture.stdout.fileno(), 4096)
+                if not chunk:
+                    fixture_log.seek(0)
+                    raise RuntimeError('fixture failed: ' + fixture_log.read(4096))
+                line += chunk
+                if len(line) > 65536:
+                    raise RuntimeError('fixture startup output exceeded limit')
+            info = json.loads(line.split(b'\n', 1)[0])
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
@@ -166,11 +195,15 @@ def main():
                 'GATEWAY_LISTEN_ADDR': f'127.0.0.1:{port}', 'GATEWAY_TOOL_SEARCH_ENABLED': 'true',
                 'GATEWAY_READ_BATCH_ENABLED': 'true', 'GATEWAY_READ_BATCH_ALLOWLIST': str(policy),
             })
+            gateway_log = tempfile.TemporaryFile(mode='w+t')
+            logs.append(gateway_log)
             gateway = subprocess.Popen([args.gateway], env=env, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.PIPE, text=True)
+                                       stderr=gateway_log, text=True)
             processes.append(gateway)
             base = f'http://127.0.0.1:{port}'
             for _ in range(100):
+                if gateway.poll() is not None:
+                    break
                 try:
                     with urllib.request.urlopen(base + '/healthz', timeout=1) as response:
                         if response.status == 200:
@@ -178,7 +211,10 @@ def main():
                 except OSError:
                     time.sleep(.05)
             else:
-                raise RuntimeError('gateway unavailable: ' + gateway.stderr.read())
+                raise RuntimeError('gateway startup timed out')
+            if gateway.poll() is not None:
+                gateway_log.seek(0)
+                raise RuntimeError('gateway exited: ' + gateway_log.read(4096))
 
             catalog = tools_at(info['endpoint'])
             assert 'get_event' in catalog and 'get_events' in catalog and 'get_cached_events' not in catalog
@@ -254,7 +290,8 @@ def main():
                 'name': 'invoke_tool', 'arguments': {'server_id': 'calendar', 'tool_name': 'get_events',
                     'arguments': {'start': info['start'], 'end': info['end']}},
             })
-            assert 'error' in denied or denied['result'].get('isError')
+            assert denied.get('result', {}).get('isError') is True
+            assert any(part.get('text') == 'access denied' for part in denied['result'].get('content', []))
             report = {'synthetic': True, 'cold_search_ms': cold_search_ms, 'classification': classification,
                       'coverage': '8/8' if args.all_ready else '7/8', 'events': len(reference), 'denied': True, 'separate_catalog_schemas': True,
                       'detail_verified': True, 'live_direct_ms': live_ms, 'live_direct_frame_bytes': live_bytes,
@@ -271,7 +308,15 @@ def main():
         for process in reversed(processes):
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+        for log in logs:
+            log.close()
 
 
 if __name__ == '__main__':

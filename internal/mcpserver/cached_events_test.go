@@ -421,3 +421,54 @@ func TestCachedEventsActualSDKRevocationAfterPackBeforeFinalValidation(t *testin
 		t.Fatal("packed title escaped fresh validation")
 	}
 }
+
+func TestMainMCPPublishesAndServesCachedGetEvents(t *testing.T) {
+	store, reader, query := cachedHTTPFixture(t)
+	now := query.Start.Add(time.Hour)
+	state, err := store.ClaimDueCalendarSync(t.Context(), "fixture", now, now.Add(time.Hour))
+	if err != nil || state == nil {
+		t.Fatalf("claim synthetic calendar: %v", err)
+	}
+	if err := store.ApplyEventSyncPage(t.Context(), *state, storage.EventSyncBatch{NextCursor: "fixture"}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	reg := calendar.NewRegistry(nil)
+	mux := http.NewServeMux()
+	if err := RegisterWithOptions(mux, reg, application.New(reg), auth.Options{APIKey: "primary"},
+		Options{EnableV2: true, EventReadModelEnabled: true, CatalogMode: CatalogModern, CachedEvents: reader}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := newCachedSDKClient(t, srv.URL+"/mcp", "primary")
+	listed, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range listed.Tools {
+		if tool.Name == "get_cached_events" {
+			t.Fatal("legacy cached alias exposed on the main endpoint")
+		}
+		if tool.Name == "get_events" {
+			properties := tool.InputSchema.Properties
+			found = properties["calendar_ids"] != nil && properties["page_size"] != nil && properties["calendar_id"] == nil
+		}
+	}
+	if !found {
+		t.Fatal("cached get_events schema missing on main endpoint")
+	}
+	call := mcp.CallToolRequest{}
+	call.Params.Name = "get_events"
+	call.Params.Arguments = map[string]any{
+		"start": query.Start.Format(time.RFC3339), "end": query.End.Format(time.RFC3339), "page_size": 1,
+	}
+	result, err := c.CallTool(t.Context(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := decodeCachedSDKPage(t, result)
+	if len(page.Items) != 1 || page.Items[0].Title != "Useful title 0" || page.NextPageToken == "" || page.Consistency != "cached_weak" {
+		t.Fatalf("unexpected main endpoint page: %+v", page)
+	}
+}

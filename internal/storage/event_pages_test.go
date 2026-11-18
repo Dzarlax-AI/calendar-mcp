@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,11 @@ import (
 func newCachedPagesStore(t *testing.T, calendarSpecs ...[3]string) (*Store, time.Time, []string) {
 	t.Helper()
 	store := newSQLiteStore(t)
+	return seedCachedPagesStore(t, store, calendarSpecs...)
+}
+
+func seedCachedPagesStore(t *testing.T, store *Store, calendarSpecs ...[3]string) (*Store, time.Time, []string) {
+	t.Helper()
 	now := time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC)
 	ctx := context.Background()
 	connectionIDs := map[string]bool{}
@@ -667,5 +674,66 @@ func TestCachedPageRejectsDisabledSourceAndPreviousSelection(t *testing.T) {
 	}
 	if _, err := store.ReadCachedPage(ctx, req, nil); err != nil {
 		t.Fatalf("newly enabled calendar page: %v", err)
+	}
+}
+
+func TestCoverageSQLiteWalksLegacyAndCurrentTimedRows(t *testing.T) {
+	for _, options := range []string{"", "?_time_integer_format=unix_milli&_inttotime=true"} {
+		t.Run(options, func(t *testing.T) {
+			ctx := t.Context()
+			store, err := Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "page.db")+options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatal(err)
+			}
+			_, now, ids := seedCachedPagesStore(t, store, [3]string{"conn", "cal", "google"})
+			start := time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC)
+			req := CachedPageRequest{
+				WithCoverage: true, CalendarIDs: ids, PageSize: 1,
+				Start: start, End: start.Add(time.Hour), StartDate: "2026-10-24", EndDate: "2026-10-25",
+			}
+			for _, event := range []calendar.EventV2{
+				pageEvent("canonical-first", ids[0], "2026-10-24T22:10:00Z", "2026-10-24T22:40:00Z", false),
+				pageEvent("legacy-offset", ids[0], "2026-10-25T00:30:00+02:00", "2026-10-25T00:40:00+02:00", false),
+				pageEvent("utc-tie", ids[0], "2026-10-24T22:30:00Z", "2026-10-24T22:50:00Z", false),
+				pageEvent("exclusive-start", ids[0], "2026-10-24T23:00:00Z", "2026-10-25T00:00:00Z", false),
+				pageEvent("exclusive-end", ids[0], "2026-10-24T21:00:00Z", "2026-10-24T22:00:00Z", false),
+				pageEvent("all-day", ids[0], "2026-10-24", "2026-10-25", true),
+			} {
+				if err := store.UpsertCachedEvent(ctx, event, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET start_at=?,end_at=? WHERE event_id='legacy-offset'`,
+				"2026-10-25 00:30:00 +0200 CEST", "2026-10-25 00:40:00 +0200 CEST"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE calendar_sync_state SET status='ready',last_success_at=? WHERE calendar_id=?`, now, ids[0]); err != nil {
+				t.Fatal(err)
+			}
+			var collected []string
+			var cursor *CachedPagePosition
+			for range 6 {
+				page, err := store.ReadCachedPage(ctx, req, cursor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Rows) == 0 {
+					break
+				}
+				collected = append(collected, page.Rows[0].Summary.EventID)
+				if len(page.Rows) == 1 {
+					break
+				}
+				cursor = &page.Rows[0].Position
+			}
+			want := []string{"canonical-first", "legacy-offset", "utc-tie", "all-day"}
+			if !reflect.DeepEqual(collected, want) {
+				t.Fatalf("full walk = %v, want %v", collected, want)
+			}
+		})
 	}
 }

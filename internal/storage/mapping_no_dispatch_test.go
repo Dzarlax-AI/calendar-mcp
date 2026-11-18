@@ -2,12 +2,34 @@ package storage
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestRestoreMappingAfterNoDispatchRequiresLiveExactLease(t *testing.T) {
-	s := newSQLiteStore(t)
+	for _, format := range []string{"", "unix", "unix_milli", "unix_micro", "unix_nano"} {
+		t.Run("format="+format, func(t *testing.T) {
+			var s *Store
+			if format == "" {
+				s = newSQLiteStore(t)
+			} else {
+				var err error
+				s, err = Open(t.Context(), "sqlite://"+filepath.Join(t.TempDir(), "lease.db")+"?_time_integer_format="+format)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				if err = s.Migrate(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			testRestoreMappingAfterNoDispatch(t, s)
+		})
+	}
+}
+
+func testRestoreMappingAfterNoDispatch(t *testing.T, s *Store) {
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if err := s.CreateConnection(ctx, Connection{ID: "c", Provider: "google", AccountFingerprint: "synthetic", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -27,10 +28,8 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-// fakeLiveProvider implements only read operations; the embedded interface is
-// never used for mutations in this isolated fixture.
+// fakeLiveProvider rejects operations outside the fixture read path.
 type fakeLiveProvider struct {
-	calendar.EventProviderV2
 	name   string
 	events map[string][]calendar.EventV2
 }
@@ -44,7 +43,7 @@ func (p *fakeLiveProvider) ListCalendars(context.Context) ([]calendar.Calendar, 
 	return out, nil
 }
 func (p *fakeLiveProvider) ListEventsV2(_ context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
-	return calendar.Page[calendar.EventV2]{Items: p.events[request.CalendarID], Complete: true}, nil
+	return calendar.Page[calendar.EventV2]{Items: slices.Clone(p.events[request.CalendarID]), Complete: true}, nil
 }
 func (p *fakeLiveProvider) GetEventV2(_ context.Context, ref calendar.EventRef) (*calendar.EventV2, error) {
 	for _, event := range p.events[ref.CalendarID] {
@@ -53,6 +52,31 @@ func (p *fakeLiveProvider) GetEventV2(_ context.Context, ref calendar.EventRef) 
 		}
 	}
 	return nil, fmt.Errorf("synthetic event not found")
+}
+
+var errUnexpected = errors.New("unexpected synthetic provider operation")
+
+func (p *fakeLiveProvider) GetEvents(context.Context, string, time.Time, time.Time) ([]calendar.Event, error) {
+	return nil, errUnexpected
+}
+func (p *fakeLiveProvider) CreateEvent(context.Context, string, calendar.EventCreate) (*calendar.Event, error) {
+	return nil, errUnexpected
+}
+func (p *fakeLiveProvider) UpdateEvent(context.Context, string, string, calendar.EventUpdate) (*calendar.Event, error) {
+	return nil, errUnexpected
+}
+func (p *fakeLiveProvider) DeleteEvent(context.Context, string, string) error { return errUnexpected }
+func (p *fakeLiveProvider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
+	return calendar.CalendarCapabilities{}, errUnexpected
+}
+func (p *fakeLiveProvider) CreateEventV2(context.Context, calendar.CreateEventRequestV2) (*calendar.EventV2, error) {
+	return nil, errUnexpected
+}
+func (p *fakeLiveProvider) UpdateEventV2(context.Context, calendar.UpdateEventRequestV2) (*calendar.OperationResult, error) {
+	return nil, errUnexpected
+}
+func (p *fakeLiveProvider) DeleteEventV2(context.Context, calendar.DeleteEventRequestV2) (*calendar.OperationResult, error) {
+	return nil, errUnexpected
 }
 
 func must(err error) {
@@ -87,13 +111,13 @@ func main() {
 			staged := make([]storage.DiscoveredDetailCalendar, n)
 			for i := range staged {
 				cid := fmt.Sprintf("google:%s:cal-%d", id, i)
-				staged[i] = storage.DiscoveredDetailCalendar{Calendar: storage.Calendar{ID: cid, ConnectionID: id, ProviderCalendarID: fmt.Sprintf("cal-%d", i), Name: "synthetic", GooglePrimary: i == 0}, AccessRole: "owner"}
+				staged[i] = storage.DiscoveredDetailCalendar{Calendar: storage.Calendar{ID: cid, ConnectionID: id, ProviderCalendarID: fmt.Sprintf("cal-%d", i), Name: "synthetic", Timezone: "UTC", GooglePrimary: i == 0}, AccessRole: "owner"}
 			}
 			must(s.CompleteGoogleAuthorization(ctx, snapshot, staged, now))
 		} else {
 			for i := 0; i < n; i++ {
 				cid := fmt.Sprintf("apple:%s:cal-%d", id, i)
-				must(s.UpsertCalendar(ctx, storage.Calendar{ID: cid, ConnectionID: id, ProviderCalendarID: fmt.Sprintf("cal-%d", i), Name: "synthetic", CanRead: true, DiscoveredAt: now}))
+				must(s.UpsertCalendar(ctx, storage.Calendar{ID: cid, ConnectionID: id, ProviderCalendarID: fmt.Sprintf("cal-%d", i), Name: "synthetic", Timezone: "UTC", CanRead: true, DiscoveredAt: now}))
 			}
 		}
 	}

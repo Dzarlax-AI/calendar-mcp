@@ -13,6 +13,10 @@ import (
 
 // FailureCode returns a finite code. Provider text and identifiers are never persisted.
 func FailureCode(err error) string {
+	var failure *Failure
+	if errors.As(err, &failure) && failure.Stage == "target_pre_dispatch_unreconciled" {
+		return "sync_target_pre_dispatch_unreconciled"
+	}
 	if errors.Is(err, calendar.ErrMeetingMarkerAmbiguous) {
 		return "sync_meeting_marker_ambiguous"
 	}
@@ -25,14 +29,8 @@ func FailureCode(err error) string {
 	if errors.Is(err, errJobLeaseStage) {
 		return "sync_job_lease"
 	}
-	var stageFailure *Failure
-	if errors.As(err, &stageFailure) {
-		if stageFailure.Stage == "target_pre_dispatch" {
-			return "sync_target_pre_dispatch"
-		}
-		if stageFailure.Stage == "target_pre_dispatch_unreconciled" {
-			return "sync_target_pre_dispatch_unreconciled"
-		}
+	if failure != nil && failure.Stage == "target_pre_dispatch" {
+		return "sync_target_pre_dispatch"
 	}
 	var recurrence *RecurrenceCompatibilityError
 	if errors.As(err, &recurrence) {
@@ -47,9 +45,8 @@ func FailureCode(err error) string {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "sync_interrupted"
 	}
-	var failure *Failure
 	stage := ""
-	if errors.As(err, &failure) {
+	if failure != nil {
 		stage = failure.Stage
 	}
 	var api *googleapi.Error

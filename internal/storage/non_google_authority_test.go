@@ -98,3 +98,46 @@ func TestNonGoogleSourceRevocationPurgesAndFencesLease(t *testing.T) {
 		t.Fatalf("cached rows=%d err=%v", count, err)
 	}
 }
+
+func TestLegacyPermissionProjectionPurgedBeforeRecovery(t *testing.T) {
+	for _, status := range []string{"parked", "failed", "ready"} {
+		for _, recovery := range []string{"schedule", "reauthorize"} {
+			t.Run(status+"/"+recovery, func(t *testing.T) {
+				s, now := newEventCacheStore(t)
+				ctx := t.Context()
+				if _, err := s.db.ExecContext(ctx, `UPDATE connections SET provider='apple' WHERE id='connection'`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.db.ExecContext(ctx, `UPDATE calendar_sync_state SET status=?,last_error_code='permission',cursor='legacy',last_success_at=? WHERE calendar_id='calendar'`, status, now); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.UpsertCachedEvent(ctx, cachedTimedEvent("old", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z"), now); err != nil {
+					t.Fatal(err)
+				}
+				if recovery == "schedule" {
+					if err := s.ScheduleCalendarSync(ctx, "calendar", now, false); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					snap, err := s.CredentialSnapshot(ctx, "connection")
+					if err != nil {
+						t.Fatal(err)
+					}
+					c := Calendar{ID: "calendar", ConnectionID: "connection", ProviderCalendarID: "primary", Name: "Primary", CanRead: true, DiscoveredAt: now}
+					if err = s.CompleteNonGoogleAuthorization(ctx, snap, []Calendar{c}, "fixture", "Apple", now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var count int
+				if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cached_events WHERE calendar_id='calendar'`).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("cached rows=%d err=%v", count, err)
+				}
+				var cursor, syncStatus string
+				var success *time.Time
+				if err := s.db.QueryRowContext(ctx, `SELECT cursor,status,last_success_at FROM calendar_sync_state WHERE calendar_id='calendar'`).Scan(&cursor, &syncStatus, &success); err != nil || cursor != "" || syncStatus != "pending" || success != nil {
+					t.Fatalf("cursor=%q status=%q success=%v err=%v", cursor, syncStatus, success, err)
+				}
+			})
+		}
+	}
+}

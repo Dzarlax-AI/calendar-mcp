@@ -20,12 +20,16 @@ func TestMeetingMirrorFakeGoogle(t *testing.T) {
 		update            calendar.MirrorMeetingUpdate
 		conflict, foreign bool
 		wantURL           string
+		body              string
+		wantBody          string
 	}{
 		{name: "replace", update: calendar.MirrorMeetingUpdate{Known: true, URL: "https://us02web.zoom.us/j/123?pwd=a%2Bb"}, wantURL: "https://us02web.zoom.us/j/123?pwd=a%2Bb"},
 		{name: "replace meet", update: calendar.MirrorMeetingUpdate{Known: true, URL: "https://meet.google.com/new-meet-abc?authuser=2"}, wantURL: "https://meet.google.com/new-meet-abc?authuser=2"},
 		{name: "replace teams", update: calendar.MirrorMeetingUpdate{Known: true, URL: "https://teams.microsoft.com/l/meetup-join/id?context=a%2Fb"}, wantURL: "https://teams.microsoft.com/l/meetup-join/id?context=a%2Fb"},
 		{name: "remove", update: calendar.MirrorMeetingUpdate{Known: true}},
 		{name: "unknown", update: calendar.MirrorMeetingUpdate{}, wantURL: oldURL},
+		{name: "source body with known meeting", update: calendar.MirrorMeetingUpdate{Known: true, URL: oldURL}, body: "new agenda and participants", wantBody: "new agenda and participants", wantURL: oldURL},
+		{name: "source body with unknown meeting", update: calendar.MirrorMeetingUpdate{}, body: "new agenda and participants", wantBody: "new agenda and participants", wantURL: oldURL},
 		{name: "etag", update: calendar.MirrorMeetingUpdate{Known: true}, conflict: true},
 		{name: "owner", update: calendar.MirrorMeetingUpdate{Known: true}, foreign: true},
 	} {
@@ -58,7 +62,11 @@ func TestMeetingMirrorFakeGoogle(t *testing.T) {
 				}
 				var description string
 				_ = json.Unmarshal(body["description"], &description)
-				if !strings.Contains(description, "manual and participants") || (tc.wantURL != "" && !strings.Contains(description, tc.wantURL)) || (tc.wantURL == "" && strings.Contains(description, "calendar-mcp:meeting:start")) {
+				wantBody := tc.wantBody
+				if wantBody == "" {
+					wantBody = "manual and participants"
+				}
+				if !strings.Contains(description, wantBody) || (tc.wantURL != "" && !strings.Contains(description, tc.wantURL)) || (tc.wantURL == "" && strings.Contains(description, "calendar-mcp:meeting:start")) {
 					t.Error("description merge failed")
 				}
 				if tc.conflict {
@@ -73,7 +81,11 @@ func TestMeetingMirrorFakeGoogle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = (&Provider{svc: svc}).UpdateEventV2(t.Context(), calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: "primary", EventID: "event"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone, RequireNoAttendees: true, ExpectedETag: `"v1"`, ExpectedSyncMarker: &calendar.SyncMarker{RuleID: "rule", SourceEventID: "source"}, Patch: calendar.EventPatchV2{MirrorMeeting: &tc.update}})
+			patch := calendar.EventPatchV2{MirrorMeeting: &tc.update}
+			if tc.body != "" {
+				patch.Description = calendar.PatchField[string]{Present: true, Value: tc.body}
+			}
+			_, err = (&Provider{svc: svc}).UpdateEventV2(t.Context(), calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: "primary", EventID: "event"}, Scope: calendar.ScopeSeries, Notifications: calendar.NotificationsNone, RequireNoAttendees: true, ExpectedETag: `"v1"`, ExpectedSyncMarker: &calendar.SyncMarker{RuleID: "rule", SourceEventID: "source"}, Patch: patch})
 			if tc.foreign {
 				if err == nil || writes != 0 {
 					t.Fatal("foreign owner accepted")

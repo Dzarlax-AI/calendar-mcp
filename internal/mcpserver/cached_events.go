@@ -71,7 +71,10 @@ func registerBoundedEvents(s *server.MCPServer, tool mcp.Tool, reader CachedEven
 		}
 		page, stats, err := read(ctx, args, token)
 		if err != nil {
+			var overflow *cachedpages.MetadataOverflowError
 			switch {
+			case optionalScope && errors.As(err, &overflow):
+				return mcp.NewToolResultError("scope_required: try fewer calendar IDs to fit the response budget"), nil
 			case errors.Is(err, storage.ErrExplicitCachedPageScope):
 				return mcp.NewToolResultError("scope_required: select at most 16 explicit calendar IDs"), nil
 			case errors.Is(err, cachedpages.ErrInvalidArgument):

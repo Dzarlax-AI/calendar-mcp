@@ -36,3 +36,23 @@ func TestMirrorMeetingURLsAndMerge(t *testing.T) {
 		t.Fatal("ambiguous marker must fail safely")
 	}
 }
+
+func TestMeetingURLDedupRequiresExactURL(t *testing.T) {
+	link := "https://meet.google.com/abc?x=1"
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{`Join <a href="https://meet.google.com/abc?x=1">meeting</a>`, true},
+		{`https://meet.google.com/abc?x=1&amp;other=2`, false},
+		{`https://meet.google.com/abc?x=10`, false},
+	} {
+		if got := ContainsMirrorMeetingURL(tc.text, link); got != tc.want {
+			t.Errorf("exact match = %v, want %v", got, tc.want)
+		}
+	}
+	merged, err := MergeMirrorMeeting(`https://meet.google.com/abc?x=10`, link)
+	if err != nil || !HasMirrorMeetingMarker(merged) {
+		t.Fatal("URL prefix incorrectly suppressed managed link")
+	}
+}

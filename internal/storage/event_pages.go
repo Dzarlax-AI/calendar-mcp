@@ -460,13 +460,24 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 	if s.dialect != DialectSQLite {
 		return cachedPageEventsFallbackQuery(s, req, after)
 	}
+	return sqliteCachedPageEventsQuery(s, req, after, false)
+}
+
+func sqliteCachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePosition, normalize bool) (string, []any, error) {
 	scalarOK, projection, summarySize := cachedPageProjection(s)
 	var args []any
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(req.CalendarIDs)), ",")
 	limit := req.PageSize + 1
 	startDate, endDate := cachedPageDateRange(req)
-	args = nil
 	var ctes, branches []string
+	if normalize {
+		candidates, candidateArgs, err := sqliteNormalizedPageCandidates(s, req, placeholders)
+		if err != nil {
+			return "", nil, err
+		}
+		ctes = append(ctes, candidates)
+		args = append(args, candidateArgs...)
+	}
 	for _, day := range []bool{false, true} {
 		if !day && after != nil && after.AllDay {
 			continue
@@ -475,10 +486,22 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 		if day {
 			name, index, order, kind = "date_range", "cached_events_date_range_idx", "r.start_date,e.event_id,e.calendar_id", 1
 		}
-		q := fmt.Sprintf(`%s AS MATERIALIZED (SELECT e.rowid AS rid,%d AS is_day,e.start_at,e.start_date,CASE WHEN %d=1 THEN e.start_date END AS sort_date,e.event_id,e.calendar_id FROM cached_events r INDEXED BY %s CROSS JOIN cached_events e ON e.rowid=r.rowid WHERE r.calendar_id IN (%s) AND r.deleted=0`, name, kind, kind, index, placeholders)
-		for _, id := range req.CalendarIDs {
-			args = append(args, id)
+		from := fmt.Sprintf("cached_events r INDEXED BY %s", index)
+		scope := fmt.Sprintf("r.calendar_id IN (%s) AND r.deleted=0", placeholders)
+		startKey, endKey, sortDate := "e.start_at", "e.end_at", "NULL"
+		if day {
+			sortDate = "r.start_date"
 		}
+		if normalize && !day {
+			from = "normalized_times r"
+			scope = "1=1"
+			startKey, endKey = "r.start_at", "r.end_at"
+		} else {
+			for _, id := range req.CalendarIDs {
+				args = append(args, id)
+			}
+		}
+		q := fmt.Sprintf(`%s AS MATERIALIZED (SELECT e.rowid AS rid,%d AS is_day,%s AS start_at,%s AS end_at,%s AS sort_date,e.event_id,e.calendar_id FROM %s CROSS JOIN cached_events e ON e.rowid=r.rowid WHERE %s`, name, kind, startKey, endKey, sortDate, from, scope)
 		if day {
 			q += ` AND r.start_date IS NOT NULL AND r.start_date<? AND r.end_date>? AND e.start_at IS NULL`
 			args = append(args, endDate, startDate)
@@ -488,10 +511,22 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 			}
 		} else {
 			q += ` AND r.start_at IS NOT NULL AND r.start_at<? AND r.end_at>?`
-			args = append(args, req.End, req.Start)
+			var startBound, endBound any = req.Start, req.End
+			if normalize {
+				startBound, endBound = sqlitePageInstant(req.Start), sqlitePageInstant(req.End)
+			}
+			args = append(args, endBound, startBound)
 			if after != nil {
-				q += ` AND r.start_at>=? AND (CAST(e.start_at AS TEXT)>? OR (CAST(e.start_at AS TEXT)=? AND (e.event_id>? OR (e.event_id=? AND e.calendar_id>?))))`
-				args = append(args, after.StartAt, after.StartAt, after.StartAt, after.EventID, after.EventID, after.CalendarID)
+				key := after.StartAt
+				if normalize {
+					instant, err := parseLegacySQLiteInstant(key, time.UTC)
+					if err != nil {
+						return "", nil, ErrInvalidCachedPageData
+					}
+					key = sqlitePageInstant(instant)
+				}
+				q += ` AND r.start_at>=? AND (CAST(r.start_at AS TEXT)>? OR (CAST(r.start_at AS TEXT)=? AND (e.event_id>? OR (e.event_id=? AND e.calendar_id>?))))`
+				args = append(args, key, key, key, after.EventID, after.EventID, after.CalendarID)
 			}
 		}
 		// In JSON text, the value "seriesMaster" must appear literally or use a
@@ -504,14 +539,93 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 	}
 	ctes = append(ctes, `candidate_keys AS MATERIALIZED (`+strings.Join(branches, ` UNION ALL `)+` ORDER BY is_day,start_at,sort_date,event_id,calendar_id LIMIT ?)`)
 	args = append(args, limit)
-	ctes = append(ctes, `selected AS MATERIALIZED (SELECT e.event_id,e.calendar_id,CAST(e.start_at AS TEXT) AS start_key,e.start_at,e.end_at,e.start_date,e.end_date,e.payload_json FROM candidate_keys k JOIN cached_events e ON e.rowid=k.rid)`)
+	ctes = append(ctes, `selected AS MATERIALIZED (SELECT e.event_id,e.calendar_id,CAST(k.start_at AS TEXT) AS start_key,k.start_at,k.end_at,e.start_date,e.end_date,e.payload_json FROM candidate_keys k JOIN cached_events e ON e.rowid=k.rid)`)
 	return "WITH " + strings.Join(ctes, ",\n") + cachedPageProjectionSuffix(s, scalarOK, projection, summarySize), args, nil
+}
+
+// SQLite stores local wall times in older rows. A conservative raw range
+// keeps the covering index usable before exact UTC comparisons.
+func sqliteLegacyPageBounds(req CachedPageRequest) (string, string) {
+	lower := req.Start.UTC().Add(-26 * time.Hour)
+	upper := req.End.UTC().Add(26 * time.Hour)
+	if lower.Year() < 0 {
+		lower = time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if upper.Year() > 9999 {
+		upper = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	}
+	return lower.Format(calendar.DateLayout), upper.Format(calendar.DateLayout) + "~"
+}
+
+func sqlitePageInstant(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
+func sqliteNormalizedPageCandidates(s *Store, req CachedPageRequest, placeholders string) (string, []any, error) {
+	// The raw bounds precede timestamp parsing and payload access. The two
+	// branches are disjoint because SQLite sorts integer values before text.
+	raw := "SELECT rowid,start_at,end_at FROM cached_events INDEXED BY cached_events_timed_range_idx WHERE calendar_id IN (" + placeholders + ") AND deleted=0 AND start_at<? AND end_at"
+	lower, upper := sqliteLegacyPageBounds(req)
+	args := make([]any, 0, 2*len(req.CalendarIDs)+4)
+	appendScope := func() {
+		for _, id := range req.CalendarIDs {
+			args = append(args, id)
+		}
+	}
+	appendScope()
+	args = append(args, upper, lower)
+	candidates := raw + ">=? AND start_at>='' AND typeof(start_at)='text' AND typeof(end_at)='text'"
+	if s.sqliteTimeUnit != 0 {
+		upperTick, err := sqliteTimeTick(req.End, s.sqliteTimeUnit, true)
+		if err != nil {
+			return "", nil, err
+		}
+		lowerTick, err := sqliteTimeTick(req.Start, s.sqliteTimeUnit, false)
+		if err != nil {
+			return "", nil, err
+		}
+		candidates += " UNION ALL " + raw + ">? AND typeof(start_at)='integer' AND typeof(end_at)='integer'"
+		appendScope()
+		args = append(args, upperTick, lowerTick)
+	}
+	ctes := "raw_timed AS MATERIALIZED (" + candidates + "), normalized_times AS MATERIALIZED (SELECT rowid," +
+		s.sqliteInstantKey("start_at") + " AS start_at," + s.sqliteInstantKey("end_at") + " AS end_at FROM raw_timed)"
+	return ctes, args, nil
+}
+
+func sqlitePageHasLegacyText(ctx context.Context, tx *sql.Tx, req CachedPageRequest) (bool, error) {
+	lower, upper := sqliteLegacyPageBounds(req)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(req.CalendarIDs)), ",")
+	args := make([]any, 0, len(req.CalendarIDs)+2)
+	for _, id := range req.CalendarIDs {
+		args = append(args, id)
+	}
+	args = append(args, upper, lower)
+	query := `SELECT 1 FROM cached_events INDEXED BY cached_events_timed_range_idx
+		WHERE calendar_id IN (` + placeholders + `) AND deleted=0 AND start_at>='' AND start_at<? AND end_at>=?
+			AND (substr(start_at,-10)<>' +0000 UTC' OR substr(end_at,-10)<>' +0000 UTC') LIMIT 1`
+	var found int
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func queryCachedPageEvents(ctx context.Context, s *Store, tx *sql.Tx, req CachedPageRequest, after *CachedPagePosition) ([]CachedPageRow, int64, int64, int, int64, int, error) {
 	query, args, err := cachedPageEventsQuery(s, req, after)
 	var gateNS int64
-	if err == nil && s.dialect == DialectSQLite && after != nil && !after.AllDay {
+	if err == nil && s.dialect == DialectSQLite && req.WithCoverage && (after == nil || !after.AllDay) {
+		gateStart := time.Now()
+		normalize := s.sqliteTimeUnit != 0
+		if !normalize {
+			normalize, err = sqlitePageHasLegacyText(ctx, tx, req)
+		}
+		if err == nil && normalize {
+			query, args, err = sqliteCachedPageEventsQuery(s, req, after, true)
+		}
+		gateNS = time.Since(gateStart).Nanoseconds()
+	} else if err == nil && s.dialect == DialectSQLite && after != nil && !after.AllDay {
 		// Only a timed continuation compares a native index key with the old
 		// text-cast ordering. Numeric timestamps sort before empty text, so this
 		// probe can seek just that part of the index. Blobs sort after the text
@@ -582,6 +696,9 @@ func queryCachedPageEvents(ctx context.Context, s *Store, tx *sql.Tx, req Cached
 			position.StartDate = startDate.String
 		} else if s.dialect == DialectPostgres {
 			position.StartAt = startAt.Time.UTC().Format(time.RFC3339Nano)
+		} else if req.WithCoverage {
+			// Both SQLite query paths mint the same UTC cursor key.
+			position.StartAt = startAt.Time.UTC().String()
 		} else {
 			position.StartAt = key.String
 		}

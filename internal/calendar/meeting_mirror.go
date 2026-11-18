@@ -38,6 +38,32 @@ func HasMirrorMeetingMarker(description string) bool {
 	return strings.Contains(description, meetingStart) || strings.Contains(description, meetingEnd)
 }
 
+// ContainsMirrorMeetingURL matches a complete URL, rather than a URL prefix.
+// HTML entities are decoded so a URL in an href is recognized as well.
+func ContainsMirrorMeetingURL(text, meetingURL string) bool {
+	if meetingURL == "" {
+		return false
+	}
+	text = html.UnescapeString(text)
+	for offset := 0; offset < len(text); {
+		i := strings.Index(text[offset:], meetingURL)
+		if i < 0 {
+			return false
+		}
+		i += offset
+		end := i + len(meetingURL)
+		if (i == 0 || !isURLByte(text[i-1])) && (end == len(text) || !isURLByte(text[end])) {
+			return true
+		}
+		offset = i + 1
+	}
+	return false
+}
+
+func isURLByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~:/?#[]@!$&()*+,;=%", rune(c))
+}
+
 // MergeMirrorMeeting modifies only the managed fragment. Ambiguous markers are
 // rejected without returning the description or URL in the error.
 func MergeMirrorMeeting(description, meetingURL string) (string, error) {
@@ -57,8 +83,25 @@ func MergeMirrorMeeting(description, meetingURL string) (string, error) {
 		}
 		before, after = description[:start], description[end+len(meetingEnd):]
 	}
-	if meetingURL != "" && strings.Contains(html.UnescapeString(before+after), meetingURL) {
+	if meetingURL != "" && ContainsMirrorMeetingURL(before+after, meetingURL) {
 		fragment = ""
 	}
 	return before + fragment + after, nil
+}
+
+// PreserveMirrorMeeting carries the existing managed fragment into a new body
+// when the source conference state is unknown. Both bodies must be unambiguous.
+func PreserveMirrorMeeting(description, existing string) (string, error) {
+	if HasMirrorMeetingMarker(description) {
+		return "", ErrMeetingMarkerAmbiguous
+	}
+	if _, err := MergeMirrorMeeting(existing, ""); err != nil {
+		return "", err
+	}
+	start := strings.Index(existing, meetingStart)
+	if start < 0 {
+		return description, nil
+	}
+	end := strings.Index(existing, meetingEnd) + len(meetingEnd)
+	return description + existing[start:end], nil
 }

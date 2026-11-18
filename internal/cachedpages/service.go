@@ -40,9 +40,11 @@ func init() {
 }
 
 type Options struct {
-	Window   storage.SyncWindow
-	WindowAt func(time.Time) storage.SyncWindow
-	Now      func() time.Time
+	Window                   storage.SyncWindow
+	WindowAt                 func(time.Time) storage.SyncWindow
+	Now                      func() time.Time
+	ExcludeCalendarIDs       []string
+	IncludeImportedCalendars bool
 }
 
 type PageStats struct {
@@ -54,13 +56,15 @@ type PageStats struct {
 }
 
 type Service struct {
-	store    *storage.Store
-	cipher   *credentials.Cipher
-	codec    *Codec
-	window   storage.SyncWindow
-	windowAt func(time.Time) storage.SyncWindow
-	now      func() time.Time
-	ready    bool
+	store                    *storage.Store
+	cipher                   *credentials.Cipher
+	codec                    *Codec
+	window                   storage.SyncWindow
+	windowAt                 func(time.Time) storage.SyncWindow
+	now                      func() time.Time
+	ready                    bool
+	excludeCalendarIDs       []string
+	includeImportedCalendars bool
 
 	// testBeforeFinalValidation is available only to package tests.
 	testBeforeFinalValidation func()
@@ -84,7 +88,7 @@ func NewService(store *storage.Store, cipher *credentials.Cipher, opts Options) 
 	if !validWindow(window) {
 		return nil, errors.New("cached page service requires a valid sync window")
 	}
-	return &Service{store: store, cipher: cipher, codec: NewCodec(cipher, opts.Now), window: window, windowAt: opts.WindowAt, now: opts.Now, ready: true}, nil
+	return &Service{store: store, cipher: cipher, codec: NewCodec(cipher, opts.Now), window: window, windowAt: opts.WindowAt, now: opts.Now, ready: true, excludeCalendarIDs: slices.Clone(opts.ExcludeCalendarIDs), includeImportedCalendars: opts.IncludeImportedCalendars}, nil
 }
 
 func utcWindow(window storage.SyncWindow) storage.SyncWindow {
@@ -122,6 +126,8 @@ func (s *Service) read(ctx context.Context, request Request, pageToken string) (
 	if !ok {
 		return Page{}, stats, ErrUnavailable
 	}
+	request.FanOutExcludeIDs = s.excludeCalendarIDs
+	request.FanOutIncludeImported = s.includeImportedCalendars
 	request, err := normalizeRequest(request)
 	if err != nil {
 		if errors.Is(err, ErrUnavailable) {
@@ -143,6 +149,7 @@ func (s *Service) read(ctx context.Context, request Request, pageToken string) (
 		}
 		return Page{}, stats, ErrUnavailable
 	}
+	request.TargetWindow = window
 	authorityStart := time.Now()
 	var captured []storage.AuthorityTicket
 	var grants []storage.CachedPageGrant
@@ -253,6 +260,13 @@ func (s *Service) read(ctx context.Context, request Request, pageToken string) (
 		}
 		return Page{}, stats, ErrUnavailable
 	}
+	// Final authority validation can itself outlive the cursor deadline.
+	if !expiry.After(s.now().UTC()) {
+		if pageToken != "" {
+			return Page{}, stats, ErrCursorUnavailable
+		}
+		return Page{}, stats, ErrUnavailable
+	}
 	return page, stats, nil
 }
 
@@ -265,6 +279,9 @@ func normalizeRequest(request Request) (Request, error) {
 			end = end.AddDate(0, 0, 1)
 		}
 		request.EndDate = end.Format(calendar.DateLayout)
+		if request.EndDate <= request.StartDate {
+			return Request{}, errors.New("empty or reversed civil date range")
+		}
 	}
 	request.Start = request.Start.UTC()
 	request.End = request.End.UTC()

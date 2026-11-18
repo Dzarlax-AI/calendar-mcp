@@ -88,9 +88,9 @@ func (s *Store) RestoreMappingAfterNoDispatchCAS(ctx context.Context, m Mapping,
 	if m.ID == "" || m.RuleID == "" || m.RuleID != job.RuleID || m.SourceEventID == "" || m.Incarnation == "" || m.Version != expectedVersion || expectedVersion < 1 || expectedVersion == math.MaxInt64 || job.ID == "" || job.ClaimedBy == "" || job.Attempt < 1 || (m.ReconciliationState != "current" && m.ReconciliationState != "legacy" && m.ReconciliationState != "") {
 		return ErrMappingConflict
 	}
-	leaseClock := `julianday(substr(j.claimed_at,1,19) || substr(substr(j.claimed_at,20),1,instr(substr(j.claimed_at,20)||' ',' ')-1))<=julianday('now') AND julianday(substr(j.lease_until,1,19) || substr(substr(j.lease_until,20),1,instr(substr(j.lease_until,20)||' ',' ')-1))>julianday('now','+1 second')`
-	if s.dialect == DialectPostgres {
-		leaseClock = `j.claimed_at<=clock_timestamp() AND j.lease_until>clock_timestamp()`
+	leaseClock := `j.claimed_at<=clock_timestamp() AND j.lease_until>clock_timestamp()`
+	if s.dialect == DialectSQLite {
+		leaseClock = s.sqliteInstantKey("j.claimed_at") + `<=strftime('%Y-%m-%dT%H:%M:%f000000Z','now') AND ` + s.sqliteInstantKey("j.lease_until") + `>strftime('%Y-%m-%dT%H:%M:%f000000Z','now')`
 	}
 	q := `UPDATE event_mappings SET object_kind=?,source_series_id=?,target_event_id=?,target_series_id=?,content_hash=?,last_seen_at=?,reconciliation_state=?,target_etag=?,version=version+1 WHERE id=? AND rule_id=? AND source_event_id=? AND original_start=? AND incarnation=? AND version=? AND reconciliation_state='pending_update' AND EXISTS (SELECT 1 FROM sync_jobs j JOIN sync_rules r ON r.id=j.rule_id WHERE j.id=? AND j.rule_id=? AND j.state='running' AND j.claimed_by=? AND j.attempt=? AND j.stop_requested=? AND ` + leaseClock + ` AND (j.kind='dry_run' OR r.state='enabled'))`
 	tx, err := s.db.BeginTx(ctx, nil)

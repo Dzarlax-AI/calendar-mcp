@@ -46,7 +46,7 @@ func TestMeetingHashRetainsKnownLinkAcrossUnknown(t *testing.T) {
 	}
 	event.Title = "changed"
 	changed := hashEventForMapping(event, known)
-	if changed == known || !strings.HasSuffix(changed, strings.Split(known, ":meeting:")[1]) {
+	if changed == known || !strings.HasSuffix(changed, strings.Split(known, ":meeting2:")[1]) {
 		t.Fatal("unknown with ordinary edit lost prior link digest")
 	}
 	if got := hashEventForMapping(event, changed); got != changed {
@@ -54,7 +54,7 @@ func TestMeetingHashRetainsKnownLinkAcrossUnknown(t *testing.T) {
 	}
 	event.SourceConferenceComplete = true
 	removed := hashEventForMapping(event, changed)
-	if removed == changed || strings.Contains(removed, ":meeting:") {
+	if removed == changed || !strings.HasSuffix(removed, ":meeting2:none") {
 		t.Fatal("confirmed removal not detected")
 	}
 	if got := hashEventForMapping(event, removed); got != removed {
@@ -107,5 +107,61 @@ func TestMeetingMirroringOnlyForGoogleTargets(t *testing.T) {
 	without.Conference = nil
 	if hashEvent(event) != hashEvent(without) || mirrorPatch(event).MirrorMeeting != nil || strings.Contains(mirrorCreate("rule", event, "apple").Description, "calendar-mcp:meeting:start") {
 		t.Fatal("meeting mirroring changed non-Google target")
+	}
+}
+
+func TestLocationOnlyMeetingDoesNotClaimManagedLink(t *testing.T) {
+	link := "https://meet.google.com/abc-defg-hij"
+	event := calendar.EventV2{InstanceKind: "cache_instance", MirrorMeetingToGoogle: true, SourceConferenceComplete: true, Location: link, Conference: &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: link}}}}
+	initial := hashEvent(event)
+	if !strings.HasSuffix(initial, ":meeting2:none") || mirrorPatch(event).MirrorMeeting.URL != "" {
+		t.Fatal("location-only link recorded as managed")
+	}
+	event.Location = "elsewhere"
+	event.SourceConferenceComplete = false
+	event.Conference = nil
+	unknown := hashEventForMapping(event, initial)
+	event.SourceConferenceComplete = true
+	event.Conference = &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: link}}}
+	if hashEventForMapping(event, unknown) == unknown || mirrorPatch(event).MirrorMeeting.URL != link {
+		t.Fatal("returning conference link failed to trigger repair")
+	}
+}
+
+func TestLegacyMeetingDigestRepairsAfterUnknown(t *testing.T) {
+	link := "https://meet.google.com/abc-defg-hij"
+	event := calendar.EventV2{InstanceKind: "cache_instance", MirrorMeetingToGoogle: true, SourceConferenceComplete: true, Conference: &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: link}}}}
+	known := hashEvent(event)
+	legacy := strings.Replace(known, ":meeting2:", ":meeting:", 1)
+	event.SourceConferenceComplete = false
+	event.Conference = nil
+	unknown := hashEventForMapping(event, legacy)
+	event.SourceConferenceComplete = true
+	event.Conference = &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: link}}}
+	if hashEventForMapping(event, unknown) == unknown {
+		t.Fatal("legacy digest skipped repair")
+	}
+}
+
+func TestMappedMeetingChangeKeepsDestinationBodyUnlessSourceBodyChanged(t *testing.T) {
+	event := calendar.EventV2{
+		InstanceKind: "cache_instance", MirrorMeetingToGoogle: true, SourceAttendeesComplete: true, SourceConferenceComplete: true,
+		Description: "Source agenda",
+	}
+	previous := hashEventForMapping(event, "")
+	if strings.Contains(previous, ":meeting") {
+		t.Fatal("confirmed absence would force a write on an unchanged legacy mapping")
+	}
+	event.Conference = &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: "https://meet.google.com/abc-defg-hij"}}}
+	current := hashEventForMapping(event, previous)
+	patch := mirrorMappedPatch(event, previous, current)
+	if patch.Description.Present || patch.MirrorMeeting.URL == "" {
+		t.Fatalf("meeting-only update replaced body: %+v", patch)
+	}
+	event.Description = "Updated agenda"
+	current = hashEventForMapping(event, previous)
+	patch = mirrorMappedPatch(event, previous, current)
+	if !patch.Description.Present || patch.Description.Value != event.Description {
+		t.Fatal("source agenda update was discarded")
 	}
 }

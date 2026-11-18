@@ -8,12 +8,15 @@ import (
 
 // CachedPageRequest describes one bounded cached-event query.
 type CachedPageRequest struct {
-	CalendarIDs        []string  `json:"calendar_ids"`
-	Start              time.Time `json:"start"`
-	End                time.Time `json:"end"`
-	PageSize           int       `json:"page_size"`
-	WithCoverage       bool      `json:"-"`
-	StartDate, EndDate string    `json:"-"`
+	CalendarIDs           []string   `json:"calendar_ids"`
+	Start                 time.Time  `json:"start"`
+	End                   time.Time  `json:"end"`
+	PageSize              int        `json:"page_size"`
+	WithCoverage          bool       `json:"-"`
+	StartDate, EndDate    string     `json:"-"`
+	FanOutExcludeIDs      []string   `json:"-"`
+	FanOutIncludeImported bool       `json:"-"`
+	TargetWindow          SyncWindow `json:"-"`
 }
 
 // CachedPagePosition is the stable keyset position of a cached event row.

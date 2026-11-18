@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"strings"
 	"time"
 
@@ -652,7 +651,7 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 		if err != nil {
 			return result, err
 		}
-		outcome, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorPatch(event), Scope: scopeFor(event), Notifications: calendar.NotificationsNone, ExpectedETag: etag, ExpectedSyncMarker: marker})
+		outcome, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorMappedPatch(event, mapping.ContentHash, hash), Scope: scopeFor(event), Notifications: calendar.NotificationsNone, ExpectedETag: etag, ExpectedSyncMarker: marker})
 		if err != nil {
 			return result, e.reconcileNoDispatchUpdate(ctx, mapping, pending, err)
 		}
@@ -893,7 +892,7 @@ func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) 
 	created := calendar.EventCreateV2{ICalUID: event.ICalUID, Title: event.Title, Description: mirrorDescription(event), Location: event.Location, Start: event.Start, End: event.End, Recurrence: append([]string(nil), event.Recurrence...), Transparency: event.Transparency, Visibility: event.Visibility, SyncMarker: &calendar.SyncMarker{RuleID: ruleID, SourceEventID: event.ID}}
 	if targetProvider == "google" && event.InstanceKind == "cache_instance" {
 		link := calendar.MirrorMeetingURL(event.Conference)
-		if link != "" && !calendar.HasMirrorMeetingMarker(created.Description) && !strings.Contains(html.UnescapeString(event.Description), link) && !strings.Contains(html.UnescapeString(event.Location), link) {
+		if link != "" && !calendar.HasMirrorMeetingMarker(created.Description) && !calendar.ContainsMirrorMeetingURL(event.Description, link) && !calendar.ContainsMirrorMeetingURL(event.Location, link) {
 			if description, err := calendar.MergeMirrorMeeting(created.Description, link); err == nil {
 				created.Description = description
 			}
@@ -921,7 +920,7 @@ func mirrorPatch(event calendar.EventV2) calendar.EventPatchV2 {
 	if event.InstanceKind == "cache_instance" && event.MirrorMeetingToGoogle {
 		link := calendar.MirrorMeetingURL(event.Conference)
 		known := link != "" || event.SourceConferenceComplete
-		if link != "" && strings.Contains(html.UnescapeString(event.Location), link) {
+		if link != "" && calendar.ContainsMirrorMeetingURL(event.Location, link) {
 			link = ""
 		}
 		patch.MirrorMeeting = &calendar.MirrorMeetingUpdate{URL: link, Known: known}
@@ -932,6 +931,19 @@ func mirrorPatch(event calendar.EventV2) calendar.EventPatchV2 {
 	}
 	if objectKind(event) == "series" {
 		patch.Recurrence = present(append([]string(nil), event.Recurrence...))
+	}
+	return patch
+}
+
+func mirrorMappedPatch(event calendar.EventV2, previousHash, currentHash string) calendar.EventPatchV2 {
+	patch := mirrorPatch(event)
+	if patch.MirrorMeeting != nil {
+		previousBody, _, _ := strings.Cut(previousHash, ":")
+		currentBody, _, _ := strings.Cut(currentHash, ":")
+		if previousBody == currentBody {
+			// A meeting-only change must not replace destination text.
+			patch.Description = calendar.PatchField[string]{}
+		}
 	}
 	return patch
 }
@@ -1006,9 +1018,13 @@ func hashEvent(event calendar.EventV2) string {
 	sum := sha256.Sum256(data)
 	base := hex.EncodeToString(sum[:])
 	if event.InstanceKind == "cache_instance" && event.MirrorMeetingToGoogle {
-		if link := calendar.MirrorMeetingURL(event.Conference); link != "" {
+		link := calendar.MirrorMeetingURL(event.Conference)
+		if link != "" && !calendar.ContainsMirrorMeetingURL(event.Location, link) {
 			digest := sha256.Sum256([]byte(link))
-			return base + ":meeting:" + hex.EncodeToString(digest[:])
+			return base + ":meeting2:" + hex.EncodeToString(digest[:])
+		}
+		if event.SourceConferenceComplete || link != "" {
+			return base + ":meeting2:none"
 		}
 	}
 	return base
@@ -1019,18 +1035,31 @@ func hashEvent(event calendar.EventV2) string {
 // a bulk pass over legacy mappings. No URL is persisted in this hash.
 func hashEventForMapping(event calendar.EventV2, prior string) string {
 	current := hashEvent(event)
+	if !strings.Contains(prior, ":meeting") {
+		// Old mappings and new copies without a managed link need no
+		// write solely to record that their meeting is absent.
+		current = strings.TrimSuffix(current, ":meeting2:none")
+	}
 	if event.InstanceKind != "cache_instance" || !event.MirrorMeetingToGoogle || event.SourceConferenceComplete || calendar.MirrorMeetingURL(event.Conference) != "" {
 		return current
 	}
-	parts := strings.Split(prior, ":meeting:")
-	if len(parts) != 2 || len(parts[0]) != 64 || len(parts[1]) != 64 {
-		return current
+	if parts := strings.Split(prior, ":meeting2:"); len(parts) == 2 && len(parts[0]) == 64 && parts[1] == "none" {
+		if _, err := hex.DecodeString(parts[0]); err == nil {
+			return current + ":meeting2:none"
+		}
 	}
-	if _, err := hex.DecodeString(parts[0]); err != nil {
-		return current
+	for _, marker := range []string{":meeting2:", ":meeting:"} {
+		parts := strings.Split(prior, marker)
+		if len(parts) != 2 || len(parts[0]) != 64 || len(parts[1]) != 64 {
+			continue
+		}
+		if _, err := hex.DecodeString(parts[0]); err != nil {
+			continue
+		}
+		if _, err := hex.DecodeString(parts[1]); err != nil {
+			continue
+		}
+		return current + marker + parts[1]
 	}
-	if _, err := hex.DecodeString(parts[1]); err != nil {
-		return current
-	}
-	return current + ":meeting:" + parts[1]
+	return current
 }

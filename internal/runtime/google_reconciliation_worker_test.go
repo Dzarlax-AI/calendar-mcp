@@ -172,6 +172,13 @@ func TestGoogleWorkerUpdateNoDispatchAndUnknown(t *testing.T) {
 			for _, method := range methods {
 				if strings.HasPrefix(method, "PUT ") {
 					putCount++
+					wantID := "copy"
+					if scenario == "prior-success" {
+						wantID = "copy-a"
+					}
+					if method != "PUT /calendar/v3/calendars/target/events/"+wantID {
+						t.Fatalf("unexpected update target: %s", method)
+					}
 				}
 			}
 			wantPut := 1
