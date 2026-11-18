@@ -313,6 +313,9 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 	}()
 	var result syncengine.Result
 	var reserved, dispatched bool
+	dispatchAttempts := 0
+	observeDispatch := func() { dispatchAttempts++; dispatched = true }
+	observeNoDispatch := func() { dispatchAttempts--; dispatched = dispatchAttempts > 0 }
 	operationID := uuid.NewString()
 	if !run.DryRun {
 		sum := sha256.Sum256([]byte("sync-run:" + run.ID))
@@ -352,7 +355,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 				providers, err = factory.Build(syncCtx)
 			}
 			if err == nil {
-				engine := syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true })
+				engine := syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(observeDispatch).WithNoDispatchObserver(observeNoDispatch)
 				result, err = engine.RunCacheCopy(syncCtx, store, rule, time.Now().UTC(), 15*time.Minute)
 			} else {
 				err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
@@ -362,7 +365,7 @@ func executeJob(ctx context.Context, store *storage.Store, factory providerBuild
 		var providers []calendar.Provider
 		providers, err = factory.Build(syncCtx)
 		if err == nil {
-			result, err = syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(func() { dispatched = true }).Run(syncCtx, rule, run.DryRun)
+			result, err = syncengine.New(workerCalendarRegistry(providers, factory, store), store).WithDispatchFence(newJobDispatchFence(store, job)).WithDispatchObserver(observeDispatch).WithNoDispatchObserver(observeNoDispatch).Run(syncCtx, rule, run.DryRun)
 		} else if !errors.Is(err, storage.ErrProjectionSnapshotUnavailable) {
 			err = &syncengine.Failure{Stage: "provider_setup", Cause: err}
 		}

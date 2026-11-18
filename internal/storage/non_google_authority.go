@@ -75,7 +75,10 @@ func (s *Store) CompleteNonGoogleAuthorization(ctx context.Context, snapshot Cre
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET status='pending',next_sync_at=?,last_error_code=NULL,updated_at=? WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=? AND can_read=? AND enabled=TRUE) AND status='parked' AND (lease_until IS NULL OR lease_until<=?)`)), now, now, snapshot.ConnectionID, true, now); err != nil {
+	if _, err = tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state SET status='pending',next_sync_at=?,last_error_code=NULL,updated_at=?,
+		cursor=CASE WHEN last_error_code='permission' THEN '' ELSE cursor END,
+		last_success_at=CASE WHEN last_error_code IN ('auth','permission') THEN NULL ELSE last_success_at END
+		WHERE calendar_id IN (SELECT id FROM calendars WHERE connection_id=? AND can_read=? AND enabled=TRUE) AND status='parked' AND (lease_until IS NULL OR lease_until<=?)`)), now, now, snapshot.ConnectionID, true, now); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -155,7 +155,7 @@ func TestCachedEventsActualSDKCallerSessionAndFreshRights(t *testing.T) {
 	if page.Items[0].EventID != "event-1" {
 		t.Fatal("same accepted key could not continue in another session")
 	}
-	legacy := newCachedSDKClient(t, srv.URL+"/mcp", "legacy")
+	legacy := newCachedSDKClient(t, srv.URL+"/mcp/modern", "legacy")
 	if got := cachedSDKCall(t, legacy, request, first.NextPageToken); !got.IsError {
 		t.Fatal("cursor transferred between accepted credentials")
 	}
@@ -202,6 +202,7 @@ func TestCachedEventsActualSDKRegistrationPrerequisites(t *testing.T) {
 		{"modern", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/modern", 13},
 		{"compat", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/compat", 16},
 		{"default_compat", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp", 16},
+		{"default_modern", Options{EnableV2: true, EventReadModelEnabled: true, CatalogMode: CatalogModern, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp", 12},
 		{"no_read_model", Options{EnableV2: true, CachedEvents: reader}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},
 		{"no_dependency", Options{EnableV2: true, EventReadModelEnabled: true}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},
 		{"uninitialized_dependency", Options{EnableV2: true, EventReadModelEnabled: true, CachedEvents: &cachedpages.Service{}}, auth.Options{APIKey: "primary"}, "/mcp/modern", 12},

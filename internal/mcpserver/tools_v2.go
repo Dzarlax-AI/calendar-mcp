@@ -179,31 +179,33 @@ func registerToolsV2(s *server.MCPServer, app *application.Service, names map[st
 		return v2Result(capabilities), nil
 	})
 
-	s.AddTool(mcp.NewTool(names[toolGetEvents],
-		mcp.WithDescription("List events with explicit recurrence view, pagination metadata, and per-source completeness."),
-		mcp.WithInputSchema[listEventsV2Args](),
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var args listEventsV2Args
-		if err := req.BindArguments(&args); err != nil {
-			return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, err.Error())), nil
-		}
-		start, err := time.Parse(time.RFC3339, args.Start)
-		if err != nil {
-			return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid start: "+err.Error())), nil
-		}
-		end, err := time.Parse(time.RFC3339, args.End)
-		if err != nil {
-			return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid end: "+err.Error())), nil
-		}
-		page, err := app.ListEvents(ctx, calendar.ListEventsRequestV2{
-			CalendarID: args.CalendarID, Start: start, End: end, View: args.View,
-			ShowDeleted: args.ShowDeleted, PageToken: args.PageToken, MaxResults: args.MaxResults,
+	if name, ok := names[toolGetEvents]; ok {
+		s.AddTool(mcp.NewTool(name,
+			mcp.WithDescription("List events with explicit recurrence view, pagination metadata, and per-source completeness."),
+			mcp.WithInputSchema[listEventsV2Args](),
+		), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args listEventsV2Args
+			if err := req.BindArguments(&args); err != nil {
+				return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, err.Error())), nil
+			}
+			start, err := time.Parse(time.RFC3339, args.Start)
+			if err != nil {
+				return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid start: "+err.Error())), nil
+			}
+			end, err := time.Parse(time.RFC3339, args.End)
+			if err != nil {
+				return v2Error(calendar.NewAPIError(calendar.ErrorInvalidArgument, "invalid end: "+err.Error())), nil
+			}
+			page, err := app.ListEvents(ctx, calendar.ListEventsRequestV2{
+				CalendarID: args.CalendarID, Start: start, End: end, View: args.View,
+				ShowDeleted: args.ShowDeleted, PageToken: args.PageToken, MaxResults: args.MaxResults,
+			})
+			if err != nil {
+				return v2Error(err), nil
+			}
+			return v2Result(page), nil
 		})
-		if err != nil {
-			return v2Error(err), nil
-		}
-		return v2Result(page), nil
-	})
+	}
 
 	s.AddTool(mcp.NewTool(names[toolGetEvent],
 		mcp.WithDescription("Get one event by its provider-prefixed calendar and event IDs."),

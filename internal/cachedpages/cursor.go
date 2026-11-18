@@ -48,6 +48,9 @@ func (c *Codec) Encode(position Position, binding [32]byte, expiry time.Time) (s
 	if position.AllDay {
 		plain[1] = 1
 	}
+	if position.Partial {
+		plain[1] |= 2
+	}
 	binary.BigEndian.PutUint64(plain[2:10], uint64(expiry.Unix()))
 	binary.BigEndian.PutUint32(plain[10:14], uint32(expiry.Nanosecond()))
 	for _, field := range fields {
@@ -121,7 +124,7 @@ func validatePosition(position Position) error {
 }
 
 func decodeCursorPlaintext(plain []byte) (Position, time.Time, error) {
-	if len(plain) < 22 || plain[0] != 1 || plain[1] > 1 {
+	if len(plain) < 22 || plain[0] != 1 || plain[1] > 3 {
 		return Position{}, time.Time{}, errInvalidCursor
 	}
 	seconds := int64(binary.BigEndian.Uint64(plain[2:10]))
@@ -130,7 +133,7 @@ func decodeCursorPlaintext(plain []byte) (Position, time.Time, error) {
 		return Position{}, time.Time{}, errInvalidCursor
 	}
 	expiry := time.Unix(seconds, int64(nanos)).UTC()
-	position := Position{AllDay: plain[1] == 1}
+	position := Position{AllDay: plain[1]&1 != 0, Partial: plain[1]&2 != 0}
 	fields := []*string{&position.StartAt, &position.StartDate, &position.EventID, &position.CalendarID}
 	offset := 14
 	for i, field := range fields {

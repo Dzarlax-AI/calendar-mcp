@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"strings"
 	"time"
 
 	"calendar-mcp/internal/calendar"
@@ -85,6 +87,7 @@ type Engine struct {
 	now           func() time.Time
 	dispatchFence DispatchFence
 	onDispatch    func()
+	onNoDispatch  func()
 }
 
 func (e *Engine) WithDispatchFence(f DispatchFence) *Engine { e.dispatchFence = f; return e }
@@ -92,6 +95,10 @@ func (e *Engine) WithDispatchFence(f DispatchFence) *Engine { e.dispatchFence = 
 // WithDispatchObserver runs immediately before each provider mutation. It is
 // used to keep a durable run reservation parked after an uncertain outcome.
 func (e *Engine) WithDispatchObserver(fn func()) *Engine { e.onDispatch = fn; return e }
+
+// WithNoDispatchObserver is called only after a confirmed no-dispatch update
+// has had its previous mapping restored under the job lease.
+func (e *Engine) WithNoDispatchObserver(fn func()) *Engine { e.onNoDispatch = fn; return e }
 
 var ErrUnsafeTargetAttendees = errors.New("target provider cannot guarantee attendee-free synchronization")
 
@@ -196,7 +203,10 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 	stage := "rule_validation"
 	defer func() {
 		if runErr != nil {
-			runErr = &Failure{Stage: stage, Cause: runErr}
+			var failure *Failure
+			if !errors.As(runErr, &failure) || (failure.Stage != "target_pre_dispatch" && failure.Stage != "target_pre_dispatch_unreconciled") {
+				runErr = &Failure{Stage: stage, Cause: runErr}
+			}
 		}
 	}()
 	if err := storage.ValidateRule(rule); err != nil {
@@ -248,6 +258,14 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 		}
 	} else {
 		events = append([]calendar.EventV2(nil), (*cachedEvents)...)
+		if targetProvider.Name() == "google" {
+			for i := range events {
+				events[i].MirrorMeetingToGoogle = true
+				if calendar.HasMirrorMeetingMarker(mirrorDescription(events[i])) {
+					return Result{}, calendar.ErrMeetingMarkerAmbiguous
+				}
+			}
+		}
 	}
 	stage = "mappings"
 	existing, err := e.mappings.ListMappings(ctx, rule.ID)
@@ -415,7 +433,7 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 			// The placeholder identifies local intent, never a provider object.
 			mapped = false
 		}
-		hash := hashEvent(event)
+		hash := hashEventForMapping(event, mapping.ContentHash)
 		if isSeriesException(event) {
 			seriesMapping, seriesMapped := findSeriesMapping(byKey, event.RecurringEventID)
 			if !seriesMapped {
@@ -636,7 +654,7 @@ func (e *Engine) run(ctx context.Context, rule storage.Rule, dryRun bool, cached
 		}
 		outcome, err := target.UpdateEventV2(ctx, calendar.UpdateEventRequestV2{Ref: calendar.EventRef{CalendarID: targetCalendarID, EventID: mapping.TargetEventID}, Patch: mirrorPatch(event), Scope: scopeFor(event), Notifications: calendar.NotificationsNone, ExpectedETag: etag, ExpectedSyncMarker: marker})
 		if err != nil {
-			return result, fmt.Errorf("update target event: %w", err)
+			return result, e.reconcileNoDispatchUpdate(ctx, mapping, pending, err)
 		}
 		mapping.ContentHash, mapping.LastSeenAt = hash, now
 		if err := e.completeMappingMutation(ctx, pending, mapping, outcome); err != nil {
@@ -706,7 +724,7 @@ func preflightSafeRecurrence(events []calendar.EventV2, byKey map[string]storage
 		if mapped && mapping.ReconciliationState == "pending_create" && event.Status != "cancelled" {
 			mapped = false
 		}
-		writes := (!mapped && event.Status != "cancelled") || (mapped && (event.Status == "cancelled" || mapping.ContentHash != hashEvent(event)))
+		writes := (!mapped && event.Status != "cancelled") || (mapped && (event.Status == "cancelled" || mapping.ContentHash != hashEventForMapping(event, mapping.ContentHash)))
 		if isSeriesException(event) {
 			writes = true
 		}
@@ -873,6 +891,14 @@ func listAll(ctx context.Context, provider calendar.EventProviderV2, request cal
 
 func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) calendar.EventCreateV2 {
 	created := calendar.EventCreateV2{ICalUID: event.ICalUID, Title: event.Title, Description: mirrorDescription(event), Location: event.Location, Start: event.Start, End: event.End, Recurrence: append([]string(nil), event.Recurrence...), Transparency: event.Transparency, Visibility: event.Visibility, SyncMarker: &calendar.SyncMarker{RuleID: ruleID, SourceEventID: event.ID}}
+	if targetProvider == "google" && event.InstanceKind == "cache_instance" {
+		link := calendar.MirrorMeetingURL(event.Conference)
+		if link != "" && !calendar.HasMirrorMeetingMarker(created.Description) && !strings.Contains(html.UnescapeString(event.Description), link) && !strings.Contains(html.UnescapeString(event.Location), link) {
+			if description, err := calendar.MergeMirrorMeeting(created.Description, link); err == nil {
+				created.Description = description
+			}
+		}
+	}
 	if event.InstanceKind == calendar.OrphanOccurrence {
 		// A recurrence UID is shared by all source instances. Detached copies
 		// need distinct, stable UIDs, particularly for UID-addressed CalDAV.
@@ -892,6 +918,14 @@ func mirrorCreate(ruleID string, event calendar.EventV2, targetProvider string) 
 
 func mirrorPatch(event calendar.EventV2) calendar.EventPatchV2 {
 	patch := calendar.EventPatchV2{Title: present(event.Title), Location: present(event.Location), Start: present(event.Start), End: present(event.End), Transparency: present(event.Transparency), Visibility: present(event.Visibility)}
+	if event.InstanceKind == "cache_instance" && event.MirrorMeetingToGoogle {
+		link := calendar.MirrorMeetingURL(event.Conference)
+		known := link != "" || event.SourceConferenceComplete
+		if link != "" && strings.Contains(html.UnescapeString(event.Location), link) {
+			link = ""
+		}
+		patch.MirrorMeeting = &calendar.MirrorMeetingUpdate{URL: link, Known: known}
+	}
 	// Unknown source participants must not erase previously mirrored context.
 	if event.SourceAttendeesComplete {
 		patch.Description = present(mirrorDescription(event))
@@ -970,5 +1004,33 @@ func hashEvent(event calendar.EventV2) string {
 		data = append([]byte("incomplete-participants:"), data...)
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	base := hex.EncodeToString(sum[:])
+	if event.InstanceKind == "cache_instance" && event.MirrorMeetingToGoogle {
+		if link := calendar.MirrorMeetingURL(event.Conference); link != "" {
+			digest := sha256.Sum256([]byte(link))
+			return base + ":meeting:" + hex.EncodeToString(digest[:])
+		}
+	}
+	return base
+}
+
+// Preserve the last known meeting digest while source conference details are
+// unavailable. Existing hashes without a suffix remain unchanged, preventing
+// a bulk pass over legacy mappings. No URL is persisted in this hash.
+func hashEventForMapping(event calendar.EventV2, prior string) string {
+	current := hashEvent(event)
+	if event.InstanceKind != "cache_instance" || !event.MirrorMeetingToGoogle || event.SourceConferenceComplete || calendar.MirrorMeetingURL(event.Conference) != "" {
+		return current
+	}
+	parts := strings.Split(prior, ":meeting:")
+	if len(parts) != 2 || len(parts[0]) != 64 || len(parts[1]) != 64 {
+		return current
+	}
+	if _, err := hex.DecodeString(parts[0]); err != nil {
+		return current
+	}
+	if _, err := hex.DecodeString(parts[1]); err != nil {
+		return current
+	}
+	return current + ":meeting:" + parts[1]
 }

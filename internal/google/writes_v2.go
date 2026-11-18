@@ -118,6 +118,25 @@ func (p *Provider) UpdateEventV2(ctx context.Context, request calendar.UpdateEve
 		}
 		request.ExpectedETag = etag
 	}
+	if request.Patch.MirrorMeeting != nil {
+		if !request.RequireNoAttendees || request.ExpectedSyncMarker == nil || request.Notifications != calendar.NotificationsNone {
+			return nil, calendar.DefinitiveNoDispatch(unsupportedGoogle("managed meeting update requires safe sync ownership"))
+		}
+		meeting := request.Patch.MirrorMeeting
+		if (meeting.Known && meeting.URL != "") || calendar.HasMirrorMeetingMarker(existing.Description) {
+			merged := existing.Description
+			if meeting.Known {
+				var mergeErr error
+				merged, mergeErr = calendar.MergeMirrorMeeting(existing.Description, meeting.URL)
+				if mergeErr != nil {
+					return nil, calendar.DefinitiveNoDispatch(mergeErr)
+				}
+			} else if _, mergeErr := calendar.MergeMirrorMeeting(existing.Description, ""); mergeErr != nil {
+				return nil, calendar.DefinitiveNoDispatch(mergeErr)
+			}
+			request.Patch.Description = calendar.PatchField[string]{Present: true, Value: merged}
+		}
+	}
 	if err := validateGooglePatchForEventType(existing, request.Patch); err != nil {
 		return nil, calendar.DefinitiveNoDispatch(invalidGoogleArgument(err))
 	}

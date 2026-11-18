@@ -61,7 +61,7 @@ func (s *Store) ReadCachedPage(ctx context.Context, req CachedPageRequest, after
 	if err := validateCachedPageRequest(req); err != nil {
 		return page, err
 	}
-	if after != nil {
+	if after != nil && !req.WithCoverage {
 		if err := validateCachedPagePosition(req, *after); err != nil {
 			return page, err
 		}
@@ -70,7 +70,8 @@ func (s *Store) ReadCachedPage(ctx context.Context, req CachedPageRequest, after
 	page.Sources = []CachedPageSource{}
 	page.Tickets = []AuthorityTicket{}
 	page.ObservedAt = time.Now().UTC()
-	if len(req.CalendarIDs) == 0 {
+	page.WithCoverage = req.WithCoverage
+	if len(req.CalendarIDs) == 0 && !req.WithCoverage {
 		return page, nil
 	}
 	poolStart := time.Now()
@@ -88,14 +89,32 @@ func (s *Store) ReadCachedPage(ctx context.Context, req CachedPageRequest, after
 	}
 	defer tx.Rollback()
 	phaseStart = time.Now()
-	page.Sources, page.Tickets, _, err = cachedPageMetadata(ctx, s, tx, req, page.ObservedAt)
+	if req.WithCoverage {
+		page.Sources, page.Grants, err = s.cachedPageCoverage(ctx, tx, req, page.ObservedAt)
+		req.CalendarIDs = make([]string, 0, len(page.Grants))
+		for i, grant := range page.Grants {
+			if grant.Read {
+				req.CalendarIDs = append(req.CalendarIDs, grant.CalendarID)
+			}
+			page.Partial = page.Partial || page.Sources[i].Coverage != "covered"
+		}
+	} else {
+		page.Sources, page.Tickets, _, err = cachedPageMetadata(ctx, s, tx, req, page.ObservedAt)
+	}
 	page.Stats.SQLMetadataNS = time.Since(phaseStart).Nanoseconds()
 	if err != nil {
 		return page, err
 	}
-	page.Rows, page.Stats.SQLEventsNS, page.Stats.DecodeNS, page.Stats.RowsDecoded, page.Stats.PayloadBytes, page.Stats.MaxPayloadBytes, err = queryCachedPageEvents(ctx, s, tx, req, after)
-	if err != nil {
-		return page, err
+	if req.WithCoverage && after != nil {
+		if err := validateCachedPagePosition(req, *after); err != nil {
+			return page, ErrCachedPageUnavailable
+		}
+	}
+	if len(req.CalendarIDs) != 0 {
+		page.Rows, page.Stats.SQLEventsNS, page.Stats.DecodeNS, page.Stats.RowsDecoded, page.Stats.PayloadBytes, page.Stats.MaxPayloadBytes, err = queryCachedPageEvents(ctx, s, tx, req, after)
+		if err != nil {
+			return page, err
+		}
 	}
 	phaseStart = time.Now()
 	if err := tx.Commit(); err != nil {
@@ -135,7 +154,7 @@ func validateCachedPageRequest(req CachedPageRequest) error {
 		seen[id] = struct{}{}
 		provider, rest, ok := strings.Cut(id, ":")
 		connectionID, providerID, found := strings.Cut(rest, ":")
-		if !ok || !found || provider != "google" || connectionID == "" || providerID == "" {
+		if !ok || !found || (provider != "google" && !(req.WithCoverage && IsCachedPageProvider(provider))) || connectionID == "" || providerID == "" {
 			return ErrCachedPageUnavailable
 		}
 	}
@@ -347,6 +366,17 @@ FROM %s ORDER BY start_at IS NULL,start_at,CASE WHEN start_at IS NULL THEN start
 	return suffix
 }
 
+func cachedPageDateRange(req CachedPageRequest) (string, string) {
+	if req.WithCoverage {
+		return req.StartDate, req.EndDate
+	}
+	end := req.End.UTC()
+	if end != end.Truncate(24*time.Hour) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return req.Start.UTC().Format(calendar.DateLayout), end.Format(calendar.DateLayout)
+}
+
 func cachedPageEventsFallbackQuery(s *Store, req CachedPageRequest, after *CachedPagePosition) (string, []any, error) {
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(req.CalendarIDs)), ",")
 	args := make([]any, 0, 64)
@@ -354,10 +384,7 @@ func cachedPageEventsFallbackQuery(s *Store, req CachedPageRequest, after *Cache
 		args = append(args, id)
 	}
 	args = append(args, true, "connected", false)
-	allDayEnd := req.End.UTC()
-	if allDayEnd.Hour() != 0 || allDayEnd.Minute() != 0 || allDayEnd.Second() != 0 || allDayEnd.Nanosecond() != 0 {
-		allDayEnd = allDayEnd.AddDate(0, 0, 1)
-	}
+	startDate, endDate := cachedPageDateRange(req)
 	overlap := `((e.start_at IS NOT NULL AND e.start_at<? AND e.end_at>?) OR (e.start_at IS NULL AND e.start_date IS NOT NULL AND e.start_date<? AND e.end_date>?))`
 	if s.dialect == DialectSQLite {
 		overlap = fmt.Sprintf(`e.rowid IN (SELECT rowid FROM cached_events WHERE calendar_id IN (%s) AND deleted=? AND start_at IS NOT NULL AND start_at<? AND end_at>? UNION SELECT rowid FROM cached_events WHERE calendar_id IN (%s) AND deleted=? AND start_date IS NOT NULL AND start_date<? AND end_date>?)`, placeholders, placeholders)
@@ -368,14 +395,14 @@ func cachedPageEventsFallbackQuery(s *Store, req CachedPageRequest, after *Cache
 		for _, id := range req.CalendarIDs {
 			args = append(args, id)
 		}
-		args = append(args, false, allDayEnd.Format(calendar.DateLayout), req.Start.UTC().Format(calendar.DateLayout))
+		args = append(args, false, endDate, startDate)
 		// The UNION date arm must remain eligible for the existing covering
 		// index. Recheck timed overlap on the outer row before LIMIT so a timed
 		// event with a stray date cannot qualify through that arm.
 		overlap += ` AND (e.start_at IS NULL OR (e.start_at<? AND e.end_at>?))`
 		args = append(args, req.End, req.Start)
 	} else {
-		args = append(args, req.End, req.Start, allDayEnd.Format(calendar.DateLayout), req.Start.UTC().Format(calendar.DateLayout))
+		args = append(args, req.End, req.Start, endDate, startDate)
 	}
 	scalarOK, projection, summarySize := cachedPageProjection(s)
 	master := "CASE WHEN json_valid(e.payload_json) THEN json_extract(e.payload_json, '$.instance_kind') ELSE '' END"
@@ -437,10 +464,7 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 	var args []any
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(req.CalendarIDs)), ",")
 	limit := req.PageSize + 1
-	allDayEnd := req.End.UTC()
-	if allDayEnd.Hour() != 0 || allDayEnd.Minute() != 0 || allDayEnd.Second() != 0 || allDayEnd.Nanosecond() != 0 {
-		allDayEnd = allDayEnd.AddDate(0, 0, 1)
-	}
+	startDate, endDate := cachedPageDateRange(req)
 	args = nil
 	var ctes, branches []string
 	for _, day := range []bool{false, true} {
@@ -457,7 +481,7 @@ func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePos
 		}
 		if day {
 			q += ` AND r.start_date IS NOT NULL AND r.start_date<? AND r.end_date>? AND e.start_at IS NULL`
-			args = append(args, allDayEnd.Format(calendar.DateLayout), req.Start.UTC().Format(calendar.DateLayout))
+			args = append(args, endDate, startDate)
 			if after != nil && after.AllDay {
 				q += ` AND r.start_date>=? AND (e.start_date>? OR (e.start_date=? AND (e.event_id>? OR (e.event_id=? AND e.calendar_id>?))))`
 				args = append(args, after.StartDate, after.StartDate, after.StartDate, after.EventID, after.EventID, after.CalendarID)

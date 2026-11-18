@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"calendar-mcp/internal/calendar"
@@ -168,5 +169,22 @@ func TestProjectionSnapshotPublicJSONOmitsCursorAndPayload(t *testing.T) {
 		if bytes.Contains(lower, []byte("cursor")) || bytes.Contains(lower, []byte("payload")) || bytes.Contains(raw, []byte(privateCursor)) || bytes.Contains(raw, []byte(base64.StdEncoding.EncodeToString(privatePayload))) {
 			t.Fatal("private cursor or payload leaked into JSON")
 		}
+	}
+}
+
+func TestProjectionConferenceEvidenceRoundTripAndLegacy(t *testing.T) {
+	event := calendar.EventV2{ID: "event", CalendarID: "source", SourceConferenceComplete: true, Conference: &calendar.ConferenceData{EntryPoints: []calendar.ConferenceEntryPoint{{Type: "video", URI: "https://meet.google.com/abc-defg-hij?authuser=1"}}}}
+	data, err := encodeProjectionSnapshotPayload([]calendar.EventV2{event}, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeProjectionSnapshotPayload(data, "source")
+	if err != nil || len(got) != 1 || !got[0].SourceConferenceComplete || got[0].Conference == nil || got[0].Conference.EntryPoints[0].URI != event.Conference.EntryPoints[0].URI {
+		t.Fatal("conference evidence or link lost")
+	}
+	legacy := []byte(strings.Replace(string(data), `,"conference_complete":true`, "", 1))
+	got, err = decodeProjectionSnapshotPayload(legacy, "source")
+	if err != nil || got[0].SourceConferenceComplete {
+		t.Fatal("legacy conference evidence must remain unknown")
 	}
 }

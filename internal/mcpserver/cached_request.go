@@ -58,6 +58,10 @@ func cachedArgumentsJSON(ctx context.Context, request mcp.CallToolRequest) ([]by
 var errCachedArguments = errors.New("invalid cached event arguments")
 
 func parseCachedArguments(raw []byte) (storage.CachedPageRequest, string, error) {
+	return parseCachedArgumentsForCatalog(raw, false)
+}
+
+func parseCachedArgumentsForCatalog(raw []byte, optionalScope bool) (storage.CachedPageRequest, string, error) {
 	var req storage.CachedPageRequest
 	if !utf8.Valid(raw) {
 		return req, "", errCachedArguments
@@ -94,8 +98,10 @@ func parseCachedArguments(raw []byte) (storage.CachedPageRequest, string, error)
 	if _, err = decoder.Token(); err != io.EOF {
 		return req, "", errCachedArguments
 	}
-	if err = json.Unmarshal(fields["calendar_ids"], &req.CalendarIDs); err != nil {
-		return req, "", errCachedArguments
+	if ids, supplied := fields["calendar_ids"]; supplied || !optionalScope {
+		if err = json.Unmarshal(ids, &req.CalendarIDs); err != nil {
+			return req, "", errCachedArguments
+		}
 	}
 	for name, target := range map[string]*time.Time{"start": &req.Start, "end": &req.End} {
 		var value string

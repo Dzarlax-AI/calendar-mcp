@@ -29,6 +29,13 @@ func DefinitiveNoDispatch(err error) error {
 	return &noDispatchError{err: err}
 }
 
+// IsDefinitiveNoDispatch recognizes only the direct operation marker, not a
+// marker hidden inside a composite or wrapped error.
+func IsDefinitiveNoDispatch(err error) bool {
+	_, ok := err.(*noDispatchError)
+	return ok
+}
+
 // MaskNoDispatch prevents a child operation's marker from asserting anything
 // about earlier writes in a composite operation.
 func MaskNoDispatch(err error) error {

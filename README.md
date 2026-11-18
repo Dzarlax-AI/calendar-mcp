@@ -296,10 +296,18 @@ MCP uses Streamable HTTP. Each connection selects one catalog:
 | Service path (with or without trailing slash) | Catalog |
 |---|---|
 | `/mcp` | Selected by `MCP_CATALOG_MODE`; defaults to `compat` |
-| `/mcp/modern` | One modern tool set, requires `ENABLE_V2=true` |
+| `/mcp/modern` | Modern lifecycle tools, requires `ENABLE_V2=true` |
 | `/mcp/compat` | Original catalog, including the original V2 names when enabled |
 
 Set `MCP_CATALOG_MODE=modern` only when clients using `/mcp` have migrated to the modern schemas; it requires `ENABLE_V2=true`. An unset or empty mode preserves compatibility. Invalid modes fail startup. With V2 disabled, `/mcp/modern` returns 404 after authentication. Unknown MCP subpaths do not select a catalog. All paths use the existing API-key middleware and request body limit. These are service paths; check reverse-proxy rewrites before using them as external URLs. The UI connection link remains `/mcp` and follows its configured mode. REST and native API contracts are unchanged.
+
+### Cached listing on the main endpoint
+
+With `MCP_CATALOG_MODE=modern` and a ready event read model, `/mcp` exposes the cached `get_events` contract. It uses the existing V2, platform store, cipher, and primary API key prerequisites. The explicit `/mcp/modern` and `/mcp/compat` paths retain their previous contracts. Refresh the Gateway schema for its existing upstream before switching a deployed Calendar build.
+
+`get_events` requires RFC3339 `start` and `end`. Omit `calendar_ids` for the enabled readable platform selection, or pass up to 16 unique canonical IDs. `page_size` defaults to 25 and caps each page at 50 before enforcing the 16 KiB SDK result budget. Continue with the same arguments and the opaque `next_page_token`. Timed events sort first by start, followed by all-day events by date. The date filter uses the requested offsets for all-day boundaries. The cache can change between pages.
+
+The response describes coverage and freshness per source. A known source parked on permission contributes status and no events. A terminal page is complete only when every selected range is covered and the traversal has no known omissions. `get_event` uses the existing detail path for full descriptions and checks after mutations.
 
 ### Modern catalog
 

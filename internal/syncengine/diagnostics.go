@@ -13,6 +13,9 @@ import (
 
 // FailureCode returns a finite code. Provider text and identifiers are never persisted.
 func FailureCode(err error) string {
+	if errors.Is(err, calendar.ErrMeetingMarkerAmbiguous) {
+		return "sync_meeting_marker_ambiguous"
+	}
 	if errors.Is(err, storage.ErrExclusiveDispatchConflict) {
 		return "sync_dispatch_blocked"
 	}
@@ -21,6 +24,15 @@ func FailureCode(err error) string {
 	}
 	if errors.Is(err, errJobLeaseStage) {
 		return "sync_job_lease"
+	}
+	var stageFailure *Failure
+	if errors.As(err, &stageFailure) {
+		if stageFailure.Stage == "target_pre_dispatch" {
+			return "sync_target_pre_dispatch"
+		}
+		if stageFailure.Stage == "target_pre_dispatch_unreconciled" {
+			return "sync_target_pre_dispatch_unreconciled"
+		}
 	}
 	var recurrence *RecurrenceCompatibilityError
 	if errors.As(err, &recurrence) {
@@ -116,6 +128,12 @@ func FailureCode(err error) string {
 // FailureMessage accepts only known codes; it never renders stored provider text.
 func FailureMessage(code string) string {
 	switch code {
+	case "sync_meeting_marker_ambiguous":
+		return "The meeting link marker is ambiguous; the event was left unchanged."
+	case "sync_target_pre_dispatch_unreconciled":
+		return "The target update failed before the provider mutation request, but the mapping could not be restored and requires review."
+	case "sync_target_pre_dispatch":
+		return "The target update failed before the provider mutation request. The previous mapping was restored."
 	case "sync_dispatch_blocked":
 		return "Synchronization is blocked by an existing dispatch reservation. Check its status before retrying."
 	case "sync_cache_unavailable":
