@@ -25,21 +25,7 @@ func (f *Factory) attachGoogleRoleObserver(p *google.Provider, id string) {
 			return nil, err
 		}
 		return func(ctx context.Context, operation string, status int, reason, revision string, digest [32]byte) error {
-			reasons := strings.Split(strings.ToLower(reason), ",")
-			knownQuota := func(value string) bool {
-				switch value {
-				case "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded", "dailylimitexceeded", "calendarusagelimitsexceeded":
-					return true
-				}
-				return false
-			}
-			allQuota := reason != ""
-			for _, value := range reasons {
-				if !knownQuota(value) {
-					allQuota = false
-				}
-			}
-			if allQuota {
+			if googleQuotaDenial(reason) {
 				return nil
 			}
 			if status == 401 {
@@ -56,8 +42,8 @@ func (f *Factory) attachGoogleRoleObserver(p *google.Provider, id string) {
 			}
 			if status == 403 && operation == "mutation" && reason != "" {
 				allWriteOnly := true
-				for _, value := range reasons {
-					if value != "forbiddenfornonorganizer" && !knownQuota(value) {
+				for _, value := range strings.Split(strings.ToLower(reason), ",") {
+					if value != "forbiddenfornonorganizer" && !googleQuotaReason(value) {
 						allWriteOnly = false
 					}
 				}
@@ -124,4 +110,25 @@ func (f *Factory) attachGoogleRoleObserver(p *google.Provider, id string) {
 		}, nil
 	})
 
+}
+
+func googleQuotaDenial(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	for _, value := range strings.Split(strings.ToLower(reason), ",") {
+		if !googleQuotaReason(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func googleQuotaReason(reason string) bool {
+	switch reason {
+	case "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded", "dailylimitexceeded", "calendarusagelimitsexceeded":
+		return true
+	default:
+		return false
+	}
 }

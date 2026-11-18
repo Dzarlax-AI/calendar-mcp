@@ -353,10 +353,11 @@ func TestGatewayWritePointHonorsGooglePermissionPark(t *testing.T) {
 	id := calendar.AccountCalendarID("google", account, "cal")
 	must(db.CreateConnection(ctx, Connection{ID: account, Provider: "google", Status: "connected", EncryptedCredentials: []byte("fixture"),
 		CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}))
+	receipt := seedOrdinaryGoogleReceipt(t, db, account, id, "cal", now, false)
 	lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, now, time.Minute)
 	must(err)
 	proof := GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "google"},
-		Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "google"}, Class: GatewayPrivateAccess, GoogleRole: "owner"}
+		Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "google"}, Class: GatewayPrivateAccess, GoogleRole: "owner", DetailReceipt: receipt}
 	must(db.PublishGatewayAuthority(ctx, lease, []GatewayCalendarProof{proof}, now))
 	scope := calendar.GatewayWriteScope{Kind: "create", CalendarID: id}
 	reservation, err := db.BeginGatewayWrite(ctx, []string{id}, scope)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -134,5 +135,99 @@ func TestGoogleListClosesEveryDowngradeOnOnePage(t *testing.T) {
 	rows, err := store.ListCalendars(ctx, "account")
 	if err != nil || len(rows) != 2 || rows[0].CanRead || rows[1].CanRead || calls != 1 {
 		t.Fatalf("rows=%+v err=%v calls=%d", rows, err, calls)
+	}
+}
+
+func TestStrictGooglePublicationLeavesOrdinaryReadAuthorityIntact(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		status        int
+		body          string
+		missingMaster bool
+	}{
+		{"role changed", http.StatusOK, `{"accessRole":"reader","items":[]}`, false},
+		{"confirmed denial", http.StatusForbidden, `{"error":{"errors":[{"reason":"forbidden"}]}}`, false},
+		{"calendar missing", http.StatusNotFound, `{"error":{"errors":[{"reason":"notFound"}]}}`, false},
+		{"master missing", http.StatusNotFound, `{"error":{"errors":[{"reason":"notFound"}]}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC().Truncate(time.Millisecond)
+			must := func(err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "db"))
+			must(err)
+			defer store.Close()
+			must(store.Migrate(ctx))
+			cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)))
+			must(err)
+			service := connections.New(store, cipher)
+			must(service.CreateOAuth(ctx, "account", "google", "Google", &oauth2.Token{AccessToken: "synthetic", RefreshToken: "synthetic", Expiry: now.Add(time.Hour)}, nil))
+			snapshot, err := store.BeginAuthorization(ctx, "account", nil, now)
+			must(err)
+			const raw = "target"
+			id := calendar.AccountCalendarID("google", "account", raw)
+			must(store.CompleteGoogleAuthorization(ctx, snapshot, []storage.DiscoveredDetailCalendar{{
+				Calendar:   storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: raw, Name: "Fixture"},
+				AccessRole: "owner",
+			}}, now))
+			current, err := store.ListCalendars(ctx, "account")
+			must(err)
+			receipt := current[0].DetailReceipt
+			lease, err := store.ClaimGatewayAuthorityCheck(ctx, "account", now, time.Minute)
+			must(err)
+			must(store.PublishGatewayAuthority(ctx, lease, []storage.GatewayCalendarProof{{
+				Metadata:     calendar.Calendar{ID: id, Provider: "google"},
+				Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "google"},
+				Class:        storage.GatewayPrivateAccess, GoogleRole: "owner", DetailReceipt: receipt,
+			}}, now))
+			grant, err := store.GatewayCalendarGrant(ctx, id, now)
+			must(err)
+			original := http.DefaultTransport
+			defer func() { http.DefaultTransport = original }()
+			calls := 0
+			http.DefaultTransport = syntheticTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet {
+					t.Fatalf("publication dispatched %s", r.Method)
+				}
+				status, body := tc.status, tc.body
+				if tc.missingMaster && !strings.HasSuffix(r.URL.Path, "/master") {
+					status, body = http.StatusOK, `{"accessRole":"owner","items":[]}`
+					if r.URL.Query().Get("singleEvents") == "true" {
+						body = `{"accessRole":"owner","items":[{"id":"occurrence","recurringEventId":"master","status":"confirmed"}]}`
+					}
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			factory := NewFactory(&config.Config{GoogleClientID: "id", GoogleClientSecret: "secret"}, store, service)
+			p, providerID, err := factory.BuildGatewayGooglePublication(ctx, storage.GatewayPublicationTicket{Grant: grant})
+			must(err)
+			view := calendar.RecurrenceExpanded
+			if tc.missingMaster {
+				view = calendar.RecurrenceBoth
+			}
+			page, err := p.(interface {
+				ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error)
+			}).ListEventsV2(ctx, calendar.ListEventsRequestV2{CalendarID: providerID,
+				Start: now.Add(-time.Hour), End: now.Add(time.Hour), View: view})
+			_, grantErr := store.GatewayCalendarGrant(ctx, id, now)
+			if tc.missingMaster {
+				if err != nil || calls != 3 || grantErr != nil || len(page.Items) != 1 || page.Items[0].InstanceKind != calendar.OrphanOccurrence {
+					t.Fatalf("missing master interrupted snapshot: err=%v calls=%d grant=%v page=%+v", err, calls, grantErr, page)
+				}
+			} else if err == nil || calls != 1 || !errors.Is(grantErr, storage.ErrAuthorityChanged) {
+				t.Fatalf("strict probe did not close calendar grant: err=%v calls=%d grant=%v", err, calls, grantErr)
+			}
+			after, err := store.ListCalendars(ctx, "account")
+			must(err)
+			if len(after) != 1 || !after[0].CanRead || after[0].DetailReceipt != receipt {
+				t.Fatal("strict probe changed the ordinary Google receipt")
+			}
+		})
 	}
 }

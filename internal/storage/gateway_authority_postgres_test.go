@@ -27,3 +27,7 @@ func TestGatewayMicrosoftSeriesCoveragePostgres(t *testing.T) {
 func TestGatewayConfirmationChecksPostgresClock(t *testing.T) {
 	testGatewayConfirmationChecksDatabaseClock(t, newAuthorityPostgresStore(t, 29))
 }
+
+func TestGatewayPreparationFencePostgres(t *testing.T) {
+	testGatewayPreparationFence(t, newAuthorityPostgresStore(t, 29))
+}

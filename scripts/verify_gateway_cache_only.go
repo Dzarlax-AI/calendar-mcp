@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -377,6 +378,14 @@ func main() {
 			providers[name].events = append(providers[name].events, oversized)
 		}
 	}
+	if authorityAdapters {
+		// Simulate an Apple account carried forward from before migration 29.
+		legacy, err := sql.Open("sqlite", tmp+"/fixture.db")
+		require(err)
+		_, err = legacy.ExecContext(ctx, `UPDATE connections SET authorization_revision='' WHERE id='affected' AND provider='apple'`)
+		require(err)
+		require(legacy.Close())
+	}
 	checkAuthority := func(account string, at time.Time) {
 		lease, err := db.ClaimGatewayAuthorityCheck(ctx, account, at, time.Minute)
 		require(err)
@@ -430,7 +439,12 @@ func main() {
 		if authorityAdapters && name == "family" && getTime().After(now) {
 			reader = appleAdapter
 		}
-		require(eventsync.RefreshGatewayPublication(ctx, db, reader, raw, proofs[name].Metadata.ID, getTime))
+		ticket, err := db.CaptureGatewayPublication(ctx, proofs[name].Metadata.ID, getTime())
+		if errors.Is(err, storage.ErrAuthorityChanged) {
+			return
+		}
+		require(err)
+		require(eventsync.RefreshGatewayPublication(ctx, db, reader, raw, ticket, getTime))
 		provider.blocked.Store(true)
 	}
 	for _, fixture := range fixtures {

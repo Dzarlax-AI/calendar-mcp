@@ -57,7 +57,8 @@ func (s *Store) DueGatewayAuthorityChecks(ctx context.Context, now time.Time, li
 	}
 	rows, err := s.db.QueryContext(ctx, s.query(`SELECT c.id FROM connections c
 	LEFT JOIN gateway_account_checks g ON g.connection_id=c.id AND g.authorization_revision=c.authorization_revision
-	WHERE c.status='connected' AND c.authorization_revision<>'' AND
+	WHERE c.status='connected' AND (c.authorization_revision<>'' OR
+ (c.provider='apple' AND c.credential_version=1 AND credential_is_bounded)) AND
 	COALESCE(g.next_check_ms,0)<=? AND COALESCE(g.lease_until_ms,0)<=?
 	ORDER BY COALESCE(g.next_check_ms,0),c.id LIMIT ?`), now.UnixMilli(), now.UnixMilli(), limit)
 	if err != nil {
@@ -85,6 +86,13 @@ func (s *Store) ClaimGatewayAuthorityCheck(ctx context.Context, connectionID str
 	}
 	defer tx.Rollback()
 	lease := GatewayAuthorityLease{ConnectionID: connectionID, ID: uuid.NewString(), StartedAt: now}
+	// Assign a fence to a pre-migration Apple connection without reopening
+	// access or discarding the ordinary cache. The lease still needs live proof.
+	if _, err := tx.ExecContext(ctx, s.query(`UPDATE connections SET authorization_revision=?
+	WHERE id=? AND provider='apple' AND status='connected' AND authorization_revision=''
+	AND credential_version=1 AND credential_is_bounded`), gatewayAppleBootstrapPrefix+uuid.NewString(), connectionID); err != nil {
+		return GatewayAuthorityLease{}, err
+	}
 	if err := s.lockGatewayConnection(ctx, tx, &lease); err != nil {
 		return GatewayAuthorityLease{}, err
 	}
@@ -152,19 +160,40 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		priorUntil = max(priorUntil, min(leaseUntil, priorUntil+60000))
 	}
 	changed := inventory == "" || priorUntil <= now.UnixMilli()
+	complete := true
 	ordered := append([]GatewayCalendarProof(nil), proofs...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Metadata.ID < ordered[j].Metadata.ID })
 	for _, evidence := range ordered {
 		id := evidence.Metadata.ID
 		proof := rows[id]
 		if evidence.Unknown {
+			complete = false
 			if priorUntil > 0 {
 				delete(old, id)
 			}
 			changed = true
 			continue
 		}
-		proof.receipt, err = s.publishGatewayCalendarBinding(ctx, tx, lease, evidence, old[id], now)
+		if lease.Provider == "google" {
+			if gatewayGrantDeniedDuring(old[id], lease) {
+				// This lease started before the denial. Keep its other proofs.
+				delete(old, id)
+				continue
+			}
+			proof, err = s.bindGatewayGoogleProof(ctx, tx, lease, evidence, proof)
+			if errors.Is(err, sql.ErrNoRows) && evidence.DetailReceipt == "" {
+				item := evidence.Metadata
+				item.ID = strings.TrimPrefix(id, "google:"+lease.ConnectionID+":")
+				if item.ID == "" || item.ID == id || len(id) > cachedPageMaxIDBytes {
+					return ErrAuthorityChanged
+				}
+				if err = s.registerDiscoveredCalendar(ctx, tx, "google", lease.ConnectionID, item, false); err == nil {
+					proof, err = s.bindGatewayGoogleProof(ctx, tx, lease, evidence, proof)
+				}
+			}
+		} else {
+			proof.receipt, err = s.publishGatewayCalendarBinding(ctx, tx, lease, evidence, old[id], now)
+		}
 		if err != nil {
 			return err
 		}
@@ -176,10 +205,18 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		if previous.until > 0 && lease.StartedAt.UnixMilli() < previous.until {
 			previousDeadline = max(previous.until, min(leaseUntil, previous.until+60000))
 		}
-		if previousDeadline <= now.UnixMilli() || proof.revision == "" || proof != previous {
+		proofChanged := proof != previous
+		permissionChanged := proofChanged
+		if lease.Provider == "google" {
+			// Google metadata updates, such as a rename, do not replace a
+			// source permission or its still-applicable Events.List denial.
+			permissionChanged = proof.class != previous.class || proof.receipt != previous.receipt || proof.capabilities != previous.capabilities
+		}
+		if previousDeadline <= now.UnixMilli() || proof.revision == "" || permissionChanged {
 			proof.revision = uuid.NewString()
 			changed = true
 		}
+		changed = changed || proofChanged
 		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO gateway_calendar_grants
 		(calendar_id,connection_id,grant_revision,verified_until_ms,detail_receipt,access_class,metadata_json,capabilities_json)
 		VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(calendar_id) DO UPDATE SET
@@ -189,7 +226,8 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		if err != nil {
 			return err
 		}
-		if evidence.Class != GatewayMetadataOnly {
+		firstAppleBinding := lease.Provider == "apple" && evidence.DetailReceipt == "" && previous.class == ""
+		if lease.Provider != "google" && !firstAppleBinding && evidence.Class != GatewayMetadataOnly {
 			if _, err := tx.ExecContext(ctx, s.query(s.eventSyncTimeComparisons(`UPDATE calendar_sync_state
 			SET next_sync_at=? WHERE calendar_id=? AND next_sync_at>? AND (lease_until IS NULL OR lease_until<=?)
 			AND EXISTS(SELECT 1 FROM calendars c WHERE c.id=calendar_sync_state.calendar_id AND c.enabled=TRUE AND c.can_read=TRUE)`)),
@@ -199,7 +237,10 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		}
 	}
 
-	for id := range old {
+	for id, prior := range old {
+		if gatewayGrantDeniedDuring(prior, lease) {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM gateway_calendar_grants WHERE connection_id=? AND calendar_id=?`), lease.ConnectionID, id); err != nil {
 			return err
 		}
@@ -208,11 +249,8 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 	if changed {
 		inventory = uuid.NewString()
 	}
-	for _, proof := range proofs {
-		if proof.Unknown {
-			inventory = ""
-			break
-		}
+	if !complete {
+		inventory = ""
 	}
 	res, err := tx.ExecContext(ctx, s.query(`UPDATE gateway_account_checks SET lease_id='',lease_started_ms=0,lease_until_ms=0,
 		next_check_ms=?,verified_until_ms=?,inventory_revision=? WHERE connection_id=? AND lease_id=? AND lease_until_ms>?`),
@@ -222,6 +260,10 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		return err
 	}
 	return tx.Commit()
+}
+
+func gatewayGrantDeniedDuring(proof gatewayProofRow, lease GatewayAuthorityLease) bool {
+	return strings.HasPrefix(proof.revision, gatewayDenialLeasePrefix+lease.ID+":")
 }
 
 func gatewayProofRows(provider string, proofs []GatewayCalendarProof) (map[string]gatewayProofRow, error) {
@@ -530,6 +572,42 @@ func (s *Store) gatewayCalendarGrants(ctx context.Context, db interface {
 	return grants, rows.Err()
 }
 
+// Strict preparation must not park, refresh, or reauthorize the ordinary
+// Google cache. Its proof cannot exceed the independently bound source role.
+func (s *Store) bindGatewayGoogleProof(ctx context.Context, tx *sql.Tx, lease GatewayAuthorityLease, evidence GatewayCalendarProof, proof gatewayProofRow) (gatewayProofRow, error) {
+	var readable, writable bool
+	err := tx.QueryRowContext(ctx, s.query(`SELECT detail_receipt, can_read, can_write
+	FROM calendars WHERE id=? AND connection_id=?`), evidence.Metadata.ID, lease.ConnectionID).Scan(&proof.receipt, &readable, &writable)
+	if err != nil {
+		return proof, err
+	}
+	if proof.receipt != evidence.DetailReceipt {
+		return proof, ErrAuthorityChanged
+	}
+	if !readable || DetailReceiptRole(proof.receipt) != evidence.GoogleRole {
+		proof.class = string(GatewayMetadataOnly)
+	}
+	if proof.class != string(GatewayMetadataOnly) && writable {
+		return proof, nil
+	}
+	evidence.Metadata.ReadOnly = true
+	limited := calendar.CalendarReadEvidence{
+		Capabilities: evidence.Capabilities,
+		ReadEvents:   proof.class != string(GatewayMetadataOnly),
+	}
+	limited.LimitOperations(false)
+	metadata, err := json.Marshal(evidence.Metadata)
+	if err != nil {
+		return proof, err
+	}
+	caps, err := json.Marshal(limited.Capabilities)
+	if err != nil {
+		return proof, err
+	}
+	proof.metadata, proof.capabilities = string(metadata), string(caps)
+	return proof, nil
+}
+
 func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, lease GatewayAuthorityLease, proof GatewayCalendarProof, previous gatewayProofRow, now time.Time) (string, error) {
 	id := proof.Metadata.ID
 	prefix := lease.Provider + ":" + lease.ConnectionID + ":"
@@ -549,17 +627,14 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 	}
 	read := proof.Class != GatewayMetadataOnly
 	write := proof.Capabilities.Operations.Create || proof.Capabilities.Operations.Update || proof.Capabilities.Operations.Delete
-	roleChanged := lease.Provider == "google" && read && DetailReceiptRole(receipt) != proof.GoogleRole
-	accessChanged := readable != read || previous.class != "" && previous.class != string(proof.Class) || roleChanged
+	accessChanged := readable != read || previous.class != "" && previous.class != string(proof.Class)
+	initialAppleBinding := lease.Provider == "apple" && receipt == "" && readable && !accessChanged
 	finalReceipt := receipt
-	if lease.Provider == "google" {
-		if !read {
-			finalReceipt = ""
-		} else if roleChanged || accessChanged {
-			finalReceipt = proof.GoogleRole + ":" + uuid.NewString()
-		}
-	} else if receipt == "" || accessChanged {
+	if receipt == "" || accessChanged {
 		finalReceipt = uuid.NewString()
+		if initialAppleBinding {
+			finalReceipt = gatewayAppleBootstrapPrefix + finalReceipt
+		}
 	}
 	if lease.Provider == "microsoft" && read && !missing && !accessChanged {
 		result, resetErr := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1,cursor='',status='pending',lease_owner=NULL,lease_until=NULL,last_success_at=NULL,last_error_code=NULL,next_sync_at=?,updated_at=? WHERE calendar_id=? AND status='parked' AND last_error_code IN ('auth','permission')`), now, now, id)
@@ -580,7 +655,7 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO calendars
 			(id,connection_id,provider_calendar_id,name,timezone,can_read,can_write,supports_recurrence,discovered_at,google_primary,detail_receipt)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`), id, lease.ConnectionID, raw, proof.Metadata.Name, safeDiscoveryTimezone(lease.Provider, proof.Metadata.Timezone),
-			read, write, proof.Capabilities.Fields.Recurrence, now, lease.Provider == "google" && proof.Metadata.Primary, finalReceipt)
+			read, write, proof.Capabilities.Fields.Recurrence, now, false, finalReceipt)
 		return finalReceipt, err
 	}
 	readBindingChanged := finalReceipt != receipt || accessChanged
@@ -590,7 +665,9 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 			return "", err
 		}
 	}
-	if readBindingChanged {
+	// A first receipt for a migrated, already-readable Apple source binds
+	// future work. With no observed access change its ordinary snapshot stays valid.
+	if readBindingChanged && !initialAppleBinding {
 		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1,cursor='',status='pending',
 			lease_owner=NULL,lease_until=NULL,last_success_at=NULL,last_error_code=NULL,next_sync_at=?,updated_at=? WHERE calendar_id=?`), now, now, id); err != nil {
 			return "", err
@@ -675,7 +752,7 @@ func (s *Store) RestrictGatewayCalendarRead(ctx context.Context, lease GatewayAu
 		return err
 	}
 	_, err = tx.ExecContext(ctx, s.query(`UPDATE gateway_calendar_grants SET access_class='metadata',grant_revision=?,metadata_json=?,capabilities_json=?
-	WHERE calendar_id=?`), uuid.NewString(), string(metadataJSON), string(capabilitiesJSON), id)
+	WHERE calendar_id=? AND verified_until_ms>0`), uuid.NewString(), string(metadataJSON), string(capabilitiesJSON), id)
 	if err != nil {
 		return err
 	}

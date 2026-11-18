@@ -18,15 +18,8 @@ type gatewayEventListing interface {
 // RefreshGatewayPublication runs only in the worker, after the regular
 // cached_events sync has completed. The expanded and series views add fields
 // and cancellation evidence the incremental provider feeds do not guarantee.
-func RefreshGatewayPublication(ctx context.Context, store *storage.Store, provider calendar.Provider, rawID, calendarID string, now func() time.Time) error {
+func RefreshGatewayPublication(ctx context.Context, store *storage.Store, provider calendar.Provider, rawID string, ticket storage.GatewayPublicationTicket, now func() time.Time) error {
 	observed := now().UTC()
-	ticket, err := store.CaptureGatewayPublication(ctx, calendarID, observed)
-	if errors.Is(err, storage.ErrAuthorityChanged) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	if bound, ok := provider.(interface{ CredentialBinding() (string, [32]byte) }); ok {
 		if revision, _ := bound.CredentialBinding(); revision != ticket.Grant.ConnectionRevision {
 			return storage.ErrAuthorityChanged

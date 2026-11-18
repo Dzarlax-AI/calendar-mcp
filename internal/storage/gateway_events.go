@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const gatewayDenialLeasePrefix = "denied:"
+
 const maxGatewayEvents = 16000
 const maxGatewayPayload = 32 << 10
 const maxGatewayReadBytes = 16 << 20
@@ -81,6 +83,44 @@ func (s *Store) gatewayReadySync(ctx context.Context, tx *sql.Tx, id string) (Ca
 	}
 	out.WindowStart, out.WindowEnd, out.LastSuccessAt = start.Time, end.Time, &success.Time
 	return out, nil
+}
+
+// InvalidateGatewayGooglePublication closes one strict grant for proof observed
+// with the exact current credential and source binding. Ordinary cache rows
+// and sync state are outside this path.
+func (s *Store) InvalidateGatewayGooglePublication(ctx context.Context, connectionID string, grant GatewayCalendarGrant, revision string, digest [32]byte) error {
+	if revision == "" || revision != grant.ConnectionRevision {
+		return ErrAuthorityChanged
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lease := GatewayAuthorityLease{ConnectionID: connectionID, Provider: "google", AuthorizationRevision: revision}
+	if err := s.lockGatewayConnection(ctx, tx, &lease); err != nil {
+		return err
+	}
+	var ciphertext []byte
+	err = tx.QueryRowContext(ctx, s.query(`SELECT encrypted_credentials FROM connections WHERE id=? AND credential_is_bounded`), connectionID).Scan(&ciphertext)
+	if err != nil {
+		return err
+	}
+	if sha256.Sum256(ciphertext) != digest {
+		return ErrAuthorityChanged
+	}
+	// A deadline extension alone does not change the grant. Record the
+	// lease active at denial so its response can renew only other grants.
+	result, err := tx.ExecContext(ctx, s.query(`UPDATE gateway_calendar_grants SET verified_until_ms=0,
+	grant_revision=? || COALESCE((SELECT a.lease_id FROM gateway_account_checks a
+	WHERE a.connection_id=gateway_calendar_grants.connection_id AND a.authorization_revision=?),'') || ':' || ?
+	WHERE calendar_id=? AND connection_id=? AND grant_revision=? AND detail_receipt=?
+	AND EXISTS (SELECT 1 FROM calendars c WHERE c.id=gateway_calendar_grants.calendar_id AND c.detail_receipt=gateway_calendar_grants.detail_receipt)`),
+		gatewayDenialLeasePrefix, revision, uuid.NewString(), grant.Metadata.ID, connectionID, grant.Revision, grant.DetailReceipt)
+	if err := oneGatewayAuthorityRow(result, err); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) PublishGatewayEvents(ctx context.Context, ticket GatewayPublicationTicket, events []calendar.EventV2, deletionsComplete bool, observedAt, now time.Time, verifiedSeries map[string]string) error {
