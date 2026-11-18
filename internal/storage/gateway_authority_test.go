@@ -431,13 +431,35 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 		}
 	}
 	assertAppleCache()
+	coverage := CachedPageRequest{CalendarIDs: []string{appleID}, Start: day, End: day.AddDate(0, 0, 1),
+		StartDate: day.Format(time.DateOnly), EndDate: day.AddDate(0, 0, 1).Format(time.DateOnly), PageSize: 5, WithCoverage: true, TargetWindow: window}
+	ordinaryBinding, err := db.CaptureCachedPageCoverage(ctx, coverage)
+	must(err)
+	checkInFlightApple := func(action func() error) {
+		t.Helper()
+		probe := &decodeProbeContext{Context: ctx, probe: action}
+		events, sources, err := db.ListVisibleCachedEvents(probe, []string{appleID}, day, day.AddDate(0, 0, 1))
+		must(err)
+		if !probe.seen.Load() || len(events) != 1 || events[0].ID != "legacy-event" || len(sources) != 1 || sources[0].Status != "ready" {
+			t.Fatal("warmup interrupted an in-flight ordinary Apple read")
+		}
+		current, err := db.CaptureCachedPageCoverage(ctx, coverage)
+		must(err)
+		if !slices.Equal(ordinaryBinding, current) {
+			t.Fatal("warmup broke the ordinary MCP cursor binding")
+		}
+	}
 	due, err := db.DueGatewayAuthorityChecks(ctx, now, 16)
 	must(err)
 	if !slices.Contains(due, "legacy-apple") {
 		t.Fatal("old Apple connection was not scheduled")
 	}
-	appleLease, err := db.ClaimGatewayAuthorityCheck(ctx, "legacy-apple", now, time.Minute)
-	must(err)
+	var appleLease GatewayAuthorityLease
+	checkInFlightApple(func() error {
+		var err error
+		appleLease, err = db.ClaimGatewayAuthorityCheck(ctx, "legacy-apple", now, time.Minute)
+		return err
+	})
 	if appleLease.AuthorizationRevision == "" {
 		t.Fatal("old Apple connection has no fence")
 	}
@@ -449,14 +471,33 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 	if len(apple) != 1 || !apple[0].CanRead || apple[0].DetailReceipt != "" {
 		t.Fatal("Apple claim revoked the ordinary calendar")
 	}
-	must(db.PublishGatewayAuthority(ctx, appleLease, []GatewayCalendarProof{{
-		Metadata:     calendar.Calendar{ID: appleID, Provider: "apple"},
-		Capabilities: calendar.CalendarCapabilities{CalendarID: appleID, Provider: "apple"},
-		Class:        GatewayPrivateAccess, DetailReceipt: apple[0].DetailReceipt,
-	}}, now))
+	checkInFlightApple(func() error {
+		return db.PublishGatewayAuthority(ctx, appleLease, []GatewayCalendarProof{{
+			Metadata:     calendar.Calendar{ID: appleID, Provider: "apple"},
+			Capabilities: calendar.CalendarCapabilities{CalendarID: appleID, Provider: "apple"},
+			Class:        GatewayPrivateAccess, DetailReceipt: apple[0].DetailReceipt,
+		}}, now)
+	})
 	_, err = db.GatewayCalendarGrant(ctx, appleID, now)
 	must(err)
 	assertAppleCache()
+	appleTicket, err := db.CaptureGatewayPublication(ctx, appleID, now)
+	must(err)
+	must(db.PublishGatewayEvents(ctx, appleTicket, nil, true, now, now, nil))
+	checkDeniedFanOut := func(at time.Time) {
+		t.Helper()
+		req := GatewayEventQuery{Window: SyncWindow{Start: day, End: day.AddDate(0, 0, 1)},
+			CivilStart: day.Format(time.DateOnly), CivilEnd: day.AddDate(0, 0, 1).Format(time.DateOnly)}
+		partial, err := db.ReadGatewayEvents(ctx, req, at, false)
+		must(err)
+		req.ExcludeIDs = []string{googleID}
+		full, err := db.ReadGatewayEvents(ctx, req, at, false)
+		must(err)
+		if !partial.Incomplete || full.Incomplete || len(partial.Sources) != 1 || len(full.Sources) != 1 ||
+			partial.Sources[0].Source.CalendarID != appleID {
+			t.Fatalf("denial did not produce scoped partial coverage: %v/%v", partial.Incomplete, full.Incomplete)
+		}
+	}
 
 	checkOrdinaryGoogle := func() {
 		t.Helper()
@@ -472,9 +513,10 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 			t.Fatalf("strict preparation reset the ordinary sync: generation=%d status=%q", generation, status)
 		}
 	}
+	googleName := "Before rename"
 	googleEvidence := func(role string, class GatewayAccessClass) []GatewayCalendarProof {
 		return []GatewayCalendarProof{{
-			Metadata:     calendar.Calendar{ID: googleID, Provider: "google"},
+			Metadata:     calendar.Calendar{ID: googleID, Provider: "google", Name: googleName},
 			Capabilities: calendar.CalendarCapabilities{CalendarID: googleID, Provider: "google"},
 			Class:        class, GoogleRole: role, DetailReceipt: receipt,
 		}}
@@ -501,7 +543,10 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 	must(err)
 	digest := sha256.Sum256([]byte("synthetic"))
 	must(db.InvalidateGatewayGooglePublication(ctx, "live-google", first, first.ConnectionRevision, digest))
-	must(db.PublishGatewayAuthority(ctx, inFlight, googleEvidence("owner", GatewayPrivateAccess), renewAt.Add(time.Second)))
+	checkDeniedFanOut(renewAt)
+	must(db.RestrictGatewayCalendarRead(ctx, inFlight, "normal", receipt, false, renewAt))
+	must(db.PublishGatewayAuthority(ctx, inFlight, googleEvidence("reader", GatewayEventAccess), renewAt.Add(time.Second)))
+	checkDeniedFanOut(renewAt.Add(time.Second))
 	if _, err := db.GatewayCalendarGrant(ctx, googleID, renewAt.Add(time.Second)); !errors.Is(err, ErrAuthorityChanged) {
 		t.Fatalf("older account check reopened the strict grant after denial: %v", err)
 	}
@@ -523,8 +568,9 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 	// CalendarList may extend the same permission while an Events.List
 	// request is still in flight. The later denial must close that grant.
 	renewedAt := now.Add(4 * GatewayAuthorityInterval)
+	googleName = "After rename"
 	renewed := publishGoogle(renewedAt, "owner", GatewayPrivateAccess)
-	if renewed.Revision != again.Revision || renewed.DetailReceipt != again.DetailReceipt ||
+	if renewed.Metadata.Name != googleName || renewed.Revision != again.Revision || renewed.DetailReceipt != again.DetailReceipt ||
 		!renewed.HardVerifiedUntil.After(again.HardVerifiedUntil) {
 		t.Fatal("fixture did not renew the same grant")
 	}
@@ -543,4 +589,38 @@ func testGatewayPreparationFence(t *testing.T, db *Store) {
 		t.Fatal("old denial changed the replacement grant")
 	}
 	checkOrdinaryGoogle()
+
+	newID := calendar.AccountCalendarID("google", "live-google", "not-yet-local")
+	at := now.Add(6 * GatewayAuthorityInterval)
+	currentApple, err := db.ListCalendars(ctx, "legacy-apple")
+	must(err)
+	renewApple, err := db.ClaimGatewayAuthorityCheck(ctx, "legacy-apple", at, time.Minute)
+	must(err)
+	must(db.PublishGatewayAuthority(ctx, renewApple, []GatewayCalendarProof{{
+		Metadata:     calendar.Calendar{ID: appleID, Provider: "apple"},
+		Capabilities: calendar.CalendarCapabilities{CalendarID: appleID, Provider: "apple"},
+		Class:        GatewayPrivateAccess, DetailReceipt: currentApple[0].DetailReceipt,
+	}}, at))
+	lease, err := db.ClaimGatewayAuthorityCheck(ctx, "live-google", at, time.Minute)
+	must(err)
+	evidence := append(googleEvidence("owner", GatewayPrivateAccess), GatewayCalendarProof{
+		Metadata:     calendar.Calendar{ID: newID, Provider: "google"},
+		Capabilities: calendar.CalendarCapabilities{CalendarID: newID, Provider: "google"},
+		Class:        GatewayPrivateAccess, GoogleRole: "owner",
+	})
+	must(db.PublishGatewayAuthority(ctx, lease, evidence, at))
+	added, err := db.GatewayCalendarGrant(ctx, newID, at)
+	must(err)
+	if added.Class != GatewayMetadataOnly || !added.Metadata.ReadOnly || added.DetailReceipt != "" {
+		t.Fatal("warmup opened ordinary permissions for a newly discovered calendar")
+	}
+	local, err := db.ListCalendars(ctx, "live-google")
+	must(err)
+	if !slices.ContainsFunc(local, func(c Calendar) bool { return c.ID == newID && !c.CanRead && !c.CanWrite }) {
+		t.Fatal("new source did not remain metadata-only in ordinary storage")
+	}
+	inventory, err := db.GatewayCalendarInventory(ctx, at)
+	if err != nil || !slices.ContainsFunc(inventory, func(g GatewayCalendarGrant) bool { return g.Metadata.ID == googleID }) {
+		t.Fatalf("new metadata withheld the existing account inventory: %v", err)
+	}
 }

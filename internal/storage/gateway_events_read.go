@@ -65,6 +65,12 @@ func (s *Store) ReadGatewayEvents(ctx context.Context, req GatewayEventQuery, no
 		if err != nil {
 			return out, err
 		}
+		if !out.Incomplete {
+			out.Incomplete, err = s.gatewayFanOutHasDenial(ctx, tx, req)
+			if err != nil {
+				return out, err
+			}
+		}
 	} else {
 		out.Incomplete = len(grants) < max(1, len(req.CalendarIDs))
 	}
@@ -131,9 +137,37 @@ func (s *Store) gatewayReadGrants(ctx context.Context, tx *sql.Tx, req GatewayEv
 	return slices.DeleteFunc(grants, func(g GatewayCalendarGrant) bool {
 		_, tail, _ := strings.Cut(g.Metadata.ID, ":")
 		_, raw, _ := strings.Cut(tail, ":")
-		return slices.Contains(req.ExcludeIDs, g.Metadata.ID) || slices.Contains(req.ExcludeIDs, g.Metadata.Provider+":"+raw) ||
-			!req.IncludeImported && g.Metadata.Provider == "google" && strings.Contains(raw, "@import.calendar.google.com")
+		return gatewayFanOutExcluded(req, g.Metadata.ID, g.Metadata.Provider, raw)
 	}), nil
+}
+
+func gatewayFanOutExcluded(req GatewayEventQuery, id, provider, raw string) bool {
+	return slices.Contains(req.ExcludeIDs, id) || slices.Contains(req.ExcludeIDs, provider+":"+raw) ||
+		!req.IncludeImported && provider == "google" && strings.Contains(raw, "@import.calendar.google.com")
+}
+
+// Keep the closed source out of the response without presenting the remaining
+// calendars as a complete result.
+func (s *Store) gatewayFanOutHasDenial(ctx context.Context, tx *sql.Tx, req GatewayEventQuery) (bool, error) {
+	rows, err := tx.QueryContext(ctx, s.query(`SELECT cal.id,c.provider,cal.provider_calendar_id
+	FROM gateway_calendar_grants g JOIN calendars cal ON cal.id=g.calendar_id
+	JOIN connections c ON c.id=g.connection_id
+	WHERE c.status='connected' AND cal.enabled=TRUE AND g.verified_until_ms=0 AND g.grant_revision LIKE ?`),
+		gatewayDenialLeasePrefix+"%")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, provider, raw string
+		if err := rows.Scan(&id, &provider, &raw); err != nil {
+			return false, err
+		}
+		if !gatewayFanOutExcluded(req, id, provider, raw) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *Store) gatewayReadSource(ctx context.Context, tx *sql.Tx, req GatewayEventQuery, grant GatewayCalendarGrant, now time.Time) (GatewayReadSource, error) {

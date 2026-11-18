@@ -112,8 +112,8 @@ func (s *Store) InvalidateGatewayGooglePublication(ctx context.Context, connecti
 	// A deadline extension alone does not change the grant. Record the
 	// lease active at denial so its response can renew only other grants.
 	result, err := tx.ExecContext(ctx, s.query(`UPDATE gateway_calendar_grants SET verified_until_ms=0,
-	grant_revision=COALESCE((SELECT ? || a.lease_id || ':' FROM gateway_account_checks a
-	WHERE a.connection_id=gateway_calendar_grants.connection_id AND a.authorization_revision=? AND a.lease_id<>''),'') || ?
+	grant_revision=? || COALESCE((SELECT a.lease_id FROM gateway_account_checks a
+	WHERE a.connection_id=gateway_calendar_grants.connection_id AND a.authorization_revision=?),'') || ':' || ?
 	WHERE calendar_id=? AND connection_id=? AND grant_revision=? AND detail_receipt=?
 	AND EXISTS (SELECT 1 FROM calendars c WHERE c.id=gateway_calendar_grants.calendar_id AND c.detail_receipt=gateway_calendar_grants.detail_receipt)`),
 		gatewayDenialLeasePrefix, revision, uuid.NewString(), grant.Metadata.ID, connectionID, grant.Revision, grant.DetailReceipt)

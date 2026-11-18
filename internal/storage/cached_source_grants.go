@@ -25,6 +25,23 @@ type cachedSourceGrant struct {
 // generation still fences a read that crosses a disable and re-enable.
 const legacySelectionGeneration = `CASE WHEN conn.provider='google' AND c.detail_receipt='' THEN COALESCE(ss.generation,-1) ELSE -1 END`
 
+// Gateway warmup binds legacy Apple rows without changing ordinary authority.
+// Real reconnects and revocations replace these values with unmarked receipts.
+const gatewayAppleBootstrapPrefix = "gateway-bootstrap:"
+
+func ordinaryCachedGrantBinding(provider, revision, receipt string) (string, string) {
+	if provider != "apple" {
+		return revision, receipt
+	}
+	if strings.HasPrefix(revision, gatewayAppleBootstrapPrefix) {
+		revision = ""
+	}
+	if strings.HasPrefix(receipt, gatewayAppleBootstrapPrefix) {
+		receipt = ""
+	}
+	return revision, receipt
+}
+
 type CachedCalendarCatalogEntry struct {
 	ID, Name  string
 	Available bool
@@ -68,6 +85,7 @@ func (s *Store) captureCachedSourceGrants(ctx context.Context, tx *sql.Tx, place
 		if err := rows.Scan(&id, &grant.connectionID, &grant.provider, &grant.revision, &grant.receipt, &grant.legacyGeneration); err != nil {
 			return nil, fmt.Errorf("scan cached source grant: %w", err)
 		}
+		grant.revision, grant.receipt = ordinaryCachedGrantBinding(grant.provider, grant.revision, grant.receipt)
 		grants[id] = grant
 	}
 	return grants, rows.Err()
@@ -99,6 +117,7 @@ func (s *Store) filterCachedSourceGrants(ctx context.Context, placeholders strin
 			&state, &lastSuccess, &errorCode, &nextSync, &windowStart, &windowEnd); err != nil {
 			return nil, nil, fmt.Errorf("scan current cached source grant: %w", err)
 		}
+		grant.revision, grant.receipt = ordinaryCachedGrantBinding(grant.provider, grant.revision, grant.receipt)
 		if before, ok := initial[status.CalendarID]; !ok || before != grant {
 			continue
 		}

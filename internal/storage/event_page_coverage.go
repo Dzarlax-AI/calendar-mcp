@@ -111,6 +111,7 @@ func (s *Store) cachedPageCoverage(ctx context.Context, tx *sql.Tx, req CachedPa
 			!utf8.ValidString(grant.CalendarID) || !utf8.ValidString(grant.Revision) || !utf8.ValidString(grant.Receipt) {
 			return nil, nil, ErrCachedPageUnavailable
 		}
+		grant.Revision, grant.Receipt = ordinaryCachedGrantBinding(grant.Provider, grant.Revision, grant.Receipt)
 		authorized := grant.Revision != "" && DetailReceiptRole(grant.Receipt) != ""
 		if grant.Provider != "google" {
 			// Legacy non-Google rows predate the receipt. Selection changes and

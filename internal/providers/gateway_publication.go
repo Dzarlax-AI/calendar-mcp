@@ -53,8 +53,8 @@ func (f *Factory) BuildGatewayGooglePublication(ctx context.Context, ticket stor
 		if calendarID != id[2] {
 			return nil, storage.ErrAuthorityChanged
 		}
-		return func(ctx context.Context, _ string, status int, reason, revision string, digest [32]byte) error {
-			if status == http.StatusUnauthorized || status == http.StatusNotFound ||
+		return func(ctx context.Context, operation string, status int, reason, revision string, digest [32]byte) error {
+			if status == http.StatusUnauthorized || status == http.StatusNotFound && operation == "event_list" ||
 				status == http.StatusForbidden && !googleQuotaDenial(reason) {
 				return closeProof(ctx, revision, digest)
 			}

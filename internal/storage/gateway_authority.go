@@ -90,7 +90,7 @@ func (s *Store) ClaimGatewayAuthorityCheck(ctx context.Context, connectionID str
 	// access or discarding the ordinary cache. The lease still needs live proof.
 	if _, err := tx.ExecContext(ctx, s.query(`UPDATE connections SET authorization_revision=?
 	WHERE id=? AND provider='apple' AND status='connected' AND authorization_revision=''
-	AND credential_version=1 AND credential_is_bounded`), uuid.NewString(), connectionID); err != nil {
+	AND credential_version=1 AND credential_is_bounded`), gatewayAppleBootstrapPrefix+uuid.NewString(), connectionID); err != nil {
 		return GatewayAuthorityLease{}, err
 	}
 	if err := s.lockGatewayConnection(ctx, tx, &lease); err != nil {
@@ -175,15 +175,21 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 			continue
 		}
 		if lease.Provider == "google" {
-			if strings.HasPrefix(old[id].revision, gatewayDenialLeasePrefix+lease.ID+":") {
+			if gatewayGrantDeniedDuring(old[id], lease) {
 				// This lease started before the denial. Keep its other proofs.
 				delete(old, id)
 				continue
 			}
 			proof, err = s.bindGatewayGoogleProof(ctx, tx, lease, evidence, proof)
-			if errors.Is(err, sql.ErrNoRows) {
-				complete = false
-				continue
+			if errors.Is(err, sql.ErrNoRows) && evidence.DetailReceipt == "" {
+				item := evidence.Metadata
+				item.ID = strings.TrimPrefix(id, "google:"+lease.ConnectionID+":")
+				if item.ID == "" || item.ID == id || len(id) > cachedPageMaxIDBytes {
+					return ErrAuthorityChanged
+				}
+				if err = s.registerDiscoveredCalendar(ctx, tx, "google", lease.ConnectionID, item, false); err == nil {
+					proof, err = s.bindGatewayGoogleProof(ctx, tx, lease, evidence, proof)
+				}
 			}
 		} else {
 			proof.receipt, err = s.publishGatewayCalendarBinding(ctx, tx, lease, evidence, old[id], now)
@@ -199,10 +205,18 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		if previous.until > 0 && lease.StartedAt.UnixMilli() < previous.until {
 			previousDeadline = max(previous.until, min(leaseUntil, previous.until+60000))
 		}
-		if previousDeadline <= now.UnixMilli() || proof.revision == "" || proof != previous {
+		proofChanged := proof != previous
+		permissionChanged := proofChanged
+		if lease.Provider == "google" {
+			// Google metadata updates, such as a rename, do not replace a
+			// source permission or its still-applicable Events.List denial.
+			permissionChanged = proof.class != previous.class || proof.receipt != previous.receipt || proof.capabilities != previous.capabilities
+		}
+		if previousDeadline <= now.UnixMilli() || proof.revision == "" || permissionChanged {
 			proof.revision = uuid.NewString()
 			changed = true
 		}
+		changed = changed || proofChanged
 		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO gateway_calendar_grants
 		(calendar_id,connection_id,grant_revision,verified_until_ms,detail_receipt,access_class,metadata_json,capabilities_json)
 		VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(calendar_id) DO UPDATE SET
@@ -223,7 +237,10 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		}
 	}
 
-	for id := range old {
+	for id, prior := range old {
+		if gatewayGrantDeniedDuring(prior, lease) {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM gateway_calendar_grants WHERE connection_id=? AND calendar_id=?`), lease.ConnectionID, id); err != nil {
 			return err
 		}
@@ -243,6 +260,10 @@ func (s *Store) PublishGatewayAuthority(ctx context.Context, lease GatewayAuthor
 		return err
 	}
 	return tx.Commit()
+}
+
+func gatewayGrantDeniedDuring(proof gatewayProofRow, lease GatewayAuthorityLease) bool {
+	return strings.HasPrefix(proof.revision, gatewayDenialLeasePrefix+lease.ID+":")
 }
 
 func gatewayProofRows(provider string, proofs []GatewayCalendarProof) (map[string]gatewayProofRow, error) {
@@ -607,9 +628,13 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 	read := proof.Class != GatewayMetadataOnly
 	write := proof.Capabilities.Operations.Create || proof.Capabilities.Operations.Update || proof.Capabilities.Operations.Delete
 	accessChanged := readable != read || previous.class != "" && previous.class != string(proof.Class)
+	initialAppleBinding := lease.Provider == "apple" && receipt == "" && readable && !accessChanged
 	finalReceipt := receipt
 	if receipt == "" || accessChanged {
 		finalReceipt = uuid.NewString()
+		if initialAppleBinding {
+			finalReceipt = gatewayAppleBootstrapPrefix + finalReceipt
+		}
 	}
 	if lease.Provider == "microsoft" && read && !missing && !accessChanged {
 		result, resetErr := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1,cursor='',status='pending',lease_owner=NULL,lease_until=NULL,last_success_at=NULL,last_error_code=NULL,next_sync_at=?,updated_at=? WHERE calendar_id=? AND status='parked' AND last_error_code IN ('auth','permission')`), now, now, id)
@@ -642,7 +667,6 @@ func (s *Store) publishGatewayCalendarBinding(ctx context.Context, tx *sql.Tx, l
 	}
 	// A first receipt for a migrated, already-readable Apple source binds
 	// future work. With no observed access change its ordinary snapshot stays valid.
-	initialAppleBinding := lease.Provider == "apple" && receipt == "" && readable && !accessChanged
 	if readBindingChanged && !initialAppleBinding {
 		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendar_sync_state SET generation=generation+1,cursor='',status='pending',
 			lease_owner=NULL,lease_until=NULL,last_success_at=NULL,last_error_code=NULL,next_sync_at=?,updated_at=? WHERE calendar_id=?`), now, now, id); err != nil {
@@ -728,7 +752,7 @@ func (s *Store) RestrictGatewayCalendarRead(ctx context.Context, lease GatewayAu
 		return err
 	}
 	_, err = tx.ExecContext(ctx, s.query(`UPDATE gateway_calendar_grants SET access_class='metadata',grant_revision=?,metadata_json=?,capabilities_json=?
-	WHERE calendar_id=?`), uuid.NewString(), string(metadataJSON), string(capabilitiesJSON), id)
+	WHERE calendar_id=? AND verified_until_ms>0`), uuid.NewString(), string(metadataJSON), string(capabilitiesJSON), id)
 	if err != nil {
 		return err
 	}

@@ -140,12 +140,15 @@ func TestGoogleListClosesEveryDowngradeOnOnePage(t *testing.T) {
 
 func TestStrictGooglePublicationLeavesOrdinaryReadAuthorityIntact(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
+		name          string
+		status        int
+		body          string
+		missingMaster bool
 	}{
-		{"role changed", http.StatusOK, `{"accessRole":"reader","items":[]}`},
-		{"confirmed denial", http.StatusForbidden, `{"error":{"errors":[{"reason":"forbidden"}]}}`},
+		{"role changed", http.StatusOK, `{"accessRole":"reader","items":[]}`, false},
+		{"confirmed denial", http.StatusForbidden, `{"error":{"errors":[{"reason":"forbidden"}]}}`, false},
+		{"calendar missing", http.StatusNotFound, `{"error":{"errors":[{"reason":"notFound"}]}}`, false},
+		{"master missing", http.StatusNotFound, `{"error":{"errors":[{"reason":"notFound"}]}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -192,20 +195,33 @@ func TestStrictGooglePublicationLeavesOrdinaryReadAuthorityIntact(t *testing.T) 
 				if r.Method != http.MethodGet {
 					t.Fatalf("publication dispatched %s", r.Method)
 				}
-				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+				status, body := tc.status, tc.body
+				if tc.missingMaster && !strings.HasSuffix(r.URL.Path, "/master") {
+					status, body = http.StatusOK, `{"accessRole":"owner","items":[]}`
+					if r.URL.Query().Get("singleEvents") == "true" {
+						body = `{"accessRole":"owner","items":[{"id":"occurrence","recurringEventId":"master","status":"confirmed"}]}`
+					}
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 			})
 			factory := NewFactory(&config.Config{GoogleClientID: "id", GoogleClientSecret: "secret"}, store, service)
 			p, providerID, err := factory.BuildGatewayGooglePublication(ctx, storage.GatewayPublicationTicket{Grant: grant})
 			must(err)
-			_, err = p.(interface {
+			view := calendar.RecurrenceExpanded
+			if tc.missingMaster {
+				view = calendar.RecurrenceBoth
+			}
+			page, err := p.(interface {
 				ListEventsV2(context.Context, calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error)
 			}).ListEventsV2(ctx, calendar.ListEventsRequestV2{CalendarID: providerID,
-				Start: now.Add(-time.Hour), End: now.Add(time.Hour), View: calendar.RecurrenceExpanded})
-			if err == nil || calls != 1 {
-				t.Fatalf("strict probe accepted response or did not call provider: err=%v calls=%d", err, calls)
-			}
-			if _, err := store.GatewayCalendarGrant(ctx, id, now); !errors.Is(err, storage.ErrAuthorityChanged) {
-				t.Fatalf("strict grant was not closed: %v", err)
+				Start: now.Add(-time.Hour), End: now.Add(time.Hour), View: view})
+			_, grantErr := store.GatewayCalendarGrant(ctx, id, now)
+			if tc.missingMaster {
+				if err != nil || calls != 3 || grantErr != nil || len(page.Items) != 1 || page.Items[0].InstanceKind != calendar.OrphanOccurrence {
+					t.Fatalf("missing master interrupted snapshot: err=%v calls=%d grant=%v page=%+v", err, calls, grantErr, page)
+				}
+			} else if err == nil || calls != 1 || !errors.Is(grantErr, storage.ErrAuthorityChanged) {
+				t.Fatalf("strict probe did not close calendar grant: err=%v calls=%d grant=%v", err, calls, grantErr)
 			}
 			after, err := store.ListCalendars(ctx, "account")
 			must(err)
