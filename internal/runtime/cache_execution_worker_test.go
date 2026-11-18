@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -113,10 +114,19 @@ func runSyntheticCacheWorker(t *testing.T, mode string) {
 	if err = s.CreateConnection(ctx, storage.Connection{ID: "account", Provider: "google", AccountFingerprint: "account", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	snapshot, err := s.BeginAuthorization(ctx, "account", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var discovery []storage.DiscoveredDetailCalendar
 	for _, id := range []string{"google:source", "google:target"} {
-		if err = s.UpsertCalendar(ctx, storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: id, Name: "synthetic", Timezone: "UTC", CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
-			t.Fatal(err)
-		}
+		discovery = append(discovery, storage.DiscoveredDetailCalendar{
+			Calendar:   storage.Calendar{ID: id, ConnectionID: "account", ProviderCalendarID: id, Name: "synthetic", Timezone: "UTC"},
+			AccessRole: "owner",
+		})
+	}
+	if err = s.CompleteGoogleAuthorization(ctx, snapshot, discovery, now); err != nil {
+		t.Fatal(err)
 	}
 	rule := storage.Rule{ID: "rule", SourceCalendarID: "google:source", TargetCalendarID: "google:target", State: "paused", SyncMode: "cached_instances", IntervalSeconds: 600, LookaheadDays: 14, RecurrenceMode: "preserve", NotificationPolicy: "none", CreatedAt: now, UpdatedAt: now}
 	if err = s.CreateRule(ctx, rule); err != nil {
@@ -194,7 +204,12 @@ func runSyntheticCacheWorker(t *testing.T, mode string) {
 	// Exercise the actual background bootstrap and verified publication against
 	// one synthetic source page, then forbid any further source provider reads
 	// during the cache-backed target runs.
-	target.bootstrapPage = calendar.EventSyncPage{SourceTimeZone: "UTC", Complete: true, NextCursor: "synthetic-cursor", Upserts: []calendar.EventSyncUpsert{{Object: calendar.SyncObject{ObjectID: event.ID}, Event: event}}}
+	target.bootstrapPage = calendar.EventSyncPage{
+		SourceTimeZone: "UTC", Complete: true, NextCursor: "synthetic-cursor",
+		RoleConfirmed: true, AccessRole: "owner",
+		CredentialRevision: snapshot.AuthorizationRevision, CredentialDigest: sha256.Sum256(snapshot.EncryptedCredentials),
+		Upserts: []calendar.EventSyncUpsert{{Object: calendar.SyncObject{ObjectID: event.ID}, Event: event}},
+	}
 	if _, err = db.ExecContext(ctx, `UPDATE calendar_sync_state SET next_sync_at=? WHERE calendar_id=?`, now.Add(24*time.Hour), rule.TargetCalendarID); err != nil {
 		t.Fatal(err)
 	}

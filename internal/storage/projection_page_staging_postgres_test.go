@@ -133,7 +133,7 @@ func TestPostgresProjectionPageLockOrder(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false
 	for time.Now().Before(deadline) {
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT connection_id FROM calendars WHERE id=%FOR NO KEY UPDATE%')`).Scan(&blocked)
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM calendars WHERE id=%FOR NO KEY UPDATE%')`).Scan(&blocked)
 		if err != nil {
 			t.Fatal(err)
 		}

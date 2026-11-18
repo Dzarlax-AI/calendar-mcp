@@ -17,7 +17,10 @@ type fanOutResult struct {
 const maxFanOutPages = 1000
 
 func (s *Service) listEventsFanOut(ctx context.Context, request calendar.ListEventsRequestV2) calendar.Page[calendar.EventV2] {
-	providers := s.registry.Providers()
+	providers, err := s.registry.ProvidersContext(ctx)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{Complete: false, Sources: []calendar.SourceStatus{failedSource("", "", err).status}}
+	}
 	results := make(chan fanOutResult)
 	var wg sync.WaitGroup
 	for _, provider := range providers {
@@ -25,6 +28,11 @@ func (s *Service) listEventsFanOut(ctx context.Context, request calendar.ListEve
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			provider, err := s.registry.RefreshProvider(ctx, provider)
+			if err != nil {
+				results <- failedSource("", "", err)
+				return
+			}
 			calendars, err := provider.ListCalendars(ctx)
 			if err != nil {
 				results <- failedSource(provider.Name(), "", err)

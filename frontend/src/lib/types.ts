@@ -184,7 +184,7 @@ export type EventSourceStatus = {
   calendar_id: string;
   complete: boolean;
   error?: string;
-  status?: "pending" | "syncing" | "ready" | "failed" | "parked" | "degraded" | string;
+  status?: "pending" | "syncing" | "ready" | "failed" | "parked" | "degraded" | "unavailable" | "disabled" | string;
   last_success_at?: string | null;
   next_sync_at?: string | null;
   stale?: boolean;

@@ -1,7 +1,8 @@
 import { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, NavLink, useLocation, useRouteError } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { SourceAuthority, SourceAuthorityProvider } from "./sourceAuthority";
 import { CalendarDays, Link2, ListChecks, LoaderCircle, Menu, Settings2, ShieldAlert, X } from "lucide-react";
 import { getBootstrap, isSessionExpiredError, navigateToApp } from "../lib/api";
 import type { Bootstrap } from "../lib/types";
@@ -67,14 +68,26 @@ function Header({ onMenu }: { onMenu: () => void }) {
   </header>;
 }
 
-function BootstrapGate() {
+export function BootstrapGate() {
   const bootstrap = useBootstrap();
+  const queryClient = useQueryClient();
+  const [session, setSession] = useState<{ identity: string; authority: SourceAuthority } | null>(null);
+  const identity = bootstrap.data ? JSON.stringify([bootstrap.data.username, bootstrap.data.csrf_token]) : null;
+  const expired = isSessionExpiredError(bootstrap.error);
   useEffect(() => {
-    if (isSessionExpiredError(bootstrap.error)) navigateToApp();
-  }, [bootstrap.error]);
+    if (expired || (session && identity && session.identity !== identity)) {
+      session?.authority.dispose();
+      queryClient.removeQueries({ queryKey: ["events"] });
+      setSession(null);
+      if (expired) navigateToApp();
+    } else if (identity && !session) {
+      setSession({ identity, authority: new SourceAuthority() });
+    }
+  }, [expired, identity, queryClient, session]);
   if (bootstrap.isPending) return <div className="app-gate" role="status" aria-live="polite"><LoaderCircle className="spin" size={26} aria-hidden="true" /><p>Loading your calendar</p></div>;
   if (bootstrap.isError) return <div className="app-gate"><div className="empty-illustration"><CalendarDays size={30} /></div><h1>Calendar is unavailable</h1><p>We couldn't load the authenticated calendar workspace. Try refreshing the page.</p><button className="button button-primary" onClick={() => void bootstrap.refetch()}>Try again</button></div>;
-  return <Workspace bootstrap={bootstrap.data} />;
+  if (!session || session.identity !== identity) return <div className="app-gate" role="status">Loading your calendar</div>;
+  return <SourceAuthorityProvider authority={session.authority}><Workspace bootstrap={bootstrap.data} /></SourceAuthorityProvider>;
 }
 
 function Workspace({ bootstrap }: { bootstrap: Bootstrap }) {

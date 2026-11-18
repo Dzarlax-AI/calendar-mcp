@@ -22,13 +22,15 @@ import (
 )
 
 type Provider struct {
-	client     *caldav.Client
-	username   string
-	httpClient *http.Client
-	caldavURL  string
-	routeName  string
-	calendars  map[string]struct{}
-	discovery  discoveryCache
+	client             *caldav.Client
+	username           string
+	httpClient         *http.Client
+	caldavURL          string
+	routeName          string
+	calendars          map[string]struct{}
+	credentialRevision string
+	credentialDigest   [32]byte
+	discovery          discoveryCache
 }
 
 func New(username, appPassword, caldavURL string) (*Provider, error) {
@@ -43,6 +45,14 @@ func New(username, appPassword, caldavURL string) (*Provider, error) {
 		httpClient: httpClient,
 		caldavURL:  strings.TrimSuffix(caldavURL, "/"),
 	}, nil
+}
+
+// SetCredentialBinding is called before the provider is published to a registry.
+func (p *Provider) SetCredentialBinding(revision string, digest [32]byte) {
+	p.credentialRevision, p.credentialDigest = revision, digest
+}
+func (p *Provider) CredentialBinding() (string, [32]byte) {
+	return p.credentialRevision, p.credentialDigest
 }
 
 func (p *Provider) Name() string { return "apple" }

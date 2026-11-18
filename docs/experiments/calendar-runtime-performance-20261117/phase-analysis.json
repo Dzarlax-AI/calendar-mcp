@@ -1,0 +1,1274 @@
+[
+  {
+    "backend": "sqlite",
+    "case": "dense4000-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/dense4000-c1-speed.stdout.json",
+    "source_sha256": "3725244ff7cb2df6d711bd2a21a2a145c8155f7258f24677ed987714ad595174",
+    "walk_samples": 3,
+    "pages_per_walk": 160,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 29364.829083999997,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 12305.831297,
+      "ReadNS": 16398.953241,
+      "PackNS": 118.778954,
+      "FinalValidationNS": 155.324044,
+      "SDKResultRenderNS": 49.524752
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 28.99033,
+      "sql_begin_ns": 1.670838,
+      "sql_metadata_ns": 57.151124,
+      "sql_events_ns": 16265.998543,
+      "sql_commit_ns": 6.015077,
+      "decode_ns": 23.735106
+    },
+    "phase_percent": {
+      "AuthorityNS": 41.90670159120754,
+      "ReadNS": 55.84555998636917,
+      "PackNS": 0.4044939395363927,
+      "FinalValidationNS": 0.5289458472776583,
+      "SDKResultRenderNS": 0.16865329560860454
+    },
+    "sql_events_percent": 55.392791480141284,
+    "residual_ms": 336.4167959999977,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 137.603375,
+        "first_p95_ms": 142.634292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 195.47,
+        "walk_p50_ms": 183.307458
+      },
+      "candidate": {
+        "first_p50_ms": 78.338958,
+        "first_p95_ms": 86.439708,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 9805.424375,
+        "walk_p50_ms": 9805.3175
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "jumbo-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/jumbo-c1-speed.stdout.json",
+    "source_sha256": "f2386fdfcbee3fdf0314d666853795befe1b5c564b91a1c50694666056b5f5c6",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 361.144166,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 101.483213,
+      "ReadNS": 201.317498,
+      "PackNS": 10.104707,
+      "FinalValidationNS": 11.768623,
+      "SDKResultRenderNS": 4.803284
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 2.360792,
+      "sql_begin_ns": 0.129211,
+      "sql_metadata_ns": 4.846793,
+      "sql_events_ns": 190.560801,
+      "sql_commit_ns": 0.248208,
+      "decode_ns": 2.020046
+    },
+    "phase_percent": {
+      "AuthorityNS": 28.100471377959355,
+      "ReadNS": 55.74435833472664,
+      "PackNS": 2.7979704371023955,
+      "FinalValidationNS": 3.25870500148132,
+      "SDKResultRenderNS": 1.3300184392290584
+    },
+    "sql_events_percent": 52.76585334622296,
+    "residual_ms": 31.666840999999977,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 14.558875,
+        "first_p95_ms": 15.115458,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 21.459583,
+        "walk_p50_ms": 20.778875
+      },
+      "candidate": {
+        "first_p50_ms": 9.047792,
+        "first_p95_ms": 9.807334,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 121.417458,
+        "walk_p50_ms": 120.247708
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "jumbo-master-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/jumbo-master-c1-speed.stdout.json",
+    "source_sha256": "7f56443d8577d2e95fc6aadf60ca66b15063e8f924726fd8709b21c02342f164",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 24.9375,
+    "walk_wall_sum_ms": 358.08074899999997,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 103.91242,
+      "ReadNS": 197.306626,
+      "PackNS": 9.679497,
+      "FinalValidationNS": 10.254544,
+      "SDKResultRenderNS": 4.843003
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 2.425459,
+      "sql_begin_ns": 0.109499,
+      "sql_metadata_ns": 4.751747,
+      "sql_events_ns": 186.670573,
+      "sql_commit_ns": 0.206669,
+      "decode_ns": 2.016212
+    },
+    "phase_percent": {
+      "AuthorityNS": 29.019270175845172,
+      "ReadNS": 55.1011542929944,
+      "PackNS": 2.7031603980475367,
+      "FinalValidationNS": 2.8637518293394764,
+      "SDKResultRenderNS": 1.352489072234375
+    },
+    "sql_events_percent": 52.130859735215765,
+    "residual_ms": 32.08465899999999,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.841833,
+        "first_p95_ms": 14.078583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.357042,
+        "walk_p50_ms": 19.41325
+      },
+      "candidate": {
+        "first_p50_ms": 8.682084,
+        "first_p95_ms": 9.351959,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 119.838375,
+        "walk_p50_ms": 119.525083
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "ordinary25-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/ordinary25-c1-speed.stdout.json",
+    "source_sha256": "c0a2c095732dd6a899c8f7112caf88b18da93d291bbcbe1ae9bc30db69fb3ab7",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 353.143667,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 94.186834,
+      "ReadNS": 195.038996,
+      "PackNS": 10.50179,
+      "FinalValidationNS": 13.066124,
+      "SDKResultRenderNS": 5.462749
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 2.488753,
+      "sql_begin_ns": 0.127583,
+      "sql_metadata_ns": 5.078832,
+      "sql_events_ns": 183.950025,
+      "sql_commit_ns": 0.279917,
+      "decode_ns": 2.031496
+    },
+    "phase_percent": {
+      "AuthorityNS": 26.670967881182477,
+      "ReadNS": 55.229362501919084,
+      "PackNS": 2.9738010281237752,
+      "FinalValidationNS": 3.699945722090494,
+      "SDKResultRenderNS": 1.5468913959031865
+    },
+    "sql_events_percent": 52.08928891821244,
+    "residual_ms": 34.887174000000016,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.522333,
+        "first_p95_ms": 14.055792,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.345459,
+        "walk_p50_ms": 19.413292
+      },
+      "candidate": {
+        "first_p50_ms": 8.565083,
+        "first_p95_ms": 9.067291,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 121.662375,
+        "walk_p50_ms": 116.037459
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "ordinary25-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/ordinary25-c4-speed.stdout.json",
+    "source_sha256": "c3c1177327b4047ca5c125ad96dd8dcd24aeec4f63258768cbab929addcc8197",
+    "walk_samples": 12,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 3784.599418,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 1087.740417,
+      "ReadNS": 1507.943544,
+      "PackNS": 39.30675,
+      "FinalValidationNS": 983.635833,
+      "SDKResultRenderNS": 21.312542
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 735.150243,
+      "sql_begin_ns": 0.801086,
+      "sql_metadata_ns": 20.751465,
+      "sql_events_ns": 737.467279,
+      "sql_commit_ns": 0.881709,
+      "decode_ns": 8.242486
+    },
+    "phase_percent": {
+      "AuthorityNS": 28.741229833376256,
+      "ReadNS": 39.84420482728088,
+      "PackNS": 1.0385973694614146,
+      "FinalValidationNS": 25.99048735043694,
+      "SDKResultRenderNS": 0.5631386481389561
+    },
+    "sql_events_percent": 19.48600624659294,
+    "residual_ms": 144.66033199999993,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 21.834417,
+        "first_p95_ms": 24.91625,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 31.911875,
+        "walk_p50_ms": 28.9935
+      },
+      "candidate": {
+        "first_p50_ms": 25.702167,
+        "first_p95_ms": 28.879916,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 324.212834,
+        "walk_p50_ms": 313.154334
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "ordinary50-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/ordinary50-c1-speed.stdout.json",
+    "source_sha256": "7ff2eb8b95486c68f4f3a5d41e9156f006fc29287086caa61eae3cf4b7bd3a7a",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 350.393499,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 89.783501,
+      "ReadNS": 197.834287,
+      "PackNS": 16.238083,
+      "FinalValidationNS": 8.476455,
+      "SDKResultRenderNS": 5.24554
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 1.811209,
+      "sql_begin_ns": 0.111082,
+      "sql_metadata_ns": 4.187835,
+      "sql_events_ns": 186.284311,
+      "sql_commit_ns": 0.201415,
+      "decode_ns": 3.867406
+    },
+    "phase_percent": {
+      "AuthorityNS": 25.623620659697224,
+      "ReadNS": 56.46060431046981,
+      "PackNS": 4.634242086780268,
+      "FinalValidationNS": 2.419124505503454,
+      "SDKResultRenderNS": 1.4970426149373277
+    },
+    "sql_events_percent": 53.164317126785505,
+    "residual_ms": 32.81563300000005,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.068917,
+        "first_p95_ms": 13.714875,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.490208,
+        "walk_p50_ms": 18.68675
+      },
+      "candidate": {
+        "first_p50_ms": 8.459708,
+        "first_p95_ms": 9.400125,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 117.705167,
+        "walk_p50_ms": 116.791541
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "ordinary50-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/ordinary50-c4-speed.stdout.json",
+    "source_sha256": "784de73b3bdf9c8fbda527121f3c83031db7004e94db2ce5f3ecc0aee1bfae89",
+    "walk_samples": 12,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 3801.592707,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 986.158872,
+      "ReadNS": 1516.273541,
+      "PackNS": 65.733453,
+      "FinalValidationNS": 1071.510919,
+      "SDKResultRenderNS": 20.342624
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 712.489624,
+      "sql_begin_ns": 0.796298,
+      "sql_metadata_ns": 21.320541,
+      "sql_events_ns": 758.854033,
+      "sql_commit_ns": 0.949418,
+      "decode_ns": 15.669446
+    },
+    "phase_percent": {
+      "AuthorityNS": 25.940676658605554,
+      "ReadNS": 39.88521806157811,
+      "PackNS": 1.729102985676577,
+      "FinalValidationNS": 28.185842134718722,
+      "SDKResultRenderNS": 0.5351079289094396
+    },
+    "sql_events_percent": 19.961476451769716,
+    "residual_ms": 141.5732979999998,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 22.091416,
+        "first_p95_ms": 37.968,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 30.326833,
+        "walk_p50_ms": 27.023667
+      },
+      "candidate": {
+        "first_p50_ms": 23.706042,
+        "first_p95_ms": 30.75175,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 339.358875,
+        "walk_p50_ms": 314.3365
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "sparse4000-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/sparse4000-c1-speed.stdout.json",
+    "source_sha256": "89fc2855ebc6c96194cb6790513ee1f6a615367d85a6a043645fc56fe6c93232",
+    "walk_samples": 3,
+    "pages_per_walk": 1,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 13.338543000000001,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 4.763875,
+      "ReadNS": 5.122707,
+      "PackNS": 0.551624,
+      "FinalValidationNS": 0.811833,
+      "SDKResultRenderNS": 0.251082
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.112084,
+      "sql_begin_ns": 0.009166,
+      "sql_metadata_ns": 0.374375,
+      "sql_events_ns": 4.445542,
+      "sql_commit_ns": 0.009459,
+      "decode_ns": 0.116584
+    },
+    "phase_percent": {
+      "AuthorityNS": 35.715107714538235,
+      "ReadNS": 38.40529659048968,
+      "PackNS": 4.135564131704639,
+      "FinalValidationNS": 6.086369403314889,
+      "SDKResultRenderNS": 1.882379507267023
+    },
+    "sql_events_percent": 33.32854270515153,
+    "residual_ms": 1.8374220000000019,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 4.655167,
+        "first_p95_ms": 5.171583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 5.139583,
+        "walk_p50_ms": 5.084459
+      },
+      "candidate": {
+        "first_p50_ms": 4.275459,
+        "first_p95_ms": 4.697792,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 4.694834,
+        "walk_p50_ms": 4.375917
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "wide25-s16-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/wide25-s16-c1-speed.stdout.json",
+    "source_sha256": "a615eac0b9f15de24247a76c36de36a02b64dbedc45e582784874b0fcdfffb51",
+    "walk_samples": 3,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 819.9326249999999,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 217.67708,
+      "ReadNS": 438.226345,
+      "PackNS": 36.211332,
+      "FinalValidationNS": 45.596253,
+      "SDKResultRenderNS": 10.942917
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 10.0752,
+      "sql_begin_ns": 0.262588,
+      "sql_metadata_ns": 17.754999,
+      "sql_events_ns": 402.698735,
+      "sql_commit_ns": 0.51858,
+      "decode_ns": 4.296575
+    },
+    "phase_percent": {
+      "AuthorityNS": 26.548166686256693,
+      "ReadNS": 53.44662861780869,
+      "PackNS": 4.4163789677231104,
+      "FinalValidationNS": 5.560975574060125,
+      "SDKResultRenderNS": 1.3346117310553414
+    },
+    "sql_events_percent": 49.11363723330317,
+    "residual_ms": 71.27869799999996,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.411333,
+        "first_p95_ms": 13.860209,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.695292,
+        "walk_p50_ms": 19.0835
+      },
+      "candidate": {
+        "first_p50_ms": 9.243917,
+        "first_p95_ms": 9.825292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 276.567959,
+        "walk_p50_ms": 273.300083
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "wide25-s16-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/wide25-s16-c4-speed.stdout.json",
+    "source_sha256": "8c5b003c979235d99e0898eb0ede170ba19b1b747719b6a722b0e87d86ee5ea3",
+    "walk_samples": 12,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 8942.179336,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 2667.947748,
+      "ReadNS": 3600.502635,
+      "PackNS": 138.934462,
+      "FinalValidationNS": 2198.963087,
+      "SDKResultRenderNS": 46.992674
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 1869.296504,
+      "sql_begin_ns": 2.103628,
+      "sql_metadata_ns": 77.961099,
+      "sql_events_ns": 1620.271785,
+      "sql_commit_ns": 2.008578,
+      "decode_ns": 17.137834
+    },
+    "phase_percent": {
+      "AuthorityNS": 29.835542855411152,
+      "ReadNS": 40.26426332678059,
+      "PackNS": 1.5536980055932086,
+      "FinalValidationNS": 24.590907924953743,
+      "SDKResultRenderNS": 0.525517015866746
+    },
+    "sql_events_percent": 18.119428431467547,
+    "residual_ms": 288.8387299999995,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 22.275333,
+        "first_p95_ms": 24.099,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 29.820666,
+        "walk_p50_ms": 28.993333
+      },
+      "candidate": {
+        "first_p50_ms": 24.001917,
+        "first_p95_ms": 32.913125,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 776.271417,
+        "walk_p50_ms": 748.309042
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "wide50-s16-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/wide50-s16-c1-speed.stdout.json",
+    "source_sha256": "5c7c8d3a958ee24961f58af6a55ed0e4ced712c4ce2fdfa5cd8b6178c46c418f",
+    "walk_samples": 3,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 860.2518749999999,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 229.40392,
+      "ReadNS": 463.159663,
+      "PackNS": 37.732161,
+      "FinalValidationNS": 45.637369,
+      "SDKResultRenderNS": 11.291167
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 9.468504,
+      "sql_begin_ns": 0.285747,
+      "sql_metadata_ns": 17.917165,
+      "sql_events_ns": 423.48699,
+      "sql_commit_ns": 0.811916,
+      "decode_ns": 8.002825
+    },
+    "phase_percent": {
+      "AuthorityNS": 26.667064224649323,
+      "ReadNS": 53.8400062191088,
+      "PackNS": 4.3861759673583975,
+      "FinalValidationNS": 5.305117062371995,
+      "SDKResultRenderNS": 1.3125419808006813
+    },
+    "sql_events_percent": 49.22825538741198,
+    "residual_ms": 73.0275949999999,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.527417,
+        "first_p95_ms": 14.183625,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 20.561916,
+        "walk_p50_ms": 19.771209
+      },
+      "candidate": {
+        "first_p50_ms": 9.612041,
+        "first_p95_ms": 10.245958,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 297.126875,
+        "walk_p50_ms": 281.764209
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "sqlite",
+    "case": "wide50-s16-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/sqlite-speed/wide50-s16-c4-speed.stdout.json",
+    "source_sha256": "ea74bf34168a4ab5678f987ce9ab53240ed0d3259fdb0cabab26708cb111936c",
+    "walk_samples": 12,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 9306.830375,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 2526.007921,
+      "ReadNS": 3746.556545,
+      "PackNS": 141.284838,
+      "FinalValidationNS": 2563.271244,
+      "SDKResultRenderNS": 46.027739
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 1942.274374,
+      "sql_begin_ns": 2.202051,
+      "sql_metadata_ns": 80.108292,
+      "sql_events_ns": 1674.956389,
+      "sql_commit_ns": 2.007655,
+      "decode_ns": 31.091006
+    },
+    "phase_percent": {
+      "AuthorityNS": 27.141441492104125,
+      "ReadNS": 40.25598828000559,
+      "PackNS": 1.5180768565366702,
+      "FinalValidationNS": 27.54182832090136,
+      "SDKResultRenderNS": 0.49455869662822777
+    },
+    "sql_events_percent": 17.997065827043183,
+    "residual_ms": 283.68208799999957,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 22.286917,
+        "first_p95_ms": 24.085625,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 29.608208,
+        "walk_p50_ms": 27.413875
+      },
+      "candidate": {
+        "first_p50_ms": 24.641917,
+        "first_p95_ms": 33.7525,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 800.307083,
+        "walk_p50_ms": 773.669875
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "dense4000-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/dense4000-c1-speed.stdout.json",
+    "source_sha256": "1c091da47fcdd3aed21e62848b687c1d7b9cdaaa7de38673364569cfc6c4c8fc",
+    "walk_samples": 3,
+    "pages_per_walk": 160,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 2280.287085,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 83.656006,
+      "ReadNS": 1594.314335,
+      "PackNS": 123.821614,
+      "FinalValidationNS": 79.769869,
+      "SDKResultRenderNS": 50.605206
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.153133,
+      "sql_begin_ns": 16.616079,
+      "sql_metadata_ns": 36.148629,
+      "sql_events_ns": 1473.636964,
+      "sql_commit_ns": 28.566662,
+      "decode_ns": 27.717873
+    },
+    "phase_percent": {
+      "AuthorityNS": 3.6686611326397967,
+      "ReadNS": 69.91726372909753,
+      "PackNS": 5.4300888170841874,
+      "FinalValidationNS": 3.4982379861174366,
+      "SDKResultRenderNS": 2.2192471436113053
+    },
+    "sql_events_percent": 64.62506294465112,
+    "residual_ms": 348.12005499999987,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 108.445583,
+        "first_p95_ms": 109.86475,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 169.024292,
+        "walk_p50_ms": 167.532875
+      },
+      "candidate": {
+        "first_p50_ms": 3.497584,
+        "first_p95_ms": 3.774292,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 767.612584,
+        "walk_p50_ms": 761.224667
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "jumbo-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/jumbo-c1-speed.stdout.json",
+    "source_sha256": "b099e841d3bb6e0ddfaf442411b960f0681cdc39c951528a55bb300b1c6d153d",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 100.17099999999999,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 7.544377,
+      "ReadNS": 36.630876,
+      "PackNS": 11.682415,
+      "FinalValidationNS": 7.013126,
+      "SDKResultRenderNS": 4.918751
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.013462,
+      "sql_begin_ns": 1.732375,
+      "sql_metadata_ns": 3.245167,
+      "sql_events_ns": 26.54475,
+      "sql_commit_ns": 2.064754,
+      "decode_ns": 2.175624
+    },
+    "phase_percent": {
+      "AuthorityNS": 7.531498138183706,
+      "ReadNS": 36.56834413153508,
+      "PackNS": 11.66247217258488,
+      "FinalValidationNS": 7.00115402661449,
+      "SDKResultRenderNS": 4.910354294156992
+    },
+    "sql_events_percent": 26.499435964500705,
+    "residual_ms": 32.38145499999999,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 13.169708,
+        "first_p95_ms": 13.813833,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 19.733625,
+        "walk_p50_ms": 19.550166
+      },
+      "candidate": {
+        "first_p50_ms": 2.339,
+        "first_p95_ms": 2.7495,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 34.420709,
+        "walk_p50_ms": 33.394458
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "jumbo-master-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/jumbo-master-c1-speed.stdout.json",
+    "source_sha256": "1f4cc863677375cd187f51668dbac97cd3c2638712d7885e017837f7954157e8",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 24.9375,
+    "walk_wall_sum_ms": 102.374874,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 8.57821,
+      "ReadNS": 38.107796,
+      "PackNS": 11.23404,
+      "FinalValidationNS": 6.260339,
+      "SDKResultRenderNS": 4.896374
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.0145,
+      "sql_begin_ns": 1.646585,
+      "sql_metadata_ns": 3.401455,
+      "sql_events_ns": 26.942991,
+      "sql_commit_ns": 2.175999,
+      "decode_ns": 2.796992
+    },
+    "phase_percent": {
+      "AuthorityNS": 8.379214220082947,
+      "ReadNS": 37.223778170413176,
+      "PackNS": 10.973434751187092,
+      "FinalValidationNS": 6.115112776597898,
+      "SDKResultRenderNS": 4.782788792492188
+    },
+    "sql_events_percent": 26.31797231809047,
+    "residual_ms": 33.29811500000001,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 12.244625,
+        "first_p95_ms": 12.566042,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.034125,
+        "walk_p50_ms": 17.755167
+      },
+      "candidate": {
+        "first_p50_ms": 2.17775,
+        "first_p95_ms": 2.664583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 34.9745,
+        "walk_p50_ms": 34.714083
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "ordinary25-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/ordinary25-c1-speed.stdout.json",
+    "source_sha256": "76af8d8e86778c7e2afaf60e43b6328142ae4e8039745788c889fef8ccde35f6",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 108.820875,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 9.955581,
+      "ReadNS": 40.217786,
+      "PackNS": 11.958043,
+      "FinalValidationNS": 7.615914,
+      "SDKResultRenderNS": 4.664286
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.016331,
+      "sql_begin_ns": 2.304666,
+      "sql_metadata_ns": 4.10721,
+      "sql_events_ns": 27.935626,
+      "sql_commit_ns": 2.292629,
+      "decode_ns": 2.500006
+    },
+    "phase_percent": {
+      "AuthorityNS": 9.148594881267037,
+      "ReadNS": 36.957785902750736,
+      "PackNS": 10.988739982103617,
+      "FinalValidationNS": 6.998578168021531,
+      "SDKResultRenderNS": 4.286205197302447
+    },
+    "sql_events_percent": 25.671201412412827,
+    "residual_ms": 34.409265000000005,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 11.66275,
+        "first_p95_ms": 11.987542,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.319708,
+        "walk_p50_ms": 18.111
+      },
+      "candidate": {
+        "first_p50_ms": 2.182167,
+        "first_p95_ms": 3.024333,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 40.4515,
+        "walk_p50_ms": 36.395542
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "ordinary25-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/ordinary25-c4-speed.stdout.json",
+    "source_sha256": "c816f46945cdff186153bed175c3ad8ea04b904c8d0b722709e9c95dd24ee93a",
+    "walk_samples": 12,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 811.525251,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 208.911161,
+      "ReadNS": 270.308669,
+      "PackNS": 51.328043,
+      "FinalValidationNS": 113.139369,
+      "SDKResultRenderNS": 20.583952
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 7.40759,
+      "sql_begin_ns": 11.121083,
+      "sql_metadata_ns": 36.29913,
+      "sql_events_ns": 184.445803,
+      "sql_commit_ns": 13.028341,
+      "decode_ns": 12.368104
+    },
+    "phase_percent": {
+      "AuthorityNS": 25.743026571578607,
+      "ReadNS": 33.3087194350284,
+      "PackNS": 6.324885508707355,
+      "FinalValidationNS": 13.941570993704053,
+      "SDKResultRenderNS": 2.5364524362779193
+    },
+    "sql_events_percent": 22.728288832998988,
+    "residual_ms": 147.254057,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 18.00675,
+        "first_p95_ms": 20.026375,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 26.429625,
+        "walk_p50_ms": 24.129125
+      },
+      "candidate": {
+        "first_p50_ms": 6.215875,
+        "first_p95_ms": 8.115542,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 74.136625,
+        "walk_p50_ms": 66.797292
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "ordinary50-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/ordinary50-c1-speed.stdout.json",
+    "source_sha256": "40d92d83ac7122dbf13626dfb645c93496f0c6047fc862b7dff40a0bb92cd852",
+    "walk_samples": 3,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 109.58449999999999,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 7.124542,
+      "ReadNS": 42.287537,
+      "PackNS": 19.152499,
+      "FinalValidationNS": 5.986918,
+      "SDKResultRenderNS": 4.691164
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.013917,
+      "sql_begin_ns": 1.581954,
+      "sql_metadata_ns": 3.255294,
+      "sql_events_ns": 29.663918,
+      "sql_commit_ns": 1.88975,
+      "decode_ns": 4.499498
+    },
+    "phase_percent": {
+      "AuthorityNS": 6.501413977341687,
+      "ReadNS": 38.588976543215516,
+      "PackNS": 17.477379556415368,
+      "FinalValidationNS": 5.4632890600404265,
+      "SDKResultRenderNS": 4.280864538324306
+    },
+    "sql_events_percent": 27.069446865204476,
+    "residual_ms": 30.34183999999999,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 11.846292,
+        "first_p95_ms": 12.375208,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.470334,
+        "walk_p50_ms": 17.668916
+      },
+      "candidate": {
+        "first_p50_ms": 2.391458,
+        "first_p95_ms": 2.935583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 38.448042,
+        "walk_p50_ms": 36.527083
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "ordinary50-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/ordinary50-c4-speed.stdout.json",
+    "source_sha256": "4619fab20cf5a1c5eb38cb01734b6eaad27d8b26c1c0146c81f7f0476ef9108d",
+    "walk_samples": 12,
+    "pages_per_walk": 16,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 902.920416,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 234.032123,
+      "ReadNS": 290.181866,
+      "PackNS": 84.017799,
+      "FinalValidationNS": 116.626376,
+      "SDKResultRenderNS": 25.396462
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 4.38662,
+      "sql_begin_ns": 10.09,
+      "sql_metadata_ns": 31.725957,
+      "sql_events_ns": 203.667745,
+      "sql_commit_ns": 12.454254,
+      "decode_ns": 21.254446
+    },
+    "phase_percent": {
+      "AuthorityNS": 25.919462983989057,
+      "ReadNS": 32.13814427693703,
+      "PackNS": 9.305116764576512,
+      "FinalValidationNS": 12.9165731479041,
+      "SDKResultRenderNS": 2.8127021551365607
+    },
+    "sql_events_percent": 22.55655552703772,
+    "residual_ms": 152.66579000000002,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 18.11575,
+        "first_p95_ms": 20.111542,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 26.073,
+        "walk_p50_ms": 25.448625
+      },
+      "candidate": {
+        "first_p50_ms": 6.813625,
+        "first_p95_ms": 9.900583,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 84.511959,
+        "walk_p50_ms": 76.131917
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "sparse4000-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/sparse4000-c1-speed.stdout.json",
+    "source_sha256": "2187e2545ab6c4008026edc8a9695d6ad1251d1a5ae6e03016401c588e4708cf",
+    "walk_samples": 3,
+    "pages_per_walk": 1,
+    "actual_mean_items_per_page": 25.0,
+    "walk_wall_sum_ms": 5.377249,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 0.503583,
+      "ReadNS": 1.567,
+      "PackNS": 0.362751,
+      "FinalValidationNS": 0.399167,
+      "SDKResultRenderNS": 0.346625
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.000751,
+      "sql_begin_ns": 0.107459,
+      "sql_metadata_ns": 0.212835,
+      "sql_events_ns": 0.972123,
+      "sql_commit_ns": 0.089333,
+      "decode_ns": 0.139209
+    },
+    "phase_percent": {
+      "AuthorityNS": 9.365067528024088,
+      "ReadNS": 29.141295112054507,
+      "PackNS": 6.746033148176698,
+      "FinalValidationNS": 7.423256761961367,
+      "SDKResultRenderNS": 6.446140024387936
+    },
+    "sql_events_percent": 18.07844494461759,
+    "residual_ms": 2.198123,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 1.115291,
+        "first_p95_ms": 1.387833,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 1.640417,
+        "walk_p50_ms": 1.361583
+      },
+      "candidate": {
+        "first_p50_ms": 1.755416,
+        "first_p95_ms": 2.042417,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 1.902083,
+        "walk_p50_ms": 1.87725
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "wide25-s16-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/wide25-s16-c1-speed.stdout.json",
+    "source_sha256": "bd198992bb96d2ac6252ecdece1e8f6dc7abf0f5e863d1df70204cda782d8626",
+    "walk_samples": 3,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 278.418418,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 21.249203,
+      "ReadNS": 67.840499,
+      "PackNS": 36.769876,
+      "FinalValidationNS": 71.573252,
+      "SDKResultRenderNS": 11.000249
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.043081,
+      "sql_begin_ns": 3.777507,
+      "sql_metadata_ns": 12.825707,
+      "sql_events_ns": 39.592067,
+      "sql_commit_ns": 4.000625,
+      "decode_ns": 5.042833
+    },
+    "phase_percent": {
+      "AuthorityNS": 7.6321111055232,
+      "ReadNS": 24.36638333316009,
+      "PackNS": 13.206696692027034,
+      "FinalValidationNS": 25.707082352576258,
+      "SDKResultRenderNS": 3.950977481669335
+    },
+    "sql_events_percent": 14.220347663925024,
+    "residual_ms": 69.98533899999998,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 11.712375,
+        "first_p95_ms": 12.667791,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.117916,
+        "walk_p50_ms": 17.849792
+      },
+      "candidate": {
+        "first_p50_ms": 2.605958,
+        "first_p95_ms": 3.188875,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 96.202334,
+        "walk_p50_ms": 92.192625
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "wide25-s16-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/wide25-s16-c4-speed.stdout.json",
+    "source_sha256": "b41cabafc720d3738a1b87682b258f2ae2551df84245db7c7cf2daa0241c0833",
+    "walk_samples": 12,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 2327.475873,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 478.063884,
+      "ReadNS": 551.157849,
+      "PackNS": 183.813836,
+      "FinalValidationNS": 729.968838,
+      "SDKResultRenderNS": 50.394234
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 15.425926,
+      "sql_begin_ns": 24.013875,
+      "sql_metadata_ns": 107.250539,
+      "sql_events_ns": 337.974999,
+      "sql_commit_ns": 27.184992,
+      "decode_ns": 26.189649
+    },
+    "phase_percent": {
+      "AuthorityNS": 20.54001459460027,
+      "ReadNS": 23.68049677308084,
+      "PackNS": 7.89756139396939,
+      "FinalValidationNS": 31.363110847594164,
+      "SDKResultRenderNS": 2.1651882446817527
+    },
+    "sql_events_percent": 14.521095703749108,
+    "residual_ms": 334.07723199999987,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 17.622166,
+        "first_p95_ms": 19.932708,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 25.549333,
+        "walk_p50_ms": 23.530084
+      },
+      "candidate": {
+        "first_p50_ms": 7.287334,
+        "first_p95_ms": 10.275834,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 214.343125,
+        "walk_p50_ms": 190.310458
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "wide50-s16-c1",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/wide50-s16-c1-speed.stdout.json",
+    "source_sha256": "df7cd2ea1623216c49abcdf708be31f6caf70303f1fc089ea68e534c97eee6e7",
+    "walk_samples": 3,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 285.329083,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 20.777295,
+      "ReadNS": 79.448377,
+      "PackNS": 39.568633,
+      "FinalValidationNS": 71.157205,
+      "SDKResultRenderNS": 10.539205
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 0.033256,
+      "sql_begin_ns": 3.418708,
+      "sql_metadata_ns": 12.141587,
+      "sql_events_ns": 47.711162,
+      "sql_commit_ns": 3.962084,
+      "decode_ns": 9.352395
+    },
+    "phase_percent": {
+      "AuthorityNS": 7.281870737305807,
+      "ReadNS": 27.84447213185064,
+      "PackNS": 13.867718139338777,
+      "FinalValidationNS": 24.938644267118047,
+      "SDKResultRenderNS": 3.6937016336326294
+    },
+    "sql_events_percent": 16.72145071871275,
+    "residual_ms": 63.83836800000003,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 11.550208,
+        "first_p95_ms": 12.140583,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 18.0635,
+        "walk_p50_ms": 17.891375
+      },
+      "candidate": {
+        "first_p50_ms": 2.813625,
+        "first_p95_ms": 3.306542,
+        "first_page_samples": 20,
+        "full_walk_samples": 3,
+        "walk_max_ms": 97.59225,
+        "walk_p50_ms": 94.533833
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  },
+  {
+    "backend": "postgres",
+    "case": "wide50-s16-c4",
+    "source": "docs/verification/calendar-runtime-r6-20261117-final/postgres-speed/wide50-s16-c4-speed.stdout.json",
+    "source_sha256": "b50f19da12212d510b372c46643a505434364fb0378c712bf383d996e99e38d6",
+    "walk_samples": 12,
+    "pages_per_walk": 34,
+    "actual_mean_items_per_page": 11.764705882352942,
+    "walk_wall_sum_ms": 2479.236376,
+    "exclusive_phase_sum_ms": {
+      "AuthorityNS": 494.97516,
+      "ReadNS": 627.052595,
+      "PackNS": 184.779214,
+      "FinalValidationNS": 783.268134,
+      "SDKResultRenderNS": 51.64545
+    },
+    "nested_read_phases_ms": {
+      "pool_wait_ns": 13.639545,
+      "sql_begin_ns": 25.881678,
+      "sql_metadata_ns": 111.534704,
+      "sql_events_ns": 381.897828,
+      "sql_commit_ns": 28.877785,
+      "decode_ns": 48.964495
+    },
+    "phase_percent": {
+      "AuthorityNS": 19.96482323313572,
+      "ReadNS": 25.292166615096487,
+      "PackNS": 7.453069654379741,
+      "FinalValidationNS": 31.59312042943339,
+      "SDKResultRenderNS": 2.083119241874176
+    },
+    "sql_events_percent": 15.403849011611955,
+    "residual_ms": 337.5158229999997,
+    "latency": {
+      "baseline": {
+        "first_p50_ms": 18.02575,
+        "first_p95_ms": 20.598167,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 25.515209,
+        "walk_p50_ms": 23.873708
+      },
+      "candidate": {
+        "first_p50_ms": 7.873084,
+        "first_p95_ms": 10.221416,
+        "first_page_samples": 80,
+        "full_walk_samples": 12,
+        "walk_max_ms": 227.088666,
+        "walk_p50_ms": 201.788167
+      }
+    },
+    "notes": "Drop first-page samples before aggregating; nested read phases are included in ReadNS. Residual includes SDK/HTTP/client validation/hash/scheduling; it is not pure network time."
+  }
+]

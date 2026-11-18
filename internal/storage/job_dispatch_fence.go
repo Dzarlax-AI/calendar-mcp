@@ -21,8 +21,8 @@ func (s *Store) CheckJobDispatchLease(ctx context.Context, job Job) error {
 	var ruleState, kind string
 	var worker sql.NullString
 	var attempt int
-	var claimed, deadline sql.NullTime
-	err := s.db.QueryRowContext(ctx, s.query(`SELECT j.state,j.claimed_by,j.attempt,j.claimed_at,j.lease_until,j.stop_requested,r.state,j.kind FROM sync_jobs j JOIN sync_rules r ON r.id=j.rule_id WHERE j.id=? AND j.rule_id=?`), job.ID, job.RuleID).Scan(&state, &worker, &attempt, &claimed, &deadline, &stopRequested, &ruleState, &kind)
+	claimed, deadline := s.scanTime(), s.scanTime()
+	err := s.db.QueryRowContext(ctx, s.query(s.timeProjection(`SELECT j.state,j.claimed_by,j.attempt,j.claimed_at,j.lease_until,j.stop_requested,r.state,j.kind FROM sync_jobs j JOIN sync_rules r ON r.id=j.rule_id WHERE j.id=? AND j.rule_id=?`, "j.claimed_at", "j.lease_until")), job.ID, job.RuleID).Scan(&state, &worker, &attempt, &claimed, &deadline, &stopRequested, &ruleState, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrJobLeaseLost
 	}

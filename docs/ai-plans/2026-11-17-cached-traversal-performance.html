@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calendar MCP — причины замедления полного обхода</title>
+<style>
+body{margin:0;background:#f3f5f7;color:#202a35;font:16px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:clamp(16px,4vw,40px)}section{background:white;border:1px solid #d9e0e6;border-radius:10px;padding:24px;margin:20px 0}h1,h2{line-height:1.25}a{color:#075fa7}code{font-size:.9em}pre,.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #d9e0e6;text-align:left;vertical-align:top}p,li,td,code{overflow-wrap:anywhere}.status{border-left:5px solid #bc7515;padding:12px 16px;background:#fff5dd}.muted{color:#536170}pre{padding:16px;background:#f3f5f7}small{font-size:.86em}
+</style>
+</head>
+<body><main>
+<h1>Почему полный обход стал медленнее</h1>
+<p>17 ноября 2026 · Revision 1 · Диагностика завершена · Implemented: согласованные шаги A–C выполнены и проверены</p>
+<p class="status">Главная устранимая причина на SQLite — JSON-проекция до LIMIT. На PostgreSQL — повторный просмотр диапазона и цена отдельных проверок прав. Новых кешей, индексов, миграций и расширения пула этот план не предусматривает.</p>
+
+<section id="scope"><h2>1. Объём и границы</h2>
+<p>Запрос: объяснить замедление полного обхода и найти ускорения без новых кешей и расширения пула. На этапе диагностики выполнены разбор сохранённых фаз R6, отдельные синтетические SQL-эксперименты и один SDK-обход SQLite без фоновой нагрузки; тогда все 159 файлов исходного R6 manifest совпали по SHA-256. После согласования внедрены шаги A–C; результат приведён в разделе9.</p>
+<p>Checkout: <code>calendar-mcp</code>, ветка <code>codex/google-orphan-occurrence</code>, HEAD <code>24c8e163b7e301040922f29b5f39ace150e3083d</code>. Существующий грязный checkout и прежние результаты сохранены. Временный PostgreSQL после диагностики остановлен. Реальные провайдеры, credentials, прикладная БД и production не использовались.</p>
+<p>Цель предлагаемого внедрения: сократить повторную работу каждой страницы, сохранив порядок, курсоры, отзыв прав, лимиты 16 KiB/32 KiB и ограниченный Go working set. Полный обход остаётся последовательностью страниц; равенство скорости с одной неограниченной выдачей не обещается.</p></section>
+
+<section id="observed"><h2>2. За что платит полный обход</h2>
+<div class="scroll"><table><thead><tr><th>Синтетический случай, C1</th><th>Полная Store-выдача через SDK</th><th>Страницы R6 через SDK</th><th>Запросов на обход</th></tr></thead><tbody>
+<tr><td>SQLite, 400 событий / 1 источник</td><td>19,41 мс</td><td>116,04 мс</td><td>16</td></tr>
+<tr><td>SQLite, 4000 / 1</td><td>183,31 мс</td><td>9805,32 мс</td><td>160</td></tr>
+<tr><td>PostgreSQL, 4000 / 1</td><td>167,53 мс</td><td>761,22 мс</td><td>160</td></tr>
+<tr><td>PostgreSQL, 400 / 16</td><td>17,85 мс</td><td>92,19 мс</td><td>34</td></tr>
+</tbody></table></div>
+<p>Это медианы трёх полных обходов R6 с синтетическими UI-чтениями и sync-записями на том же пуле. Baseline — тестовая SDK-обёртка полной Store-выдачи, а не прежний production MCP-контракт. Первая страница имеет отдельные 20 парных замеров; их нельзя смешивать с полными обходами.</p>
+<p>Каждая страница заново проверяет аргументы и права, выполняет SQL, пакует ответ и проходит SDK/HTTP. На SQLite это три получения соединения/транзакции: начальная authority, чтение, финальная authority. Число страниц ограничивает полный SDK-ответ 16 KiB с text и structured представлениями. Поэтому <code>page_size=50</code> оставляет те же 16 страниц для 400 обычных событий и 34 страницы при 16 источниках: повторяемая source metadata занимает значительную часть бюджета.</p>
+<p>На 4000 событиях R6 переносит около 2,55 MB SDK-результатов за обход. Рост <code>page_size</code> без изменения контракта не решает проблему и может увеличивать число прочитанных, но не выданных строк: wide/25 декодирует около 852 строк для 400 результатов, wide/50 — около 1618 строк.</p>
+<p>Источник: <a href="../verification/calendar-runtime-r6-20261117-final/REPORT.md">исходный R6 отчёт</a>; пересчёт фаз: <a href="../experiments/calendar-runtime-performance-20261117/phase-analysis.json">phase-analysis.json</a>.</p></section>
+
+<section id="phases"><h2>3. Где проходит время</h2>
+<div class="scroll"><table><thead><tr><th>Случай</th><th>SQL событий</th><th>Начальная authority</th><th>Финальная authority</th><th>Pack</th></tr></thead><tbody>
+<tr><td>SQLite, dense 4000</td><td>55,4%</td><td>41,9%</td><td>0,5%</td><td>0,4%</td></tr>
+<tr><td>PostgreSQL, dense 4000</td><td>64,6%</td><td>3,7%</td><td>3,5%</td><td>5,4%</td></tr>
+<tr><td>PostgreSQL, wide 400 / 16</td><td>14,2%</td><td>7,6%</td><td>25,7%</td><td>13,2%</td></tr>
+</tbody></table></div>
+<p>Проценты — суммы длительностей по трём полным обходам, делённые на сумму клиентских WalkMS. SQL событий входит в ReadNS; суммировать его с ReadNS нельзя. Authority включает ожидание пула, транзакцию и metadata. Остаток включает SDK/HTTP, клиентские marshal/unmarshal, проверку и хеширование, планировщик; это не измерение чистого сетевого времени.</p>
+<p>В новом одиночном SQLite SDK-прогоне без фоновой нагрузки 4000 событий заняли <strong>5,881 с</strong>: SQL событий 5,619 с, начальная authority всех страниц 30,18 мс, финальная 17,57 мс. Значит, дорогое начальное authority в R6 связано главным образом с конкуренцией. Но даже без неё SQL остаётся медленным.</p>
+<p>Фон R6 — один цикл каждые 5 мс, который последовательно читает полные cached events за час и пробует sync-запись. Это стрессовая синтетика, не измеренная частота production-запросов. Для authority отдельного таймера ожидания нет; точную долю ожидания внутри неё имеющиеся фазы не дают.</p></section>
+
+<section id="sql"><h2>4. Подтверждённый дефект SQLite</h2>
+<p>В <a href="../../internal/storage/event_pages.go">event_pages.go</a> CTE <code>selected AS MATERIALIZED</code> содержит JSON-проекцию и scalar guards вместе с ORDER BY/LIMIT. SQLite 3.53.3 вычисляет проекцию до отбора top-N. Покрывающие индексы range-веток используются, однако внешний запрос повторно просматривает диапазон и сортирует его на каждой странице.</p>
+<div class="scroll"><table><thead><tr><th>Позиция</th><th>Master-проверок: текущий SQL</th><th>JSON-проекций: текущий SQL</th><th>JSON-проекций: после LIMIT</th></tr></thead><tbody>
+<tr><td>Начало, 4000 строк впереди</td><td>4000</td><td>4000</td><td>26</td></tr>
+<tr><td>Середина, 2000 впереди</td><td>4000</td><td>2000</td><td>26</td></tr>
+<tr><td>Конец, 25 впереди</td><td>4000</td><td>25</td><td>25</td></tr>
+</tbody></table></div>
+<p>Кроме проекции, master JSON-проверка в текущем плане идёт раньше cursor predicate: даже в конце обхода она обрабатывает 4000 строк. Порядок предикатов в изолированном SQLite-эксперименте уменьшил число этих проверок в середине до 2000, в конце до 25. Это поведение текущего движка, а не универсальная гарантия SQL.</p>
+<div class="scroll"><table><thead><tr><th>SQL-вариант</th><th>Медиана полного обхода</th><th>Относительно текущего</th></tr></thead><tbody>
+<tr><td>Текущий SQL</td><td>5,429 с</td><td>1,00×</td></tr>
+<tr><td>Cursor predicate раньше master JSON</td><td>4,637 с</td><td>1,17× быстрее</td></tr>
+<tr><td>Проекция и guards после LIMIT</td><td>2,741 с</td><td>1,98× быстрее</td></tr>
+<tr><td>Оба изменения</td><td>1,905 с</td><td>2,85× быстрее</td></tr>
+</tbody></table></div>
+<p>Только SQL, одна прогревочная и три последовательные измеренные итерации на вариант; без HTTP, authority и фона. В каждом обходе дополнительно выполняется пустой терминальный запрос: 161 вместо runtime 160. Сравнены все ключи и projected JSON всех 4000 событий; совпадение подтверждено. Count probes отделены от таймингов. Корпус — timed events с 512 байтами description; смешанные/all-day, malformed и jumbo-варианты этим экспериментом не проверены.</p>
+<p>Доказательства: <a href="../experiments/calendar-runtime-performance-20261117/sqlite-sql-results.json">тайминги и EQP</a>, <a href="../experiments/calendar-runtime-performance-20261117/sqlite-evaluation-counts.json">счётчики вычислений</a>, <a href="../experiments/calendar-runtime-performance-20261117/sqlite_sql_diagnostic.go">SQL harness</a>.</p></section>
+
+<section id="postgres"><h2>5. PostgreSQL: другая оптимизация</h2>
+<p>В реальном <a href="../experiments/calendar-runtime-performance-20261117/pg-first-current-explain.json">EXPLAIN ANALYZE</a> текущего SQL узел Result с JSON-проекцией получает уже 26 строк после top-N Sort. Перенос SQLite-исправления на PostgreSQL без оснований не нужен. Запрос при этом всё ещё читает диапазон 4000 строк для top-N; разделение timed/date keyset-веток — отдельная возможная работа.</p>
+<p><a href="../../internal/storage/event_authority.go">ValidateAuthorityTickets</a> делает по запросу на каждый из максимум 16 источников в одной свежей read-only repeatable-read транзакции. SQL-микрозамер на 16 корректных синтетических grants, включая begin/commit: медиана <strong>0,876 мс для 16 запросов</strong> против <strong>0,185 мс для одного запроса</strong>. Это 4,74× для данной проверки, а не для всего обхода. В R6 wide эта фаза занимает 25,7%; устранение большей части её стоимости даёт ориентир около 20% общего времени при неизменных остальных фазах, но это ещё не end-to-end замер.</p>
+<p>Пакетный вариант соединяет явный набор expected tuples с connections/calendars/sync-state, проверяя те же revision, receipt, статус, can_read и auth/permission fence. Эксперимент проверил только корректные grants; негативные случаи обязательны при внедрении. <a href="../experiments/calendar-runtime-performance-20261117/postgres-sql-results.json">Сырые PostgreSQL-замеры</a>.</p></section>
+
+<section id="implementation"><h2>6. Согласованный первый этап внедрения</h2>
+<div class="scroll"><table><thead><tr><th>Шаг / файлы</th><th>Изменение и критерий</th><th>Исполнение / приёмка</th></tr></thead><tbody>
+<tr><td>A. <code>internal/storage/event_pages.go</code>, <code>event_pages_test.go</code></td><td>Для SQLite выбрать top page_size+1 ключей/строк до построения summary JSON; guards и лимит 32 KiB оставить внутри SQL до передачи драйверу. Отсеять master до LIMIT. Cursor predicate выполнять раньше дорогого master JSON там, где это подтверждает план. Проверить план и фактическое число проекций ≤ page_size+1. PostgreSQL-путь сохранить.</td><td>Выполнено Terra high; координатор проверил фактический diff и результаты.</td></tr>
+<tr><td>B. <code>internal/storage/event_authority.go</code>, соответствующие SQLite/PostgreSQL тесты</td><td>Один запрос финальной проверки для всего expected scope, свежая отдельная транзакция после Pack. Сохранить точные tuple-проверки, обработку дубликатов входных tickets и fail-closed для отсутствующего/изменённого источника. Не заменять проверку старым снимком.</td><td>Выполнено Terra high последовательно после A; интеграция и приёмка координатором. Page/cursor контракт сохранён.</td></tr>
+<tr><td>C. Существующие measurement/results scripts и этот документ</td><td>До/после на одном источнике и 16 источниках, 400/4000 событий; SQL-only отдельно от SDK. Прогон без фона и с прежним фоном. Сохранить raw результаты, факт паритета и ограничения; принять только измеренное улучшение.</td><td>Проверки последовательно во избежание взаимного влияния измерений. Общая приёмка по реальным исходникам и результатам.</td></tr>
+</tbody></table></div>
+<p>Внешний API, cursor binding/expiry, auth/notification/provider behavior, schema, SQL indexes и размеры пула остаются прежними. Все соединения должны освобождаться до HTTP output. Новых кешей, backfill и фоновых очередей нет.</p>
+<p>Нынешняя диагностика выполнена координатором без новых subagents: она была одним адаптивным исследованием, где каждый эксперимент зависел от предыдущего. После согласования storage-изменения A+B выполнены одним агентом Terra high (r7_storage), последовательными шагами. Координатор подготовил frozen baseline, провёл сравнения и проверил итоговый diff.</p></section>
+
+<section id="verification"><h2>7. Проверки, риски и откат</h2>
+<p><strong>Уже выполнено:</strong> сравнение 159 source hashes; пересчёт фаз из 24 R6 speed cases; SQLite SQL parity трёх измеренных обходов на вариант после прогрева; подсчёт JSON-вычислений в начале/середине/конце; один текущий SDK-обход без фона; PostgreSQL EXPLAIN и authority microbenchmark. Старые raw evidence не изменялись.</p>
+<p><strong>После реализации запланировано:</strong> целевые storage/cachedpages/mcpserver race-тесты, PostgreSQL integration, затем полный Go race/vet/build при приёмке двух взаимодействующих runtime-изменений. Синтетические boundary cases: одинаковые timestamps/IDs между источниками, timed/date смесь и переход, master и jumbo-master до LIMIT, malformed scalars/JSON, oversized markers, 1/16 источников, page_size 25/50, все источники отзыва/ошибок, дубликаты tickets.</p>
+<p>Сохранить after-Pack revoke barrier, expiry, no-skip cursor parity, 16 KiB SDK и 32 KiB transfer bounds, covering range UNION, single-slot release, cancellation и slow-writer checks. Изменённые SQL-варианты не считаются корректными по одному dense-корпусу.</p>
+<p>Приёмка производительности: ускорение SQL dense SQLite и полного SDK-обхода относительно свежего до-прогона; сокращение round trips финальной authority до одного и улучшение wide PostgreSQL. Зафиксировать медиану и разброс отдельных парных полных обходов, не объявлять p95 по трём samples. Сохранить прежние first-page SLO ordinary/wide C1 ≤50 мс и C4 ≤100 мс. Проверить natural-GC RSS и большие payloads: MATERIALIZED CTE может держать raw payload в SQL executor; Go transfer bounds не доказывают жёсткую границу памяти SQL.</p>
+<p>Если целевой выигрыш не воспроизводится или нарушается контракт — остановить соответствующий шаг, не расширять scope автоматически. Откат: убрать только принятый diff этого этапа поверх сегодняшней dirty baseline, сохранив R6 и чужой WIP. Нет миграций или production-отката.</p></section>
+
+<section id="deferred"><h2>8. Следующие возможности и gate</h2>
+<p><strong>Следом по профилю:</strong> разделить timed/date keyset SQL и ограничить сканирование курсором через существующие индексы; уменьшить повторное декодирование невыданных строк при byte-limited page; сократить повторные сериализации Pack/handler. На dense SQLite Pack занимает лишь 0,4% — начинать с него невыгодно; на wide PostgreSQL 13,2% делает его более интересным.</p>
+<p>Объединение initial authority и data-read в одну read-сессию может убрать дублированную metadata и один вход в пул, но требует отдельного контракта владения соединением. Сессия должна закончиться <em>до Pack</em>, а финальная проверка — остаться свежей после Pack. Удержание единственного SQLite-соединения через Pack способно блокировать конкурентный отзыв прав; оно исключено из первого этапа. Смена частоты фоновых UI-чтений также исключена.</p>
+<p><strong>Gate / approval:</strong> 17 ноября пользователь явно согласовал внедрение SQLite-оптимизации и пакетной проверки прав по этому плану, включая сравнение полного обхода до/после. Разрешены шаги A–C, локальные синтетические проверки и обновление этого документа. По AGENTS.md изменения auth/SQL runtime требуют HTML approval plan до реализации. Commit, push, PR, merge, deploy и real-data действия требуют отдельного явного разрешения.</p>
+<p><a href="../experiments/calendar-runtime-performance-20261117/diagnosis-summary.json">Сводка и ограничения</a> · <a href="../experiments/calendar-runtime-performance-20261117/source-validation.json">Сохранность runtime</a> · <a href="../experiments/calendar-runtime-performance-20261117/artifact-manifest.json">Хеши доказательств</a></p>
+</section>
+<section id="implementation-results"><h2>9. Результат внедрения</h2>
+<p><strong>Implemented / local acceptance:</strong> SQLite выбирает ограниченный набор до guarded JSON-проекции; финальная authority проверяет весь набор expected tuples одним SQL в свежей транзакции после Pack. Добавлен internal query-builder для проверки фактического SQL; внешний контракт не изменён. Кеши, индексы, миграции и пул не добавлялись.</p>
+<div class="scroll"><table><thead><tr><th>Полный SDK-обход</th><th>До, мс</th><th>После, мс</th><th>Ускорение</th></tr></thead><tbody><tr><td>sqlite / events4000-s1-c1-p25-bg0</td><td>5630.32</td><td>2103.97</td><td>2.68×</td></tr><tr><td>sqlite / events4000-s1-c1-p25-bg1</td><td>10109.28</td><td>6262.32</td><td>1.61×</td></tr><tr><td>sqlite / events4000-s16-c1-p25-bg0</td><td>12554.38</td><td>5156.41</td><td>2.43×</td></tr><tr><td>sqlite / events4000-s16-c1-p25-bg1</td><td>21452.93</td><td>14177.20</td><td>1.51×</td></tr><tr><td>postgres / events400-s16-c1-p25-bg1</td><td>102.21</td><td>87.57</td><td>1.17×</td></tr><tr><td>postgres / events4000-s16-c1-p25-bg1</td><td>1340.78</td><td>1141.53</td><td>1.17×</td></tr></tbody></table></div>
+<p>Это свежие замеры двух frozen pagination-бинарников, а не сравнение с неограниченной выдачей из раздела2: три парных полных обхода в чередующемся порядке AB/BA, одинаковая синтетическая fixture, отдельные процессы, natural GC. Всего34 случая, включая page_size25/50,C1/C4,jumbo/master. Stress4000/C4/2KiB имеет только один парный раунд: медиана четырёх workers32658 →11217мс,2,91×; это не распределение независимых раундов.</p>
+<p>Отдельная фаза SQL+драйвер/Scan SQLite: 5437.44 → 1923.22мс (2.83×),4000событий/1источник; фактический Store из before/final source copies, прогрев+3обхода, без authority/Pack/HTTP.</p>
+<p>Проверены711 Go race cases и102 storage cases с integration, включая11 явных PostgreSQL-backed тестов; skips0; vet/build прошли. Все34 парных случая сохранили count/digests и лимит16KiB; projection probe подтверждает≤page_size+1, проходит-count=2; возврат старого SQL ломает его. Все16 SLO первой страницы прошли. Runtime-исходники не менялись во время итоговых checks.</p>
+<p>SQLite: основной набор1,27–2,68×; PostgreSQL для16источников1,17–1,26×, для1источника примерно без изменения (в отдельных случаях до1,9%медленнее). Max sampled RSS парных candidate-процессов51,27MiB SQLite /41,72MiB PostgreSQL; guard256MiB не срабатывал. RSS PostgreSQL-сервера отдельно не измерялся; строгая граница памяти SQL executor не доказана. Три полных обхода не дают p95; фон5мс остаётся синтетическим стрессом.</p>
+<p>Первый полный checker выявил отсутствие build-ignore tags у трёх самостоятельных диагностических Go-программ из предыдущего этапа. Теги исправлены; второй полный checker прошёл. Исходные неудачные результаты сохранены. После проверок временный PostgreSQL остановлен. Commit/push/deploy не выполнялись.</p>
+<p><a href="../verification/calendar-performance-20261117/REPORT.md">Полный отчёт и таблица</a> · <a href="../verification/calendar-performance-20261117/acceptance.json">Acceptance</a> · <a href="../verification/calendar-performance-20261117/implementation.patch">Diff относительно dirty baseline</a> · <a href="../verification/calendar-performance-20261117/artifact-manifest.json">Manifest</a></p>
+</section>
+</main></body></html>

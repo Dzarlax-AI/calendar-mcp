@@ -152,3 +152,49 @@ func TestAvailabilityCatalogDistinguishesDisabledFromUnregistered(t *testing.T) 
 		t.Fatal("registered disabled calendar not safely hidden")
 	}
 }
+
+func TestAvailabilityCatalogDiscoversOnlyMissingExpectedGoogleRoutes(t *testing.T) {
+	known := testCatalogProvider("google", "known", []Calendar{{ID: "existing"}}, nil)
+	newRoute := testCatalogProvider("google", "ready", []Calendar{{ID: "new"}}, nil)
+	unrelated := testCatalogProvider("apple", "other", nil, errors.New("synthetic provider unavailable"))
+	s := &catalogSelection{
+		routes:  map[string][]string{"google": {"google@known", "google@ready"}, "apple": {"apple@other"}},
+		enabled: map[string]bool{"google:known:existing": true, "google:ready:new": true},
+	}
+	r := NewRegistry([]Provider{known, unrelated}, RegistryOptions{Selection: s})
+	discoveries := 0
+	r.SetProviderDiscovery(func(_ context.Context, account string, _ map[string]bool) ([]Provider, error) {
+		discoveries++
+		if account != "ready" {
+			t.Fatalf("discovery touched unexpected account %q", account)
+		}
+		return []Provider{newRoute}, nil
+	})
+	page, err := r.ListAvailabilityCalendars(t.Context(), "google")
+	if err != nil || !page.Complete || len(page.Calendars) != 2 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if discoveries != 1 || newRoute.calls != 1 || known.calls != 1 || unrelated.calls != 0 || s.discoveryCalls != 0 {
+		t.Fatal("listing discovered or queried unexpected accounts")
+	}
+}
+
+func TestAvailabilityCatalogDiscardsListingAcrossProviderReplacement(t *testing.T) {
+	stale := testCatalogProvider("google", "account", []Calendar{{ID: "visible", Name: "Stale"}}, nil)
+	fresh := testCatalogProvider("google", "account", []Calendar{{ID: "visible", Name: "Fresh"}}, nil)
+	s := &catalogSelection{routes: map[string][]string{"google": {"google@account"}}, enabled: map[string]bool{"google:account:visible": true}}
+	r := NewRegistry([]Provider{stale}, RegistryOptions{Selection: s})
+	r.SetProviderRefresh(func(_ context.Context, provider Provider) (Provider, error) {
+		if provider == stale && stale.calls == 0 {
+			return stale, nil
+		}
+		return fresh, nil
+	})
+	if page, err := r.ListAvailabilityCalendars(t.Context(), "google"); err == nil || page.Complete || len(page.Calendars) != 0 {
+		t.Fatalf("stale page=%+v err=%v", page, err)
+	}
+	page, err := r.ListAvailabilityCalendars(t.Context(), "google")
+	if err != nil || !page.Complete || len(page.Calendars) != 1 || page.Calendars[0].Name != "Fresh" {
+		t.Fatalf("fresh page=%+v err=%v", page, err)
+	}
+}

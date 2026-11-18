@@ -303,7 +303,7 @@ Set `MCP_CATALOG_MODE=modern` only when clients using `/mcp` have migrated to th
 
 ### Modern catalog
 
-Use `/mcp/modern` for new connections during migration. It exposes exactly 12 tools and no `_v2` aliases:
+Use `/mcp/modern` for new connections during migration. It exposes 12 base tools and no `_v2` aliases:
 
 | Tool | Purpose |
 |---|---|
@@ -349,6 +349,37 @@ Example arguments for modern `create_event` on an isolated test calendar (a writ
 ```
 
 Check capabilities before mutations. Preserve explicit scopes, ETags, operation IDs, and preview support when adapting update/delete clients. Test real writes only after verifying isolated data and disabled invitations/notifications.
+
+### Cached Google summaries
+
+`get_cached_events` is an additive thirteenth modern tool when `ENABLE_V2=true`, `EVENT_READ_MODEL_ENABLED=true`, platform database/encryption, a primary `API_KEY`, and the narrow cached reader are configured. It is absent from compat and unauthenticated mode. Existing live `get_events`, REST and native contracts keep their own behavior.
+
+```json
+{
+  "calendar_ids": ["google:synthetic-account:primary"],
+  "start": "2026-11-17T00:00:00Z",
+  "end": "2026-11-18T00:00:00Z",
+  "page_size": 25
+}
+```
+
+Select 1–16 unique canonical platform Google calendar IDs. Every selected source must be enabled, have a verified local detail receipt and have a sync state, and the range must fit its target cache window. Missing, unsupported, denied or unavailable sources reject the whole request. The tool never calls a provider, queues synchronization or falls back to live events.
+
+The result contains bounded summaries (`items`), source freshness/target-window metadata, `consistency: "cached_weak"`, `partial`, `complete` and optional `next_page_token`. Descriptions, attendees and raw payloads are not loaded by this reader. `page_size` is an upper bound of 1–50, default 25; the complete SDK tool result, including text and structured copies, is at most 16 KiB. An oversized summary becomes an explicit reference/time marker. Complete means the end of the current cached selection; target windows and degraded `last_success_at` do not prove provider coverage.
+
+Pass `next_page_token` with the same arguments only while more events are needed. Cursors expire after 300 seconds and bind the verified API credential, key configuration, normalized filters, local authorization receipts, service configuration and process boot nonce. They survive ordinary token refresh, but not authorization changes, restart, key/configuration/cipher rotation or tampering. A shared Gateway key identifies that credential, not its end users. A cursor error does not silently restart a query. Cached reads reflect locally known rights; remote ACL changes remain unknown until observed by ordinary provider activity.
+
+Migration 029 separates authorization revisions from token refresh timestamps/ciphertext. Google verification closes and purges old projection before constructing a snapshot-bound provider, then publishes complete role discovery atomically. The existing worker makes one automatic attempt for each eligible legacy Google account, at most one account per cycle. Failure, cancellation or a crash stays closed until explicit reconnect; UI/native cached data can remain unavailable until reconnect and fresh sync. Google reconnect requires its own refresh token before modifying an existing account. Ordinary refresh assumes the same grant when scope evidence is absent; explicit insufficient scope evidence closes the current grant. Lossless concurrent external refresh-token rotation is not guaranteed.
+
+A newly listed Google calendar on a verified account receives live metadata. Reconnect the account to verify the new calendar's cached detail access. Listing preserves existing projections and does not restart legacy bootstrap.
+
+Before a separately authorized activation, stop/quiesce every old API, worker and cache writer. Already running old binaries are not fenced by startup schema checks. Do not mix old unfenced writers with the new reader. Keep schema 029 with a compatible binary when disabling the feature; an older binary rejects the newer schema. Deployment, Gateway ACL/schema changes and client migration are separate operations.
+
+Local synthetic verification uses the actual Store, OAuth/factory/services, middleware and MCP SDK with fake HTTP and disposable databases. See the [revision 6 implementation and evidence](docs/ai-plans/2026-11-16-calendar-synthetic-pagination-pilot.html#revision-6). The harness in `scripts/verify_cached_event_pages_runtime.go` never starts `runtime.Serve`, has no provider, and accepts only explicit disposable database URLs. Its full-result baseline is a harness-only wrapper around the existing cached Store read, not a replacement production MCP contract.
+
+SQLite selects at most `page_size+1` rows before building guarded summary JSON, while excluding series masters before the limit. The final rights check validates all expected source tuples in one fresh transaction after packing; duplicate tickets retain their original meaning. These changes add no cache, index, migration or pool capacity. See the [full traversal comparison](docs/ai-plans/2026-11-17-cached-traversal-performance.html#implementation-results) for paired before/after measurements and limits. `scripts/verify_cached_event_pages_comparison.py` compares frozen binaries on isolated fixtures; `scripts/measure_cached_page_sql.go` measures the Store SQL phase separately.
+
+SQLite now reads timed/date page ranges through existing covering indexes with native cursor bounds. A same-snapshot preflight preserves the previous query's malformed timestamp handling. Full cached UI reads release SQL rows before decoding when the complete raw result fits a per-call 8 MiB/8192-row buffer; overflow uses streaming, and PostgreSQL keeps its streaming path. The buffer is never reused between requests. The [range and contention results](docs/ai-plans/2026-11-17-sqlite-range-and-contention.html#implementation-results) compare the unchanged pool before, after SQL changes, and after both changes, including large-payload fallback limits.
 
 ### Compatibility catalog and migration
 

@@ -1,10 +1,15 @@
 package calendar
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Calendar struct {
 	// Timezone is internal discovery metadata; existing list JSON remains unchanged.
 	Timezone string `json:"-"`
+	// GoogleDiscoveryCredentialDigest binds metadata to the credential used for its discovery page.
+	GoogleDiscoveryCredentialDigest [32]byte `json:"-"`
 	// GoogleWriteAccessProven is internal evidence for strict catalogs only.
 	GoogleWriteAccessProven bool   `json:"-"`
 	ID                      string `json:"id"`
@@ -56,4 +61,15 @@ type EventUpdate struct {
 	Description *string     `json:"description,omitempty"`
 	Location    *string     `json:"location,omitempty"`
 	Attendees   *[]Attendee `json:"attendees,omitempty"`
+}
+
+// DetailDiscoveryEntry retains the provider's raw access role for a complete
+// staged discovery; it is not part of the legacy calendar response contract.
+type DetailDiscoveryEntry struct {
+	Calendar   Calendar
+	AccessRole string
+}
+
+type DetailDiscoveryProvider interface {
+	DiscoverDetailCalendars(ctx context.Context) ([]DetailDiscoveryEntry, error)
 }

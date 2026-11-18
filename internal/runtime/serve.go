@@ -17,6 +17,7 @@ import (
 	"calendar-mcp/internal/apple"
 	"calendar-mcp/internal/application"
 	"calendar-mcp/internal/auth"
+	"calendar-mcp/internal/cachedpages"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/config"
 	"calendar-mcp/internal/connections"
@@ -60,8 +61,10 @@ func Serve(_ context.Context) error {
 	}
 
 	var calendarProviders []calendar.Provider
+	var storedFactory *providerfactory.Factory
 	if platformStore != nil {
-		storedProviders, err := providerfactory.NewFactory(cfg, platformStore, connectionService).Build(context.Background())
+		storedFactory = providerfactory.NewFactory(cfg, platformStore, connectionService)
+		storedProviders, err := storedFactory.Build(context.Background())
 		if err != nil {
 			return fmt.Errorf("stored providers: %w", err)
 		}
@@ -106,6 +109,13 @@ func Serve(_ context.Context) error {
 		Selection:                selection,
 		WriteGuard:               writeGuard,
 	})
+	if storedFactory != nil {
+		reg.SetProviderRefresh(storedFactory.RefreshProvider)
+		reg.SetProviderDiscovery(storedFactory.DiscoverGoogleRoutes)
+		reg.SetGoogleOwnerLookup(func(ctx context.Context, raw string) (string, string, error) {
+			return platformStore.GoogleShortIDOwner(ctx, raw, !cfg.EventReadModelEnabled)
+		})
+	}
 	appService := application.New(reg)
 	if len(cfg.ExcludeCalendarIDs) > 0 {
 		log.Printf("fan-out excludes %d calendar(s): %v", len(cfg.ExcludeCalendarIDs), cfg.ExcludeCalendarIDs)
@@ -124,9 +134,11 @@ func Serve(_ context.Context) error {
 		LegacyAPIKey:         cfg.LegacyAPIKey,
 		AllowUnauthenticated: cfg.AllowUnauthenticated,
 	}
-	if err := mcpserver.RegisterWithOptions(mux, reg, appService, apiAuth, mcpserver.Options{
-		EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode),
-	}); err != nil {
+	mcpOptions, err := runtimeMCPOptions(cfg, platformStore, credentialCipher, time.Now)
+	if err != nil {
+		return fmt.Errorf("initialize cached MCP dependency: %w", err)
+	}
+	if err := mcpserver.RegisterWithOptions(mux, reg, appService, apiAuth, mcpOptions); err != nil {
 		return fmt.Errorf("initialize MCP catalogs: %w", err)
 	}
 	if (cfg.NativeAppToken != "" || cfg.ReadOnlyToken != "") && platformStore != nil {
@@ -156,8 +168,10 @@ func Serve(_ context.Context) error {
 				RedirectURL: publicURL + "/oauth/microsoft/callback", Scopes: []string{"https://graph.microsoft.com/Calendars.ReadWrite", "offline_access"},
 			}}
 		}
-		factory := providerfactory.NewFactory(cfg, platformStore, connectionService)
-		ui, err := web.New(platformStore, connectionService, oauthflow.New(platformStore, credentialCipher, oauthProviders), factory.Build, webRuntimeConfig(cfg, appService, reg.ReplaceProviders))
+		webConfig := webRuntimeConfig(cfg, appService, reg.ReplaceProviders)
+		webConfig.BuildGoogleVerification = storedFactory.BuildGoogleVerification
+		webConfig.BuildNonGoogleVerification = storedFactory.BuildNonGoogleVerification
+		ui, err := web.New(platformStore, connectionService, oauthflow.New(platformStore, credentialCipher, oauthProviders), storedFactory.Build, webConfig)
 		if err != nil {
 			return fmt.Errorf("initialize calendar UI: %w", err)
 		}
@@ -172,6 +186,19 @@ func Serve(_ context.Context) error {
 
 	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(calendarProviders))
 	return RunServers(servers)
+}
+
+func runtimeMCPOptions(cfg *config.Config, store *storage.Store, cipher *credentials.Cipher, now func() time.Time) (mcpserver.Options, error) {
+	opts := mcpserver.Options{EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode), EventReadModelEnabled: cfg.EventReadModelEnabled}
+	if !cfg.EnableV2 || !cfg.EventReadModelEnabled || store == nil || cipher == nil || cfg.APIKey == "" {
+		return opts, nil
+	}
+	reader, err := cachedpages.NewService(store, cipher, cachedpages.Options{Now: now, WindowAt: func(anchor time.Time) storage.SyncWindow { return eventReadModelWindow(cfg, anchor) }})
+	if err != nil {
+		return opts, err
+	}
+	opts.CachedEvents = reader
+	return opts, nil
 }
 
 func webRuntimeConfig(cfg *config.Config, appService *application.Service, onProvidersChanged func([]calendar.Provider)) web.Config {

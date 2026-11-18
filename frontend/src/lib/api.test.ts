@@ -73,6 +73,21 @@ describe("browser API client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves authoritative unavailable source status", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], complete: false, sources: [{ calendar_id: "c1", complete: false, status: "unavailable" }] }), { status: 200 })));
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
+    expect(result.sources?.[0]?.status).toBe("unavailable");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps a complete disabled source distinct from ready", async () => {
+    const response = { items: [], complete: true, sources: [{ calendar_id: "c1", complete: true, status: "disabled" }] };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })));
+    const result = await getEvents("2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ["c1"]);
+    expect(result.sources?.[0]).toMatchObject({ status: "disabled", complete: true });
+    vi.unstubAllGlobals();
+  });
+
   it("preserves the provider description format for event rendering", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id: "e1", calendar_id: "microsoft:c1", provider: "microsoft", title: "Review", description: "<p><strong>Agenda</strong></p>", description_format: "html", html_link: "https://outlook.office.com/calendar/event", conference: { solution: "teamsForBusiness", entry_points: [{ type: "video", uri: "https://teams.microsoft.com/l/meetup-join/example" }] }, start: { date: "2026-09-15" }, end: { date: "2026-09-16" } }], complete: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

@@ -60,7 +60,7 @@ export function formatRelativeTime(value: string | null | undefined, now = new D
 export function summarizeEventSources(response: Pick<EventListResponse, "sources" | "complete">, now = new Date()): EventStatusSummary {
   const sources = response.sources ?? [];
   const retrying = sources.filter((source) => isActiveRetryableSource(source, now));
-  const failed = sources.filter((source) => !isActiveRetryableSource(source, now) && (source.status === "failed" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false)));
+  const failed = sources.filter((source) => !isActiveRetryableSource(source, now) && (source.status === "failed" || source.status === "unavailable" || source.status === "parked" || (source.status !== "pending" && source.status !== "syncing" && source.status !== "degraded" && source.complete === false)));
   const failedCount = failed.length || (!response.complete && !sources.some((source) => source.status === "pending" || source.status === "syncing" || source.status === "degraded" || isActiveRetryableSource(source, now)) ? 1 : 0);
   if (failedCount) {
     const parked = failed.filter((source) => source.status === "parked");

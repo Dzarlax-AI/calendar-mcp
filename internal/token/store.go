@@ -3,10 +3,13 @@ package token
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -126,27 +129,50 @@ func TokenSource(store Store, cfg *oauth2.Config, initial *oauth2.Token) oauth2.
 }
 
 type persistingTokenSource struct {
-	store Store
-	src   oauth2.TokenSource
-	mu    sync.Mutex
-	last  *oauth2.Token
+	store          Store
+	src            oauth2.TokenSource
+	mu             sync.Mutex
+	last           *oauth2.Token
+	expectedScopes []string
 }
 
 func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
+	tok, _, _, err := p.TokenWithBinding()
+	return tok, err
+}
+
+// TokenWithBinding serializes token selection/persistence with its exact
+// credential snapshot. On refresh failure it returns the attempted binding.
+func (p *persistingTokenSource) TokenWithBinding() (*oauth2.Token, string, [32]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
+	var revision string
+	var digest [32]byte
+	if bound, ok := p.store.(interface{ CredentialBinding() (string, [32]byte) }); ok {
+		revision, digest = bound.CredentialBinding()
+	}
 	tok, err := p.src.Token()
 	if err != nil {
-		return nil, err
+		return nil, revision, digest, err
+	}
+	if p.expectedScopes != nil {
+		if observed := tok.Extra("scope"); observed != nil {
+			value, ok := observed.(string)
+			if !ok || !hasRequiredScopes(strings.Fields(value), p.expectedScopes) {
+				return nil, revision, digest, ErrAuthorizationScopeChanged
+			}
+		}
 	}
 	if p.last == nil || tokenChanged(tok, p.last) {
 		if err := p.store.Save(tok); err != nil {
-			return nil, fmt.Errorf("persist refreshed token: %w", err)
+			return nil, revision, digest, fmt.Errorf("persist refreshed token: %w", err)
 		}
 		p.last = tok
 	}
-	return tok, nil
+	if bound, ok := p.store.(interface{ CredentialBinding() (string, [32]byte) }); ok {
+		revision, digest = bound.CredentialBinding()
+	}
+	return tok, revision, digest, nil
 }
 
 func tokenChanged(current, previous *oauth2.Token) bool {
@@ -154,4 +180,81 @@ func tokenChanged(current, previous *oauth2.Token) bool {
 		current.RefreshToken != previous.RefreshToken ||
 		current.TokenType != previous.TokenType ||
 		!current.Expiry.Equal(previous.Expiry)
+}
+
+// RequestBinding is private to a single HTTP call and never contains tokens.
+type RequestBinding struct {
+	Revision       string
+	Digest         [32]byte
+	Set            bool
+	AuthorityError error
+}
+type requestBindingKey struct{}
+
+func WithRequestBinding(ctx context.Context, b *RequestBinding) context.Context {
+	return context.WithValue(ctx, requestBindingKey{}, b)
+}
+func RequestBindingFromContext(ctx context.Context) *RequestBinding {
+	b, _ := ctx.Value(requestBindingKey{}).(*RequestBinding)
+	return b
+}
+
+// BoundTransport associates the token selected for this request with the
+// revision/ciphertext binding selected under the same token-source mutex.
+type BoundTransport struct {
+	Source interface {
+		TokenWithBinding() (*oauth2.Token, string, [32]byte, error)
+	}
+	Base http.RoundTripper
+}
+
+func (t *BoundTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	tok, revision, digest, err := t.Source.TokenWithBinding()
+	if b := RequestBindingFromContext(r.Context()); b != nil {
+		b.Revision, b.Digest, b.Set = revision, digest, true
+	}
+	if err != nil {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, err
+	}
+	clone := r.Clone(r.Context())
+	clone.Header = r.Header.Clone()
+	tok.SetAuthHeader(clone)
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(clone)
+}
+
+// SnapshotTransport constructs a request-bound source while preserving the
+// same persistence behavior as TokenSource.
+func SnapshotTransport(store Store, cfg *oauth2.Config, initial *oauth2.Token) http.RoundTripper {
+	source := TokenSource(store, cfg, initial).(*persistingTokenSource)
+	source.expectedScopes = append([]string(nil), cfg.Scopes...)
+	return &BoundTransport{Source: source}
+}
+
+var ErrAuthorizationScopeChanged = errors.New("OAuth authorization scope changed")
+
+// Explicit scopes must retain all configured permissions; Google full-calendar
+// scope also covers its narrower CalendarList and Events scopes. Additional
+// granted scopes are not evidence of a change from an unknown legacy baseline.
+func hasRequiredScopes(observed, required []string) bool {
+	present := make(map[string]bool, len(observed))
+	for _, v := range observed {
+		present[v] = true
+	}
+	for _, need := range required {
+		if present[need] {
+			continue
+		}
+		if present["https://www.googleapis.com/auth/calendar"] && strings.HasPrefix(need, "https://www.googleapis.com/auth/calendar.") {
+			continue
+		}
+		return false
+	}
+	return true
 }

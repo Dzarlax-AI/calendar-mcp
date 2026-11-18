@@ -157,7 +157,8 @@ for (const width of [560, 561, 820, 821, 1080, 1081, 1439, 1440]) {
 test("degraded, empty, error, recurring delete, and no-writable states are explicit", async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 1024 });
   await openCalendar(page, { state: "degraded" });
-  await expect(page.getByText("Cached events remain visible.")).toBeVisible();
+  await expect(page.locator(".fc-event").filter({ hasText: "Read-only family event" })).toBeVisible();
+  await expect(page.getByText("1 calendar needs repair", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh affected calendars" })).toBeVisible();
 
   await openCalendar(page, { state: "pending" });

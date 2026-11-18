@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -94,28 +95,25 @@ func TestOAuthTokenRefreshPreservesVerifiedConnection(t *testing.T) {
 	}
 }
 
-func TestReconnectOAuthPreservesExistingRefreshToken(t *testing.T) {
+func TestGoogleReconnectRequiresOwnRefreshToken(t *testing.T) {
 	ctx := context.Background()
-	service, _ := newTestService(t)
-	expiry := time.Now().UTC().Add(time.Hour)
-	if err := service.CreateOAuth(ctx, "google-1", "google", "Personal Google", &oauth2.Token{
-		AccessToken: "old-access", RefreshToken: "existing-refresh",
-	}, nil); err != nil {
+	service, store := newTestService(t)
+	if err := service.CreateOAuth(ctx, "google-1", "google", "Personal Google", &oauth2.Token{AccessToken: "old-access", RefreshToken: "existing-refresh"}, nil); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := service.ReconnectOAuth(ctx, "google-1", "google", &oauth2.Token{
-		AccessToken: "new-access", Expiry: expiry,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded, err := service.OAuthTokenStore("google-1", "google").Load()
+	before, err := store.ConnectionByID(ctx, "google-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "existing-refresh" || !loaded.Expiry.Equal(expiry) {
-		t.Fatalf("reconnected token = %#v", loaded)
+	if err := service.ReconnectOAuth(ctx, "google-1", "google", &oauth2.Token{AccessToken: "new-access"}); err == nil {
+		t.Fatal("missing refresh token accepted")
+	}
+	after, err := store.ConnectionByID(ctx, "google-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.AuthorizationRevision != after.AuthorizationRevision || !bytes.Equal(before.EncryptedCredentials, after.EncryptedCredentials) {
+		t.Fatal("rejected reconnect changed credentials or revision")
 	}
 }
 
@@ -157,7 +155,7 @@ func TestVerifyDiscoversCalendarsWithPrefixedIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &fakeProvider{name: "google", calendars: []calendar.Calendar{{ID: "primary", Name: "Primary"}}}
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err != nil {
 		t.Fatal(err)
 	}
 	discovered, err := store.ListCalendars(ctx, "google-1")
@@ -181,10 +179,10 @@ func TestVerifyRejectsDuplicateProviderAccountWithoutDeletingConnection(t *testi
 			t.Fatal(err)
 		}
 	}
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.VerifyAndDiscover(ctx, "google-2", provider); err == nil {
+	if err := verifyTestGoogle(ctx, service, "google-2", provider); err == nil {
 		t.Fatal("duplicate provider account verified")
 	}
 	if _, err := store.ConnectionByID(ctx, "google-2"); err != nil {
@@ -199,14 +197,14 @@ func TestVerifyRecordsErrorWhenCapabilityDiscoveryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &fakeProvider{name: "google", calendars: []calendar.Calendar{{ID: "primary", Name: "Primary"}}, capabilitiesErr: errors.New("capabilities unavailable")}
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err == nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err == nil {
 		t.Fatal("verification succeeded despite capability failure")
 	}
 	record, err := store.ConnectionByID(ctx, "google-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Status != "error" || record.LastErrorCode != "provider_discovery_failed" {
+	if record.Status != "error" || record.LastErrorCode != "provider_verification_failed" {
 		t.Fatalf("connection status = %#v", record)
 	}
 }
@@ -215,6 +213,24 @@ type fakeProvider struct {
 	name            string
 	calendars       []calendar.Calendar
 	capabilitiesErr error
+}
+
+func verifyTestGoogle(ctx context.Context, service *Service, id string, p *fakeProvider) error {
+	return service.VerifyGoogle(ctx, id, func(storage.CredentialSnapshot) (calendar.Provider, error) { return p, nil })
+}
+func (p *fakeProvider) DiscoverDetailCalendars(context.Context) ([]calendar.DetailDiscoveryEntry, error) {
+	if p.capabilitiesErr != nil {
+		return nil, p.capabilitiesErr
+	}
+	entries := make([]calendar.DetailDiscoveryEntry, 0, len(p.calendars))
+	for _, c := range p.calendars {
+		role := "owner"
+		if c.ReadOnly {
+			role = "reader"
+		}
+		entries = append(entries, calendar.DetailDiscoveryEntry{Calendar: c, AccessRole: role})
+	}
+	return entries, nil
 }
 
 func (p *fakeProvider) Capabilities(context.Context, string) (calendar.CalendarCapabilities, error) {
@@ -264,22 +280,22 @@ func TestGooglePrimaryDiscoveryAndFailure(t *testing.T) {
 			t.Fatalf("primary = %q, want %q", found, want)
 		}
 	}
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err != nil {
 		t.Fatal(err)
 	}
 	check("owner@example.test")
 	provider.calendars[1].Primary = true
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err != nil {
 		t.Fatal(err)
 	}
 	check("")
 	provider.calendars[1].Primary = false
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err != nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err != nil {
 		t.Fatal(err)
 	}
 	check("owner@example.test")
 	provider.capabilitiesErr = errors.New("unavailable")
-	if err := service.VerifyAndDiscover(ctx, "google-1", provider); err == nil {
+	if err := verifyTestGoogle(ctx, service, "google-1", provider); err == nil {
 		t.Fatal("expected failure")
 	}
 	check("")
@@ -301,9 +317,305 @@ func TestGoogleDiscoveryPreservesAndUpdatesTimezone(t *testing.T) {
 	}
 	for _, step := range []struct{ input, want string }{{"Europe/Belgrade", "Europe/Belgrade"}, {"", "Europe/Belgrade"}, {"Local", "Europe/Belgrade"}, {"not-a-zone", "Europe/Belgrade"}, {"America/Los_Angeles", "America/Los_Angeles"}} {
 		provider.calendars[0].Timezone = step.input
-		if err := service.VerifyAndDiscover(ctx, "timezone-account", provider); err != nil {
+		if err := verifyTestGoogle(ctx, service, "timezone-account", provider); err != nil {
 			t.Fatal(err)
 		}
 		check(step.want)
+	}
+}
+
+func TestSnapshotTokenStoreRejectsSupersededRefresh(t *testing.T) {
+	ctx := context.Background()
+	service, store := newTestService(t)
+	if err := service.CreateOAuth(ctx, "g", "google", "Google", &oauth2.Token{AccessToken: "old", RefreshToken: "old-refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.CredentialSnapshot(ctx, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := service.SnapshotOAuthTokenStore(snap)
+	old, err := bound.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ConnectionByID(ctx, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = bound.Save(old); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := store.ConnectionByID(ctx, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before.EncryptedCredentials, unchanged.EncryptedCredentials) || !before.UpdatedAt.Equal(unchanged.UpdatedAt) {
+		t.Fatal("no-op save changed stored token")
+	}
+	if err = service.ReconnectOAuth(ctx, "g", "google", &oauth2.Token{AccessToken: "new", RefreshToken: "new-refresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = bound.Save(old); !errors.Is(err, storage.ErrAuthorityChanged) {
+		t.Fatalf("stale no-op save = %v", err)
+	}
+	old.AccessToken = "delayed"
+	if err = bound.Save(old); !errors.Is(err, storage.ErrAuthorityChanged) {
+		t.Fatalf("stale refresh = %v", err)
+	}
+	actual, err := service.OAuthTokenStore("g", "google").Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.AccessToken != "new" || actual.RefreshToken != "new-refresh" {
+		t.Fatal("stale write replaced reconnect")
+	}
+}
+
+func TestDeletedAndRecreatedConnectionRejectsOldTokenSource(t *testing.T) {
+	ctx := context.Background()
+	service, store := newTestService(t)
+	if err := service.CreateOAuth(ctx, "same", "google", "Old", &oauth2.Token{AccessToken: "old", RefreshToken: "old-refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.CredentialSnapshot(ctx, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := service.SnapshotOAuthTokenStore(old)
+	token, err := bound.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.Delete(ctx, "same"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.CreateOAuth(ctx, "same", "google", "New", &oauth2.Token{AccessToken: "new", RefreshToken: "new-refresh"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	token.AccessToken = "delayed"
+	if err = bound.Save(token); !errors.Is(err, storage.ErrAuthorityChanged) {
+		t.Fatalf("stale save=%v", err)
+	}
+	current, err := store.CredentialSnapshot(ctx, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.AuthorizationRevision == current.AuthorizationRevision {
+		t.Fatal("reused authorization revision")
+	}
+}
+
+type cancelDiscoveryProvider struct {
+	fakeProvider
+	cancel context.CancelFunc
+}
+
+func (p *cancelDiscoveryProvider) DiscoverDetailCalendars(ctx context.Context) ([]calendar.DetailDiscoveryEntry, error) {
+	p.cancel()
+	return nil, ctx.Err()
+}
+
+func TestCanceledGoogleVerificationClosesAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service, store := newTestService(t)
+	if err := service.CreateOAuth(ctx, "google-cancel", "google", "Google", &oauth2.Token{AccessToken: "synthetic", RefreshToken: "synthetic"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider := &cancelDiscoveryProvider{fakeProvider: fakeProvider{name: "google"}, cancel: cancel}
+	if err := service.VerifyGoogle(ctx, "google-cancel", func(storage.CredentialSnapshot) (calendar.Provider, error) { return provider, nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("verify=%v", err)
+	}
+	record, err := store.ConnectionByID(context.Background(), "google-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "error" {
+		t.Fatalf("status=%s", record.Status)
+	}
+	candidate, err := store.BeginOneLegacyGoogleAuthorization(context.Background(), time.Now().UTC())
+	if err != nil || candidate != nil {
+		t.Fatalf("canceled attempt retried: %v %v", candidate, err)
+	}
+}
+
+func TestNonGoogleReconnectFencesVerificationAndRefresh(t *testing.T) {
+	for _, kind := range []string{"apple", "microsoft"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			svc, store := newTestService(t)
+			if kind == "apple" {
+				if err := svc.CreateApple(ctx, "account", "Account", "old@example.test", "old"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := svc.CreateOAuth(ctx, "account", kind, "Account", &oauth2.Token{AccessToken: "old", RefreshToken: "refresh"}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.CredentialSnapshot(ctx, "account")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "microsoft" {
+				if err = svc.OAuthTokenStore("account", kind).Save(&oauth2.Token{AccessToken: "refreshed", RefreshToken: "refresh"}); err != nil {
+					t.Fatal(err)
+				}
+				refreshed, e := store.CredentialSnapshot(ctx, "account")
+				if e != nil || refreshed.AuthorizationRevision != before.AuthorizationRevision {
+					t.Fatalf("refresh rotated authorization: %v", e)
+				}
+			}
+			reconnect := func() error {
+				if kind == "apple" {
+					return svc.ReconnectApple(ctx, "account", "new@example.test", "new")
+				}
+				return svc.ReconnectOAuth(ctx, "account", kind, &oauth2.Token{AccessToken: "new", RefreshToken: "new-refresh"})
+			}
+			if err = reconnect(); err != nil {
+				t.Fatal(err)
+			}
+			pending, err := store.CredentialSnapshot(ctx, "account")
+			if err != nil || pending.Status != "pending" || pending.AuthorizationRevision == before.AuthorizationRevision {
+				t.Fatalf("pending: %+v %v", pending, err)
+			}
+			if err = reconnect(); err != nil {
+				t.Fatal(err)
+			}
+			p := &fakeProvider{name: kind, calendars: []calendar.Calendar{{ID: "old", Name: "Old"}}}
+			if err = svc.verifyNonGoogleSnapshot(ctx, pending, p); !errors.Is(err, storage.ErrAuthorityChanged) {
+				t.Fatalf("stale verification: %v", err)
+			}
+			record, err := store.ConnectionByID(ctx, "account")
+			if err != nil || record.Status != "pending" {
+				t.Fatalf("stale verification changed status: %+v %v", record, err)
+			}
+			calendars, err := store.ListCalendars(ctx, "account")
+			if err != nil || len(calendars) != 0 {
+				t.Fatalf("stale discovery published: %+v %v", calendars, err)
+			}
+		})
+	}
+}
+
+func TestNewConnectionsStayPendingAndBuilderFailureCloses(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []string{"apple", "microsoft"} {
+		t.Run(kind, func(t *testing.T) {
+			svc, store := newTestService(t)
+			var id string
+			var err error
+			if kind == "apple" {
+				id, err = svc.ConnectApple(ctx, "Apple", "user@example.test", "password")
+			} else {
+				id, err = svc.ConnectOAuth(ctx, kind, "Microsoft", &oauth2.Token{AccessToken: "a", RefreshToken: "r"}, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := store.ConnectionByID(ctx, id)
+			if err != nil || record.Status != "pending" {
+				t.Fatalf("new connection: %+v %v", record, err)
+			}
+			if err = svc.VerifyNonGoogle(ctx, id, func(storage.CredentialSnapshot) (calendar.Provider, error) {
+				return nil, errors.New("synthetic build failure")
+			}); err == nil {
+				t.Fatal("expected builder failure")
+			}
+			record, err = store.ConnectionByID(ctx, id)
+			if err != nil || record.Status != "error" {
+				t.Fatalf("failed verification: %+v %v", record, err)
+			}
+		})
+	}
+}
+
+func TestReconnectSnapshotSurvivesLaterAttempts(t *testing.T) {
+	for _, kind := range []string{"apple", "microsoft", "google"} {
+		for _, outcome := range []string{"success", "failure", "cancel"} {
+			for _, newerFirst := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/%s/newerFirst=%t", kind, outcome, newerFirst), func(t *testing.T) {
+					ctx := context.Background()
+					svc, store := newTestService(t)
+					var err error
+					if kind == "apple" {
+						err = svc.CreateApple(ctx, "account", "Account", "old@example.test", "old")
+					} else {
+						err = svc.CreateOAuth(ctx, "account", kind, "Account", &oauth2.Token{AccessToken: "old", RefreshToken: "refresh"}, nil)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					reconnect := func(label string) storage.CredentialSnapshot {
+						var snap storage.CredentialSnapshot
+						var e error
+						if kind == "apple" {
+							snap, e = svc.ReconnectAppleSnapshot(ctx, "account", label+"@example.test", label)
+						} else {
+							snap, e = svc.ReconnectOAuthSnapshot(ctx, "account", kind, &oauth2.Token{AccessToken: label, RefreshToken: label})
+						}
+						if e != nil {
+							t.Fatal(e)
+						}
+						return snap
+					}
+					old := reconnect("first")
+					current := reconnect("second")
+					if old.AuthorizationRevision == current.AuthorizationRevision {
+						t.Fatal("reused revision")
+					}
+					verify := func(snap storage.CredentialSnapshot, result string) error {
+						verifyCtx := ctx
+						if result == "cancel" {
+							var cancel context.CancelFunc
+							verifyCtx, cancel = context.WithCancel(ctx)
+							cancel()
+						}
+						build := func(got storage.CredentialSnapshot) (calendar.Provider, error) {
+							if got.AuthorizationRevision != snap.AuthorizationRevision {
+								t.Fatal("builder received another revision")
+							}
+							if result == "failure" {
+								return nil, errors.New("synthetic failure")
+							}
+							if result == "cancel" {
+								return nil, verifyCtx.Err()
+							}
+							return &fakeProvider{name: kind, calendars: []calendar.Calendar{{ID: "cal-" + result, Name: "Calendar"}}}, nil
+						}
+						if kind == "google" {
+							return svc.VerifyGoogleSnapshot(verifyCtx, snap, build)
+						}
+						return svc.VerifyNonGoogleSnapshot(verifyCtx, snap, build)
+					}
+					runOld := func() {
+						if e := verify(old, outcome); e == nil {
+							t.Fatal("stale verification unexpectedly succeeded")
+						}
+					}
+					runNew := func() {
+						if e := verify(current, "success"); e != nil {
+							t.Fatalf("new verification: %v", e)
+						}
+					}
+					if newerFirst {
+						runNew()
+						runOld()
+					} else {
+						runOld()
+						runNew()
+					}
+					record, e := store.ConnectionByID(ctx, "account")
+					if e != nil || record.Status != "connected" || record.AuthorizationRevision != current.AuthorizationRevision {
+						t.Fatalf("current authority lost: %+v %v", record, e)
+					}
+					cals, e := store.ListCalendars(ctx, "account")
+					if e != nil || len(cals) != 1 || cals[0].ProviderCalendarID != "cal-success" {
+						t.Fatalf("current projection: %+v %v", cals, e)
+					}
+				})
+			}
+		}
 	}
 }

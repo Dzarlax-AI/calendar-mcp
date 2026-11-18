@@ -1,0 +1,35 @@
+{
+  "status": "implemented_verified_local_with_documented_limits",
+  "primary_median_ms": {
+    "before": 14280.344833,
+    "middle": 12832.993459,
+    "after": 6031.396375
+  },
+  "primary_speedup": 2.367668106210313,
+  "primary_pages": 334,
+  "main_sdk_cases": 17,
+  "extra_sdk_boundary_cases": 3,
+  "extra_large_body_stress_rounds": 1,
+  "full_parity": true,
+  "go_race_named_pass": 717,
+  "storage_named_pass": 108,
+  "explicit_postgres_cases": 11,
+  "first_page_slo_cases": 9,
+  "negative_controls_expected_failures": 3,
+  "new_caches": false,
+  "new_indexes": false,
+  "pool_changed": false,
+  "new_runtime_layers": false,
+  "deployment": false,
+  "large_body_bg_ms": {
+    "before": 25840.903708,
+    "middle": 24658.49025,
+    "after": 24470.635708
+  },
+  "limits": [
+    "Large UI payloads exceeding8MiB or8192rows use streaming fallback.",
+    "Standalone large-body UI/C4 median was about12% slower in this run.",
+    "Three main rounds are not full-walk p95 evidence; stress has one round.",
+    "RSS sampling is best effort, not a hard result or SQL-executor memory bound."
+  ]
+}

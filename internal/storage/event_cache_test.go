@@ -9,7 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1091,5 +1095,506 @@ func TestCalendarSelectionInvalidatesLeaseAndHidesCachedEvents(t *testing.T) {
 	next, err := store.ClaimDueCalendarSync(ctx, "selection-worker", now.Add(5*time.Second), now.Add(time.Hour))
 	if err != nil || next == nil || next.Cursor != "" {
 		t.Fatalf("enabled claim=%#v err=%v", next, err)
+	}
+}
+
+func TestListCachedEventsSQLiteBufferBoundaries(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	ctx := context.Background()
+	start, end := now.Add(-time.Hour), now.Add(time.Hour)
+	base := pageEvent("base", "calendar", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339), false)
+	base.Description = ""
+	if err := store.UpsertCachedEvent(ctx, base, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<8192)
+ INSERT INTO cached_events(calendar_id,event_id,source_object_id,etag,payload_json,start_at,end_at,deleted,sync_generation,synced_at)
+ SELECT calendar_id,printf('%05d',n),source_object_id,etag,payload_json,start_at,end_at,deleted,sync_generation,synced_at FROM cached_events,seq WHERE event_id='base'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []int{8192, 8193} {
+		if count == 8192 {
+			if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET deleted=1 WHERE event_id='base'`); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET deleted=0 WHERE event_id='base'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var inUse atomic.Int64
+		inUse.Store(-1)
+		probe := &decodeProbeContext{Context: ctx, probe: func() error { inUse.Store(int64(store.db.Stats().InUse)); return nil }}
+		events, _, err := store.ListCachedEvents(probe, []string{"calendar"}, start, end)
+		expected := int64(0)
+		if count > 8192 {
+			expected = 1
+		}
+		if err != nil || len(events) != count || !probe.seen.Load() || inUse.Load() != expected {
+			t.Fatalf("rows=%d: got %d in-use=%d seen=%v err=%v", count, len(events), inUse.Load(), probe.seen.Load(), err)
+		}
+	}
+	// Invalid JSON in the buffer flushed at row 8193 and in the subsequent
+	// streaming row must both fail the entire call.
+	for _, id := range []string{"00001", "base"} {
+		var original string
+		if err := store.db.QueryRowContext(ctx, `SELECT payload_json FROM cached_events WHERE event_id=?`, id).Scan(&original); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET payload_json='{' WHERE event_id=?`, id); err != nil {
+			t.Fatal(err)
+		}
+		events, sources, err := store.ListCachedEvents(ctx, []string{"calendar"}, start, end)
+		if err == nil || events != nil || sources != nil {
+			t.Fatalf("malformed row %s: err=%v", id, err)
+		}
+		if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET payload_json=? WHERE event_id=?`, original, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM cached_events WHERE event_id<>'base'`); err != nil {
+		t.Fatal(err)
+	}
+	// Whitespace is valid JSON and lets us hit the raw-byte boundary exactly.
+	for _, size := range []int{8 << 20, (8 << 20) + 1} {
+		payload := `{}` + strings.Repeat(" ", size-2)
+		if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET payload_json=? WHERE event_id='base'`, payload); err != nil {
+			t.Fatal(err)
+		}
+		var inUse atomic.Int64
+		inUse.Store(-1)
+		probe := &decodeProbeContext{Context: ctx, probe: func() error { inUse.Store(int64(store.db.Stats().InUse)); return nil }}
+		events, _, err := store.ListCachedEvents(probe, []string{"calendar"}, start, end)
+		expected := int64(0)
+		if size > 8<<20 {
+			expected = 1
+		}
+		if err != nil || len(events) != 1 || !probe.seen.Load() || inUse.Load() != expected {
+			t.Fatalf("bytes=%d: events=%d in-use=%d seen=%v err=%v", size, len(events), inUse.Load(), probe.seen.Load(), err)
+		}
+	}
+	for _, size := range []int{10, (8 << 20) + 1} {
+		payload := `{` + strings.Repeat(" ", size-1)
+		if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET payload_json=? WHERE event_id='base'`, payload); err != nil {
+			t.Fatal(err)
+		}
+		events, sources, err := store.ListCachedEvents(ctx, []string{"calendar"}, start, end)
+		if err == nil || events != nil || sources != nil {
+			t.Fatalf("malformed bytes=%d: events=%v sources=%v err=%v", size, events, sources, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	events, sources, err := store.ListCachedEvents(canceled, []string{"calendar"}, start, end)
+	if !errors.Is(err, context.Canceled) || events != nil || sources != nil {
+		t.Fatalf("canceled: events=%v sources=%v err=%v", events, sources, err)
+	}
+}
+
+// decodeProbeContext observes the decode-time cancellation check without a
+// production hook. The stack-frame name is intentionally test-only and may
+// need adjustment if the decode closure is refactored.
+type decodeProbeContext struct {
+	context.Context
+	probe func() error
+	seen  atomic.Bool
+}
+
+func (c *decodeProbeContext) Err() error {
+	if c.seen.Load() {
+		return c.Context.Err()
+	}
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		if strings.Contains(frame.Function, ".listCachedEvents.func1") {
+			if c.seen.CompareAndSwap(false, true) {
+				return c.probe()
+			}
+			return c.Context.Err()
+		}
+		if !more {
+			break
+		}
+	}
+	return c.Context.Err()
+}
+
+func TestListCachedEventsReleasesSQLiteConnectionBeforeBufferedDecode(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	store.db.SetMaxOpenConns(1)
+	event := pageEvent("base", "calendar", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339), false)
+	event.Description = ""
+	if err := store.UpsertCachedEvent(context.Background(), event, now); err != nil {
+		t.Fatal(err)
+	}
+	probe := &decodeProbeContext{Context: context.Background()}
+	probe.probe = func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		var one int
+		return store.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+	}
+	events, _, err := store.ListCachedEvents(probe, []string{"calendar"}, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil || !probe.seen.Load() || len(events) != 1 {
+		t.Fatalf("probe seen=%v events=%d err=%v", probe.seen.Load(), len(events), err)
+	}
+}
+
+func TestListCachedEventsCancellationDuringDecode(t *testing.T) {
+	for _, size := range []int{10, (8 << 20) + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			store, now := newEventCacheStore(t)
+			event := pageEvent("base", "calendar", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339), false)
+			if err := store.UpsertCachedEvent(context.Background(), event, now); err != nil {
+				t.Fatal(err)
+			}
+			payload := `{}` + strings.Repeat(" ", size-2)
+			if _, err := store.db.Exec(`UPDATE cached_events SET payload_json=? WHERE event_id='base'`, payload); err != nil {
+				t.Fatal(err)
+			}
+			probe := &decodeProbeContext{Context: context.Background(), probe: func() error { return context.Canceled }}
+			events, sources, err := store.ListCachedEvents(probe, []string{"calendar"}, now.Add(-time.Hour), now.Add(time.Hour))
+			if !probe.seen.Load() || !errors.Is(err, context.Canceled) || events != nil || sources != nil {
+				t.Fatalf("seen=%v err=%v", probe.seen.Load(), err)
+			}
+		})
+	}
+}
+
+func TestListCachedEventsSQLiteOffsetInstants(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	ctx := t.Context()
+	fixtures := []struct {
+		id, provider, start, end string
+		legacy                   bool
+	}{
+		{"google-utc", "google", "2026-12-31T23:59:59.999999999Z", "2027-01-01T00:00:00.000000002Z", false},
+		{"apple-legacy", "apple", "2027-01-01T01:59:59.999999999+02:00", "2027-01-01T02:00:00.000000002+02:00", true},
+		{"microsoft-legacy", "microsoft", "2026-12-31T18:29:59.999999999-05:30", "2026-12-31T18:30:00.000000002-05:30", true},
+		{"google-legacy", "google", "2027-01-02T01:00:00+24:60", "2027-01-02T01:00:00.000000002+24:60", true},
+		{"touch-before", "apple", "2027-01-01T01:59:59+02:00", "2027-01-01T02:00:00+02:00", true},
+		{"touch-after", "microsoft", "2026-12-31T18:30:00.000000001-05:30", "2026-12-31T18:31:00-05:30", true},
+	}
+	for _, f := range fixtures {
+		e := cachedTimedEvent(f.id, f.start, f.end)
+		e.Provider = f.provider
+		e.Start.TimeZone = "Europe/Belgrade"
+		e.End.TimeZone = "Europe/Belgrade"
+		// +25:00 is an output of the historical writer for parsed +24:60.
+		if f.id == "google-legacy" {
+			e.Start.DateTime = "2027-01-02T00:00:00+24:00"
+			e.End.DateTime = "2027-01-02T00:00:00.000000002+24:00"
+		}
+		if err := store.UpsertCachedEvent(ctx, e, now); err != nil {
+			t.Fatal(err)
+		}
+		if f.legacy {
+			start, err := time.Parse(time.RFC3339Nano, f.start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			end, err := time.Parse(time.RFC3339Nano, f.end)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET start_at=?, end_at=? WHERE calendar_id=? AND event_id=?`, start, end, "calendar", f.id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := store.UpsertCachedEvent(ctx, cachedAllDayEvent("all-day", "2027-01-01", "2027-01-02"), now); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := store.db.QueryRowContext(ctx, `SELECT CAST(start_at AS TEXT) FROM cached_events WHERE event_id='apple-legacy'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "2027-01-01 01:59:59.999999999 +0200 +0200" {
+		t.Fatalf("driver representation = %q", stored)
+	}
+	var baseline string
+	for _, offset := range []string{"Z", "+02:00", "-05:30"} {
+		start := mustTime(t, "2027-01-01T00:00:00Z")
+		end := start.Add(time.Nanosecond)
+		zone := time.UTC
+		if offset == "+02:00" {
+			zone = time.FixedZone("test", 2*3600)
+		}
+		if offset == "-05:30" {
+			zone = time.FixedZone("test", -5*3600-30*60)
+		}
+		events, _, err := store.ListCachedEvents(ctx, []string{"calendar"}, start.In(zone), end.In(zone))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(events))
+		for _, e := range events {
+			ids = append(ids, e.ID)
+			if e.ID == "apple-legacy" && (e.Start.DateTime != fixtures[1].start || e.Start.TimeZone != "Europe/Belgrade") {
+				t.Fatalf("payload changed: %#v", e.Start)
+			}
+		}
+		got := fmt.Sprint(ids)
+		if offset == "Z" {
+			baseline = got
+			if got != "[microsoft-legacy google-utc apple-legacy google-legacy all-day]" {
+				t.Fatalf("unexpected events %s", got)
+			}
+		} else if got != baseline {
+			t.Fatalf("offset %s got %s want %s", offset, got, baseline)
+		}
+	}
+}
+
+func TestSQLiteCachedRangePlanAndAlternateFormats(t *testing.T) {
+	store, now := newEventCacheStore(t)
+	ctx := t.Context()
+	for _, fixture := range []struct{ id, start, end string }{
+		{"sqlite", "2026-08-22 10:00:00+02:00", "2026-08-22 11:00:00+02:00"},
+		{"rfc3339", "2026-08-22T08:00:00Z", "2026-08-22T09:00:00Z"},
+		{"datetime", "2026-08-22 08:00:00", "2026-08-22 09:00:00"},
+	} {
+		e := cachedTimedEvent(fixture.id, "2026-08-22T08:00:00Z", "2026-08-22T09:00:00Z")
+		if err := store.UpsertCachedEvent(ctx, e, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `UPDATE cached_events SET start_at=?, end_at=? WHERE calendar_id='calendar' AND event_id=?`, fixture.start, fixture.end, fixture.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A large collection of far-future rows makes a missing range constraint
+	// consequential and gives the planner a realistic source-scoped index.
+	_, err := store.db.ExecContext(ctx, `WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<10000)
+		INSERT INTO cached_events(calendar_id,event_id,payload_json,start_at,end_at,deleted,sync_generation,synced_at)
+		SELECT 'calendar', 'far-' || i, '{}', '2040-01-01 00:00:00 +0000 UTC', '2040-01-01 01:00:00 +0000 UTC', 0, 1, '2040-01-01' FROM n`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := sqliteCachedEventsRangeQuery("?", true)
+	rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, "calendar", true, "connected", "2026-08-24~", "2026-08-20", "2026-08-22 09:00:00 +0000 UTC", "2026-08-22 08:00:00 +0000 UTC", "calendar", true, "connected", "2026-08-23", "2026-08-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "cached_events_timed_range_idx (calendar_id=? AND start_at<?)") || !strings.Contains(joined, "cached_events_date_range_idx (calendar_id=? AND start_date<?)") {
+		t.Fatalf("range indexes not bounded:\n%s", joined)
+	}
+	events, _, err := store.ListCachedEvents(ctx, []string{"calendar"}, mustTime(t, "2026-08-22T08:15:00Z"), mustTime(t, "2026-08-22T08:30:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make(map[string]bool)
+	for _, e := range events {
+		ids[e.ID] = true
+	}
+	if len(ids) != 3 || !ids["sqlite"] || !ids["rfc3339"] || !ids["datetime"] {
+		t.Fatalf("events = %#v", ids)
+	}
+}
+
+func TestSQLiteIntegerCachedRangeRealDSN(t *testing.T) {
+	for _, format := range []string{"unix", "unix_milli", "unix_micro", "unix_nano"} {
+		for _, convert := range []string{"false", "true"} {
+			t.Run(format+"/"+convert, func(t *testing.T) {
+				original, now := newEventCacheStore(t)
+				ctx := t.Context()
+				var seq int
+				var name, path string
+				if err := original.db.QueryRowContext(ctx, "PRAGMA database_list").Scan(&seq, &name, &path); err != nil {
+					t.Fatal(err)
+				}
+				legacy := cachedTimedEvent("legacy", "1969-12-31T19:00:00-05:00", "1969-12-31T19:00:02-05:00")
+				if err := original.UpsertCachedEvent(ctx, legacy, now); err != nil {
+					t.Fatal(err)
+				}
+				if err := original.UpsertCachedEvent(ctx, cachedAllDayEvent("day", "1970-01-01", "1970-01-02"), now); err != nil {
+					t.Fatal(err)
+				}
+				if err := original.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err := Open(ctx, "sqlite://"+path+"?_time_integer_format="+format+"&_inttotime="+convert)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				for _, e := range []calendar.EventV2{
+					cachedTimedEvent("included", "1969-12-31T23:59:59Z", "1970-01-01T00:00:01Z"),
+					cachedTimedEvent("touch-start", "1969-12-31T23:59:58Z", "1969-12-31T23:59:59Z"),
+					cachedTimedEvent("touch-end", "1970-01-01T00:00:01Z", "1970-01-01T00:00:02Z"),
+				} {
+					if err := store.UpsertCachedEvent(ctx, e, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Store an early date where modernc's automatic millisecond heuristic is wrong.
+				early := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC)
+				_, err = store.db.ExecContext(ctx, `UPDATE calendar_sync_state SET last_success_at=?, next_sync_at=?, window_start=?, window_end=? WHERE calendar_id='calendar'`, early, early, early, early.Add(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if format == "unix_milli" && convert == "false" {
+					_, err = store.db.ExecContext(ctx, `WITH RECURSIVE future(n) AS (
+						SELECT 1 UNION ALL SELECT n+1 FROM future WHERE n<4096
+					)
+					INSERT INTO cached_events(calendar_id,event_id,payload_json,start_at,end_at,sync_generation,synced_at)
+					SELECT 'calendar','future-'||n,'{}',1700000000000+n,1700000000060+n,1,1700000000000 FROM future`)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				start := time.Unix(-1, 0)
+				end := time.Unix(1, 0)
+				for _, visible := range []bool{false, true} {
+					var events []calendar.EventV2
+					var statuses []CachedSourceStatus
+					if visible {
+						events, statuses, err = store.ListVisibleCachedEvents(ctx, []string{"calendar"}, start, end)
+					} else {
+						events, statuses, err = store.ListCachedEvents(ctx, []string{"calendar"}, start, end)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := map[string]bool{}
+					for _, e := range events {
+						got[e.ID] = true
+						if e.ID == "legacy" && e.Start.DateTime != legacy.Start.DateTime {
+							t.Fatal("legacy offset changed")
+						}
+					}
+					if len(got) != 3 || !got["included"] || !got["legacy"] || !got["day"] {
+						t.Fatalf("visible=%v events=%v", visible, got)
+					}
+					if len(statuses) != 1 || !statuses[0].WindowStart.Equal(early) || statuses[0].LastSuccessAt == nil || !statuses[0].LastSuccessAt.Equal(early) {
+						t.Fatalf("statuses=%+v", statuses)
+					}
+				}
+				// A fractional interval still selects integer ticks inside it, including negative ticks.
+				events, _, err := store.ListCachedEvents(ctx, []string{"calendar"}, time.Unix(-1, 1), time.Unix(0, 1))
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, e := range events {
+					if e.ID == "included" {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("fractional range missed integer event")
+				}
+				query := sqliteIntegerCachedEventsRangeQuery("?", true)
+				rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, "calendar", true, "connected", "1970-01-03~", "1969-12-30", end.String(), start.String(), "calendar", true, "connected", int64(1), int64(-1), "calendar", true, "connected", "1970-01-02", "1969-12-31")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var plan []string
+				for rows.Next() {
+					var a, b, c int
+					var d string
+					if err := rows.Scan(&a, &b, &c, &d); err != nil {
+						t.Fatal(err)
+					}
+					plan = append(plan, d)
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				rows.Close()
+				p := strings.Join(plan, "\n")
+				if !strings.Contains(p, "cached_events_timed_range_idx (calendar_id=? AND start_at>? AND start_at<?)") ||
+					!strings.Contains(p, "cached_events_timed_range_idx (calendar_id=? AND start_at<?)") ||
+					!strings.Contains(p, "cached_events_date_range_idx (calendar_id=? AND start_date<?)") {
+					t.Fatalf("unbounded plan:\n%s", p)
+				}
+			})
+		}
+	}
+}
+
+func TestSQLiteTimeTickRoundingAndOverflow(t *testing.T) {
+	t0 := time.Unix(-1, 999999999)
+	if v, err := sqliteTimeTick(t0, 1000, false); err != nil || v != -1 {
+		t.Fatalf("floor=%d %v", v, err)
+	}
+	if v, err := sqliteTimeTick(t0, 1000, true); err != nil || v != 0 {
+		t.Fatalf("ceil=%d %v", v, err)
+	}
+	if _, err := sqliteTimeTick(time.Date(2500, 1, 1, 0, 0, 0, 0, time.UTC), 1000000000, true); err == nil {
+		t.Fatal("expected overflow")
+	}
+}
+
+func TestSQLiteNumericRangeReadsLegacyLocalTime(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2001, 6, 3, 9, 30, 0, 0, time.UTC)
+	dsn := "sqlite://" + filepath.Join(t.TempDir(), "time#legacy.db") + "?_timezone=Europe%2FBelgrade"
+	legacy, err := Open(ctx, dsn+"&_time_format=datetime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if err = legacy.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = legacy.CreateConnection(ctx, Connection{ID: "account", Provider: "apple", DisplayName: "Synthetic", Status: "connected",
+		EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err = legacy.UpsertCalendar(ctx, Calendar{ID: "calendar", ConnectionID: "account", ProviderCalendarID: "calendar", Name: "Synthetic", CanRead: true, DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	window := SyncWindow{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+	if err = legacy.EnsureCalendarSyncStates(ctx, now, window); err != nil {
+		t.Fatal(err)
+	}
+	original := cachedTimedEvent("legacy-local", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339))
+	if err = legacy.UpsertCachedEvent(ctx, original, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, dsn+"&_time_integer_format=unix_nano")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	numeric := cachedTimedEvent("numeric", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339))
+	if err = store.UpsertCachedEvent(ctx, numeric, now); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err = store.db.QueryRowContext(ctx, `SELECT typeof(start_at) FROM cached_events WHERE event_id='numeric'`).Scan(&kind); err != nil || kind != "integer" {
+		t.Fatalf("numeric DSN binding %q: %v", kind, err)
+	}
+	events, sources, err := store.ListVisibleCachedEvents(ctx, []string{"calendar"}, now, now.Add(time.Minute))
+	if err != nil || len(events) != 2 || len(sources) != 1 || !sources[0].WindowStart.Equal(window.Start) ||
+		!slices.ContainsFunc(events, func(event calendar.EventV2) bool { return event.ID == original.ID && event.Start == original.Start }) {
+		t.Fatalf("mixed range: events=%+v, sources=%+v, err=%v", events, sources, err)
+	}
+	overflow := cachedTimedEvent("overflow", "2500-01-01T00:00:00Z", "2500-01-01T00:01:00Z")
+	if err = store.UpsertCachedEvent(ctx, overflow, now); err == nil || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("out-of-range write: %v", err)
+	}
+	var count int
+	if err = store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cached_events WHERE event_id='overflow'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("overflow row persisted, count=%d: %v", count, err)
 	}
 }

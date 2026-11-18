@@ -31,6 +31,10 @@ func newHTTPClient(store token.Store, cfg *oauth2.Config, initial *oauth2.Token)
 	if saved, err := store.Load(); err == nil && saved.RefreshToken != "" {
 		initial = saved
 	}
+	return oauthHTTPClient(store, cfg, initial)
+}
+
+func oauthHTTPClient(store token.Store, cfg *oauth2.Config, initial *oauth2.Token) *http.Client {
 	ts := token.TokenSource(store, cfg, initial)
 	client := oauth2.NewClient(context.Background(), ts)
 	client.Timeout = 30 * time.Second

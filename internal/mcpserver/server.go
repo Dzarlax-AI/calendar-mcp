@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,9 +11,17 @@ import (
 
 	"calendar-mcp/internal/application"
 	"calendar-mcp/internal/auth"
+	"calendar-mcp/internal/cachedpages"
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/httpx"
 )
+
+// CachedEventReader is separate from the live application service so enabling
+// cached summaries cannot change the established live tool contracts.
+type CachedEventReader interface {
+	Read(context.Context, cachedpages.Request, string) (cachedpages.Page, cachedpages.PageStats, error)
+	Ready() bool
+}
 
 type CatalogMode string
 
@@ -22,8 +31,10 @@ const (
 )
 
 type Options struct {
-	EnableV2    bool
-	CatalogMode CatalogMode
+	EnableV2              bool
+	CatalogMode           CatalogMode
+	EventReadModelEnabled bool
+	CachedEvents          CachedEventReader
 }
 
 // Register retains the original combined catalog at /mcp for existing callers.
@@ -46,7 +57,15 @@ func RegisterWithOptions(mux *http.ServeMux, reg *calendar.Registry, app *applic
 	compatHandler := streamableHandler(buildCompatCatalog(reg, app, opts.EnableV2))
 	var modernHandler http.Handler
 	if opts.EnableV2 {
-		modernHandler = streamableHandler(buildModernCatalog(reg, app))
+		modern := buildModernCatalog(reg, app)
+		cachedEnabled := opts.EventReadModelEnabled && opts.CachedEvents != nil && opts.CachedEvents.Ready() && authOptions.APIKey != ""
+		if cachedEnabled {
+			registerCachedEvents(modern, opts.CachedEvents)
+		}
+		modernHandler = streamableHandler(modern)
+		if cachedEnabled {
+			modernHandler = observeCachedRequestBody(modernHandler)
+		}
 	}
 	defaultHandler := compatHandler
 	if mode == CatalogModern {

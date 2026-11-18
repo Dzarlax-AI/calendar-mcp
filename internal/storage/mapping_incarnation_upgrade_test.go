@@ -31,11 +31,13 @@ func TestMappingIncarnationMigrationPreservesLegacyRows(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	if err = s.CreateConnection(ctx, Connection{ID: "conn", Provider: "google", AccountFingerprint: "conn", Status: "connected", EncryptedCredentials: []byte("synthetic"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err = s.db.ExecContext(ctx, `INSERT INTO connections(id,provider,account_fingerprint,display_name,status,encrypted_credentials,credential_version,scopes_json,created_at,updated_at)
+		VALUES('conn','google','conn','Synthetic','connected',?,1,'[]',?,?)`, []byte("synthetic"), now, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"source", "target"} {
-		if err = s.UpsertCalendar(ctx, Calendar{ID: id, ConnectionID: "conn", ProviderCalendarID: id, Name: id, CanRead: true, CanWrite: true, DiscoveredAt: now}); err != nil {
+		if _, err = s.db.ExecContext(ctx, `INSERT INTO calendars(id,connection_id,provider_calendar_id,name,can_read,can_write,supports_recurrence,discovered_at)
+			VALUES(?,'conn',?,?,TRUE,TRUE,FALSE,?)`, id, id, id, now); err != nil {
 			t.Fatal(err)
 		}
 	}

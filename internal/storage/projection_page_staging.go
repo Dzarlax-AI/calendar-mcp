@@ -122,38 +122,26 @@ func (s *Store) StartProjectionPageAttempt(ctx context.Context, state CalendarSy
 	return nil
 }
 
-// lockProjectionPageSource follows the shared lock order: calendar, connection,
-// sync lease, then projection guard. The connection precedes the lease because
-// verification updates lock connection before reactivating sync state.
+// lockProjectionPageSource takes the connection before the calendar, lease,
+// and projection guard, matching reconnect and calendar selection.
 func lockProjectionPageSource(ctx context.Context, s *Store, tx *sql.Tx, calendarID string) error {
-	if s.dialect == DialectSQLite {
-		if _, err := tx.ExecContext(ctx, s.query(`UPDATE calendars SET enabled=enabled WHERE id=?`), calendarID); err != nil {
-			return fmt.Errorf("lock page stage calendar: %w", err)
+	if err := lockCalendarConnection(ctx, s, tx, calendarID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrProjectionPageStage
 		}
+		return fmt.Errorf("lock page stage connection: %w", err)
 	}
-	q := `SELECT connection_id FROM calendars WHERE id=?`
+	q := `SELECT id FROM calendars WHERE id=?`
 	if s.dialect == DialectPostgres {
 		q += ` FOR NO KEY UPDATE`
 	}
-	var connectionID string
-	err := tx.QueryRowContext(ctx, s.query(q), calendarID).Scan(&connectionID)
+	var locked string
+	err := tx.QueryRowContext(ctx, s.query(q), calendarID).Scan(&locked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrProjectionPageStage
 	}
 	if err != nil {
 		return fmt.Errorf("lock page stage calendar: %w", err)
-	}
-	q = `SELECT id FROM connections WHERE id=?`
-	if s.dialect == DialectPostgres {
-		q += ` FOR UPDATE`
-	}
-	var lockedConnection string
-	err = tx.QueryRowContext(ctx, s.query(q), connectionID).Scan(&lockedConnection)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrProjectionPageStage
-	}
-	if err != nil {
-		return fmt.Errorf("lock page stage connection: %w", err)
 	}
 	return nil
 }

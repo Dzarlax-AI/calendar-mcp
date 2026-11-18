@@ -198,3 +198,28 @@ func TestRegistryCalendarSelectionAppliesToDirectAndFanOut(t *testing.T) {
 		t.Fatal("disabled direct read allowed")
 	}
 }
+
+func TestDiscoveryDoesNotReinstallAfterReplacement(t *testing.T) {
+	old := &fakeProvider{name: "google"}
+	other := &fakeProvider{name: "apple"}
+	entered, release := make(chan struct{}), make(chan struct{})
+	r := NewRegistry([]Provider{other})
+	r.SetProviderDiscovery(func(context.Context, string, map[string]bool) ([]Provider, error) {
+		close(entered)
+		<-release
+		return []Provider{old}, nil
+	})
+	done := make(chan error, 1)
+	go func() { _, err := r.ProvidersContext(context.Background()); done <- err }()
+	<-entered
+	replacement := &fakeProvider{name: "microsoft"}
+	r.ReplaceProviders([]Provider{other, replacement})
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	ps := r.Providers()
+	if len(ps) != 2 || ps[0] != other || ps[1] != replacement {
+		t.Fatalf("replacement lost: %#v", ps)
+	}
+}

@@ -159,7 +159,7 @@ func (s *Store) RuleControlStatus(ctx context.Context, ruleID string) (string, e
 }
 
 func (s *Store) ListPendingSyncJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,rule_id,kind,created_at FROM sync_jobs WHERE state='pending' ORDER BY created_at LIMIT 200`)
+	rows, err := s.db.QueryContext(ctx, s.timeProjection(`SELECT id,rule_id,kind,created_at FROM sync_jobs WHERE state='pending' ORDER BY created_at LIMIT 200`, "created_at"))
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +167,11 @@ func (s *Store) ListPendingSyncJobs(ctx context.Context) ([]Job, error) {
 	jobs := []Job{}
 	for rows.Next() {
 		var j Job
-		if err = rows.Scan(&j.ID, &j.RuleID, &j.Kind, &j.CreatedAt); err != nil {
+		created := s.scanTime()
+		if err = rows.Scan(&j.ID, &j.RuleID, &j.Kind, &created); err != nil {
 			return nil, err
 		}
+		j.CreatedAt = created.Time
 		jobs = append(jobs, j)
 	}
 	return jobs, rows.Err()

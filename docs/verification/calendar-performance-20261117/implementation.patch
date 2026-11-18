@@ -1,0 +1,673 @@
+--- before/internal/storage/event_pages_postgres_test.go
++++ internal/storage/event_pages_postgres_test.go
+@@ -94,6 +94,20 @@
+ 		if len(page.Sources) != scopeSize || len(page.Tickets) != scopeSize {
+ 			t.Fatalf("source snapshot lost calendars: sources=%d tickets=%d", len(page.Sources), len(page.Tickets))
+ 		}
++		if after == nil {
++			if err := store.ValidateAuthorityTickets(ctx, page.Tickets); err != nil {
++				t.Fatalf("batch authority: %v", err)
++			}
++			duplicates := []AuthorityTicket{page.Tickets[0], page.Tickets[0]}
++			if err := store.ValidateAuthorityTickets(ctx, duplicates); err != nil {
++				t.Fatalf("duplicate authority: %v", err)
++			}
++			bad := append([]AuthorityTicket(nil), page.Tickets...)
++			bad[15].DetailReceipt = page.Tickets[0].DetailReceipt
++			if err := store.ValidateAuthorityTickets(ctx, bad); !errors.Is(err, ErrAuthorityChanged) {
++				t.Fatalf("mismatched last authority: %v", err)
++			}
++		}
+ 		returned := page.Rows
+ 		if len(returned) > request.PageSize {
+ 			returned = returned[:request.PageSize]
+--- before/internal/storage/event_pages.go
++++ internal/storage/event_pages.go
+@@ -302,7 +302,7 @@
+ 	return ErrInvalidCachedPageData
+ }
+ 
+-func queryCachedPageEvents(ctx context.Context, s *Store, tx *sql.Tx, req CachedPageRequest, after *CachedPagePosition) ([]CachedPageRow, int64, int64, int, int64, int, error) {
++func cachedPageEventsQuery(s *Store, req CachedPageRequest, after *CachedPagePosition) (string, []any, error) {
+ 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(req.CalendarIDs)), ",")
+ 	args := make([]any, 0, 64)
+ 	for _, id := range req.CalendarIDs {
+@@ -360,11 +360,20 @@
+ 		scalarOK = "(" + guard + ") AND json_valid(e.payload_json)"
+ 	}
+ 	projection = fmt.Sprintf("CASE WHEN %s THEN %s ELSE NULL END", scalarOK, projection)
++	selectColumns := fmt.Sprintf(`e.event_id,e.calendar_id,%s AS start_key,e.start_at,e.end_at,e.start_date,e.end_date,
++(%s) AS scalar_ok,%s AS summary_json`, startKey, scalarOK, projection)
++	if s.dialect == DialectSQLite {
++		// Delay scalar guards and summary projection until after the bounded page
++		// is selected. The payload stays inside SQLite until its size is checked.
++		selectColumns = `e.event_id,e.calendar_id,CAST(e.start_at AS TEXT) AS start_key,e.start_at,e.end_at,e.start_date,e.end_date,e.payload_json`
++	}
+ 	query := fmt.Sprintf(`WITH selected AS MATERIALIZED (
+-SELECT e.event_id,e.calendar_id,%s AS start_key,e.start_at,e.end_at,e.start_date,e.end_date,
+-(%s) AS scalar_ok,%s AS summary_json
++SELECT %s
+ FROM cached_events e JOIN calendars c ON c.id=e.calendar_id JOIN connections conn ON conn.id=c.connection_id
+-WHERE e.calendar_id IN (%s) AND c.can_read=? AND conn.status=? AND e.deleted=? AND %s AND COALESCE(%s,'')<>'seriesMaster'`, startKey, scalarOK, projection, placeholders, overlap, master)
++WHERE e.calendar_id IN (%s) AND c.can_read=? AND conn.status=? AND e.deleted=? AND %s`, selectColumns, placeholders, overlap)
++	if s.dialect != DialectSQLite {
++		query += fmt.Sprintf(` AND COALESCE(%s,'')<>'seriesMaster'`, master)
++	}
+ 	if after != nil {
+ 		if after.AllDay {
+ 			query += ` AND e.start_at IS NULL AND (e.start_date>? OR (e.start_date=? AND (e.event_id>? OR (e.event_id=? AND e.calendar_id>?))))`
+@@ -375,7 +384,7 @@
+ 			if s.dialect == DialectPostgres {
+ 				parsed, err := time.Parse(time.RFC3339Nano, after.StartAt)
+ 				if err != nil {
+-					return nil, 0, 0, 0, 0, 0, errors.New("invalid cached page cursor time")
++					return "", nil, errors.New("invalid cached page cursor time")
+ 				}
+ 				key, compare = parsed.UTC(), "e.start_at"
+ 			}
+@@ -383,13 +392,35 @@
+ 			args = append(args, key, key, after.EventID, after.EventID, after.CalendarID)
+ 		}
+ 	}
++	if s.dialect == DialectSQLite {
++		// The cursor predicate is cheaper than inspecting a candidate's JSON.
++		// Masters must still be excluded before applying the limit.
++		query += fmt.Sprintf(` AND COALESCE(%s,'')<>'seriesMaster'`, master)
++	}
+ 	query += ` ORDER BY e.start_at IS NULL,e.start_at,CASE WHEN e.start_at IS NULL THEN e.start_date END,e.event_id,e.calendar_id LIMIT ?)`
++	if s.dialect == DialectSQLite {
++		query += fmt.Sprintf(`, projected AS MATERIALIZED (
++SELECT e.event_id,e.calendar_id,e.start_key,e.start_at,e.end_at,e.start_date,e.end_date,
++(%s) AS scalar_ok,%s AS summary_json FROM selected e)`, scalarOK, projection)
++	}
+ 	safe := func(expression string) string { return "CASE WHEN scalar_ok THEN " + expression + " ELSE NULL END" }
++	source := "selected"
++	if s.dialect == DialectSQLite {
++		source = "projected"
++	}
+ 	query += fmt.Sprintf(` SELECT %s,%s,%s,%s,%s,%s,%s,CASE WHEN scalar_ok AND %s<=%d THEN summary_json ELSE NULL END,CASE WHEN scalar_ok THEN 0 ELSE 1 END
+-FROM selected ORDER BY start_at IS NULL,start_at,CASE WHEN start_at IS NULL THEN start_date END,event_id,calendar_id`, safe("event_id"), safe("calendar_id"), safe("start_key"), safe("start_at"), safe("end_at"), safe("start_date"), safe("end_date"), summarySize, cachedPageMaxPayloadBytes)
++FROM %s ORDER BY start_at IS NULL,start_at,CASE WHEN start_at IS NULL THEN start_date END,event_id,calendar_id`, safe("event_id"), safe("calendar_id"), safe("start_key"), safe("start_at"), safe("end_at"), safe("start_date"), safe("end_date"), summarySize, cachedPageMaxPayloadBytes, source)
+ 	args = append(args, req.PageSize+1)
++	return s.query(query), args, nil
++}
++
++func queryCachedPageEvents(ctx context.Context, s *Store, tx *sql.Tx, req CachedPageRequest, after *CachedPagePosition) ([]CachedPageRow, int64, int64, int, int64, int, error) {
++	query, args, err := cachedPageEventsQuery(s, req, after)
++	if err != nil {
++		return nil, 0, 0, 0, 0, 0, err
++	}
+ 	start := time.Now()
+-	rows, err := tx.QueryContext(ctx, s.query(query), args...)
++	rows, err := tx.QueryContext(ctx, query, args...)
+ 	sqlNS := time.Since(start).Nanoseconds()
+ 	if err != nil {
+ 		return nil, sqlNS, 0, 0, 0, 0, fmt.Errorf("query cached event page: %w", err)
+--- before/internal/storage/event_authority_test.go
++++ internal/storage/event_authority_test.go
+@@ -6,6 +6,7 @@
+ 	"context"
+ 	"crypto/sha256"
+ 	"errors"
++	"fmt"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+@@ -397,3 +398,79 @@
+ 		}
+ 	}
+ }
++
++func TestValidateAuthorityTicketsBatchPreservesEveryProof(t *testing.T) {
++	var specs [][3]string
++	for i := 0; i < 16; i++ {
++		specs = append(specs, [3]string{fmt.Sprintf("conn-%02d", i), "primary", "google"})
++	}
++	store, _, ids := newCachedPagesStore(t, specs...)
++	ctx := context.Background()
++	tickets := make([]AuthorityTicket, len(ids))
++	for i, id := range ids {
++		var err error
++		tickets[i], err = store.CaptureWriterTicket(ctx, id)
++		if err != nil {
++			t.Fatal(err)
++		}
++	}
++	check := func(name string, input []AuthorityTicket, valid bool) {
++		t.Helper()
++		err := store.ValidateAuthorityTickets(ctx, input)
++		if valid && err != nil || !valid && !errors.Is(err, ErrAuthorityChanged) {
++			t.Fatalf("%s: %v", name, err)
++		}
++	}
++	check("sixteen", tickets, true)
++	check("empty", nil, false)
++	check("identical duplicates", []AuthorityTicket{tickets[0], tickets[0]}, true)
++	bad := append([]AuthorityTicket(nil), tickets...)
++	bad[15].DetailReceipt = tickets[0].DetailReceipt
++	check("last mismatched receipt", bad, false)
++	bad = append([]AuthorityTicket(nil), tickets...)
++	bad[15].AuthorizationRevision = tickets[0].AuthorizationRevision
++	check("last mismatched revision", bad, false)
++	bad = []AuthorityTicket{tickets[0], tickets[0]}
++	bad[1].DetailReceipt = tickets[1].DetailReceipt
++	check("conflicting duplicate", bad, false)
++	bad = append([]AuthorityTicket(nil), tickets...)
++	bad[0].DetailReceipt, bad[1].DetailReceipt = bad[1].DetailReceipt, bad[0].DetailReceipt
++	check("cross-swapped receipts", bad, false)
++	for _, field := range []string{"revision", "receipt", "long receipt", "connection", "calendar"} {
++		bad = append([]AuthorityTicket(nil), tickets...)
++		switch field {
++		case "revision":
++			bad[15].AuthorizationRevision = ""
++		case "receipt":
++			bad[15].DetailReceipt = ""
++		case "long receipt":
++			bad[15].DetailReceipt = strings.Repeat("x", 1025)
++		case "connection":
++			bad[15].ConnectionID = ""
++		case "calendar":
++			bad[15].CalendarID = ""
++		}
++		check(field, bad, false)
++	}
++	for _, tc := range []struct {
++		name, update, restore string
++		args                  []any
++	}{
++		{"disconnected", `UPDATE connections SET status='error' WHERE id=?`, `UPDATE connections SET status='connected' WHERE id=?`, []any{tickets[15].ConnectionID}},
++		{"unreadable", `UPDATE calendars SET can_read=false WHERE id=?`, `UPDATE calendars SET can_read=true WHERE id=?`, []any{ids[15]}},
++		{"auth", `UPDATE calendar_sync_state SET last_error_code='auth' WHERE calendar_id=?`, `UPDATE calendar_sync_state SET last_error_code=NULL WHERE calendar_id=?`, []any{ids[15]}},
++		{"permission", `UPDATE calendar_sync_state SET last_error_code='permission' WHERE calendar_id=?`, `UPDATE calendar_sync_state SET last_error_code=NULL WHERE calendar_id=?`, []any{ids[15]}},
++	} {
++		if _, err := store.db.ExecContext(ctx, tc.update, tc.args...); err != nil {
++			t.Fatal(err)
++		}
++		check(tc.name, tickets, false)
++		if _, err := store.db.ExecContext(ctx, tc.restore, tc.args...); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if _, err := store.db.ExecContext(ctx, `DELETE FROM calendar_sync_state WHERE calendar_id=?`, ids[15]); err != nil {
++		t.Fatal(err)
++	}
++	check("missing sync state", tickets, false)
++}
+--- before/internal/storage/event_pages_test.go
++++ internal/storage/event_pages_test.go
+@@ -3,13 +3,18 @@
+ import (
+ 	"context"
+ 	"database/sql"
++	"database/sql/driver"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"strings"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
+ 
+ 	"calendar-mcp/internal/calendar"
++
++	"modernc.org/sqlite"
+ )
+ 
+ func newCachedPagesStore(t *testing.T, calendarSpecs ...[3]string) (*Store, time.Time, []string) {
+@@ -113,6 +118,17 @@
+ 	}
+ 	if len(page.Tickets) != len(ids) || page.Stats.RowsDecoded != len(want) || page.Stats.PayloadBytes > 4000 {
+ 		t.Fatalf("ticket/stat mismatch: tickets=%d stats=%+v", len(page.Tickets), page.Stats)
++	}
++	// The master sorts before both timed events and must not consume the
++	// bounded page or lookahead slot.
++	req.PageSize = 1
++	first, err := store.ReadCachedPage(ctx, req, nil)
++	if err != nil || len(first.Rows) != 2 || first.Rows[0].Summary.EventID != "timed-a" || first.Rows[1].Summary.EventID != "timed-b" {
++		t.Fatalf("master consumed page limit: rows=%#v err=%v", first.Rows, err)
++	}
++	second, err := store.ReadCachedPage(ctx, req, &first.Rows[0].Position)
++	if err != nil || len(second.Rows) != 2 || second.Rows[0].Summary.EventID != "timed-b" || second.Rows[1].Summary.EventID != "day-a" {
++		t.Fatalf("continuation across timed/all-day boundary: rows=%#v err=%v", second.Rows, err)
+ 	}
+ }
+ 
+@@ -380,3 +396,127 @@
+ 		})
+ 	}
+ }
++
++func TestCachedPageSQLiteProjectsOnlySelectedRows(t *testing.T) {
++	var calls atomic.Int64
++	fn := fmt.Sprintf("test_cached_page_projection_count_%d", time.Now().UnixNano())
++	if err := sqlite.RegisterScalarFunction(fn, 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
++		calls.Add(1)
++		return args[0], nil
++	}); err != nil {
++		t.Fatal(err)
++	}
++	store, now, ids := newCachedPagesStore(t, [3]string{"conn", "primary", "google"})
++	ctx := context.Background()
++	for i := 0; i < 400; i++ {
++		event := pageEvent(fmt.Sprintf("event-%03d", i), ids[0], "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z", false)
++		event.Description = ""
++		if err := store.UpsertCachedEvent(ctx, event, now); err != nil {
++			t.Fatal(err)
++		}
++	}
++	req := CachedPageRequest{CalendarIDs: ids, Start: now, End: now.Add(24 * time.Hour), PageSize: 25}
++	initial, err := store.ReadCachedPage(ctx, req, nil)
++	if err != nil || len(initial.Rows) != 26 {
++		t.Fatalf("initial page: %d %v", len(initial.Rows), err)
++	}
++	middle, last := initial.Rows[0].Position, initial.Rows[0].Position
++	middle.EventID, last.EventID = "event-199", "event-398"
++	for _, tc := range []struct {
++		name  string
++		after *CachedPagePosition
++	}{{"first", nil}, {"middle", &middle}, {"last", &last}} {
++		t.Run(tc.name, func(t *testing.T) {
++			query, args, err := cachedPageEventsQuery(store, req, tc.after)
++			if err != nil {
++				t.Fatal(err)
++			}
++			plan, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var details []string
++			for plan.Next() {
++				var a, b, c int
++				var detail string
++				if err := plan.Scan(&a, &b, &c, &detail); err != nil {
++					t.Fatal(err)
++				}
++				details = append(details, detail)
++			}
++			if err := plan.Err(); err != nil {
++				t.Fatal(err)
++			}
++			if err := plan.Close(); err != nil {
++				t.Fatal(err)
++			}
++			joined := strings.Join(details, "\n")
++			for _, required := range []string{"MATERIALIZE selected", "MATERIALIZE projected", "USING COVERING INDEX cached_events_timed_range_idx", "USING COVERING INDEX cached_events_date_range_idx"} {
++				if !strings.Contains(joined, required) {
++					t.Fatalf("missing %q in actual query plan:\n%s", required, joined)
++				}
++			}
++			// Wrap the complete summary expression of the production-generated
++			// query, preserving all other SQL and parameters.
++			const begin, end = " THEN json_object(", " ELSE NULL END AS summary_json"
++			start := strings.Index(query, begin)
++			finish := strings.Index(query, end)
++			if start < 0 || finish < start || strings.Count(query, begin) != 1 || strings.Count(query, end) != 1 {
++				t.Fatal("summary projection shape changed")
++			}
++			start += len(" THEN ")
++			instrumented := query[:start] + fn + "(" + query[start:finish] + ")" + query[finish:]
++			calls.Store(0)
++			rows, err := store.db.QueryContext(ctx, instrumented, args...)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var gotIDs, gotTitles []string
++			for rows.Next() {
++				var id, cal, key, startAt, endAt, startDate, endDate, raw any
++				var invalid int
++				if err := rows.Scan(&id, &cal, &key, &startAt, &endAt, &startDate, &endDate, &raw, &invalid); err != nil {
++					t.Fatal(err)
++				}
++				if invalid != 0 {
++					t.Fatal("invalid row")
++				}
++				var summary struct {
++					Title string `json:"title"`
++				}
++				var payload []byte
++				switch v := raw.(type) {
++				case string:
++					payload = []byte(v)
++				case []byte:
++					payload = v
++				default:
++					t.Fatalf("summary type %T", raw)
++				}
++				if err := json.Unmarshal(payload, &summary); err != nil {
++					t.Fatal(err)
++				}
++				gotIDs = append(gotIDs, fmt.Sprint(id))
++				gotTitles = append(gotTitles, summary.Title)
++			}
++			if err := rows.Err(); err != nil {
++				t.Fatal(err)
++			}
++			if err := rows.Close(); err != nil {
++				t.Fatal(err)
++			}
++			if n := calls.Load(); n != int64(len(gotIDs)) || n > int64(req.PageSize+1) {
++				t.Fatalf("projections=%d rows=%d limit=%d", n, len(gotIDs), req.PageSize+1)
++			}
++			page, err := store.ReadCachedPage(ctx, req, tc.after)
++			if err != nil || len(page.Rows) != len(gotIDs) {
++				t.Fatalf("production page count=%d instrumented=%d err=%v", len(page.Rows), len(gotIDs), err)
++			}
++			for i, row := range page.Rows {
++				if row.Summary.EventID != gotIDs[i] || row.Summary.Title != gotTitles[i] {
++					t.Fatalf("row %d differs: %+v / %s %s", i, row.Summary, gotIDs[i], gotTitles[i])
++				}
++			}
++		})
++	}
++}
+--- before/internal/storage/event_authority.go
++++ internal/storage/event_authority.go
+@@ -97,18 +97,31 @@
+ 		return err
+ 	}
+ 	defer tx.Rollback()
++	values := make([]string, 0, len(tickets))
++	args := make([]any, 0, len(tickets)*4+1)
+ 	for _, t := range tickets {
+ 		if t.AuthorizationRevision == "" || t.DetailReceipt == "" || len(t.DetailReceipt) > 1024 {
+ 			return ErrAuthorityChanged
+ 		}
+-		var count int
+-		err = tx.QueryRowContext(ctx, s.query(`SELECT COUNT(*) FROM connections c JOIN calendars cal ON cal.connection_id=c.id JOIN calendar_sync_state st ON st.calendar_id=cal.id WHERE c.id=? AND cal.id=? AND c.status='connected' AND c.authorization_revision=? AND cal.detail_receipt=? AND cal.can_read=? AND (st.last_error_code IS NULL OR st.last_error_code NOT IN ('auth','permission'))`), t.ConnectionID, t.CalendarID, t.AuthorizationRevision, t.DetailReceipt, true).Scan(&count)
+-		if err != nil {
+-			return err
+-		}
+-		if count != 1 {
+-			return ErrAuthorityChanged
+-		}
++		values = append(values, "(?,?,?,?)")
++		args = append(args, t.ConnectionID, t.CalendarID, t.AuthorizationRevision, t.DetailReceipt)
++	}
++	args = append(args, true)
++	// Each input row participates separately, including duplicates. A count of
++	// matching tuples therefore rejects even a single mismatched proof.
++	query := `WITH expected(connection_id,calendar_id,revision,receipt) AS (VALUES ` + strings.Join(values, ",") + `)
++SELECT COUNT(*) FROM expected e
++JOIN connections c ON c.id=e.connection_id
++JOIN calendars cal ON cal.connection_id=c.id AND cal.id=e.calendar_id
++JOIN calendar_sync_state st ON st.calendar_id=cal.id
++WHERE c.status='connected' AND c.authorization_revision=e.revision AND cal.detail_receipt=e.receipt
++AND cal.can_read=? AND (st.last_error_code IS NULL OR st.last_error_code NOT IN ('auth','permission'))`
++	var count int
++	if err = tx.QueryRowContext(ctx, s.query(query), args...).Scan(&count); err != nil {
++		return err
++	}
++	if count != len(tickets) {
++		return ErrAuthorityChanged
+ 	}
+ 	return tx.Commit()
+ }
+--- before/AGENTS.md
++++ AGENTS.md
+@@ -49,6 +49,7 @@
+ - Bound the full SDK result (text plus structured output) to 16 KiB and each transferred SQL summary to 32 KiB. Preserve whole summaries or emit explicit oversized markers. Cursor continuation uses the last emitted row; complete means the end of the cached selection, not provider completeness.
+ - Migration 008 adds server-generated `authorization_revision` and role-bound `detail_receipt`. Google Begin fences leases/generations and purges before provider construction; only complete staged discovery opens receipts. Normal OAuth refresh preserves authorization and uses snapshot CAS. Each actual HTTP request captures the token binding under the existing TokenSource mutex.
+ - Writer tickets must precede provider I/O. Late sync/repair/application responses and stale token errors cannot acquire current authority. Keep connection → sync-state lock order. Keep Google scalar event timestamps in UTC; preserve original payload offsets/timezones. SQLite range UNION arms must stay covering; apply timed precedence before LIMIT outside the date arm.
++- SQLite cached pages select at most page_size+1 rows before guarded summary JSON projection in a separate materialized stage; keep cursor filtering before costly master JSON checks and master exclusion before LIMIT. Final authority validation batches every expected tuple in one fresh transaction after Pack, preserving duplicate-ticket semantics and all receipt/revision checks. Do not hold a connection through Pack or HTTP output.
+ - Legacy Google bootstrap attempts at most one eligible account per worker cycle. Failure/cancellation/crash stays closed until explicit reconnect. This can temporarily remove UI/native cached projection; preserve Apple auth rechecks and Microsoft/Apple behavior.
+ - Before a separately authorized activation, quiesce all old API/worker/cache writers. Migration version checks cannot stop an already running old writer. Do not mix unfenced old writers with the new reader or roll schema 008 back to an older binary.
+ 
+--- before/README.md
++++ README.md
+@@ -371,6 +371,8 @@
+ 
+ Local synthetic verification uses the actual Store, OAuth/factory/services, middleware and MCP SDK with fake HTTP and disposable databases. See the [revision 6 implementation and evidence](docs/ai-plans/2026-11-16-calendar-synthetic-pagination-pilot.html#revision-6). The harness in `scripts/verify_cached_event_pages_runtime.go` never starts `runtime.Serve`, has no provider, and accepts only explicit disposable database URLs. Its full-result baseline is a harness-only wrapper around the existing cached Store read, not a replacement production MCP contract.
+ 
++SQLite selects at most `page_size+1` rows before building guarded summary JSON, while excluding series masters before the limit. The final rights check validates all expected source tuples in one fresh transaction after packing; duplicate tickets retain their original meaning. These changes add no cache, index, migration or pool capacity. See the [full traversal comparison](docs/ai-plans/2026-11-17-cached-traversal-performance.html#implementation-results) for paired before/after measurements and limits. `scripts/verify_cached_event_pages_comparison.py` compares frozen binaries on isolated fixtures; `scripts/measure_cached_page_sql.go` measures the Store SQL phase separately.
++
+ ### Compatibility catalog and migration
+ 
+ The compatibility catalog preserves the original five tools: `list_calendars`, `get_events`, `create_event`, `update_event`, and `delete_event`. With `ENABLE_V2=true` it also preserves `get_calendar_capabilities`, `get_events_v2`, `get_event_v2`, `get_event_instances_v2`, `search_events_v2`, `create_event_v2`, `update_event_v2`, `delete_event_v2`, `respond_to_event_v2`, `move_event_v2`, and `import_event_v2`. Existing names, schemas, outputs, and behavior remain available on `/mcp/compat` and on the default `/mcp` in compat mode.
+--- before/docs/ai-plans/2026-11-17-cached-traversal-performance.html
++++ docs/ai-plans/2026-11-17-cached-traversal-performance.html
+@@ -10,11 +10,11 @@
+ </head>
+ <body><main>
+ <h1>Почему полный обход стал медленнее</h1>
+-<p>17 ноября 2026 · Revision 1 · Диагностика завершена · Draft: внедрение ожидает согласования</p>
++<p>17 ноября 2026 · Revision 1 · Диагностика завершена · Implemented: согласованные шаги A–C выполнены и проверены</p>
+ <p class="status">Главная устранимая причина на SQLite — JSON-проекция до LIMIT. На PostgreSQL — повторный просмотр диапазона и цена отдельных проверок прав. Новых кешей, индексов, миграций и расширения пула этот план не предусматривает.</p>
+ 
+ <section id="scope"><h2>1. Объём и границы</h2>
+-<p>Запрос: объяснить замедление полного обхода и найти ускорения без новых кешей и расширения пула. Выполнены разбор сохранённых фаз R6, отдельные синтетические SQL-эксперименты и один SDK-обход SQLite без фоновой нагрузки. Runtime не изменён: все 159 файлов исходного R6 manifest совпали по SHA-256.</p>
++<p>Запрос: объяснить замедление полного обхода и найти ускорения без новых кешей и расширения пула. На этапе диагностики выполнены разбор сохранённых фаз R6, отдельные синтетические SQL-эксперименты и один SDK-обход SQLite без фоновой нагрузки; тогда все 159 файлов исходного R6 manifest совпали по SHA-256. После согласования внедрены шаги A–C; результат приведён в разделе9.</p>
+ <p>Checkout: <code>calendar-mcp</code>, ветка <code>codex/google-orphan-occurrence</code>, HEAD <code>24c8e163b7e301040922f29b5f39ace150e3083d</code>. Существующий грязный checkout и прежние результаты сохранены. Временный PostgreSQL после диагностики остановлен. Реальные провайдеры, credentials, прикладная БД и production не использовались.</p>
+ <p>Цель предлагаемого внедрения: сократить повторную работу каждой страницы, сохранив порядок, курсоры, отзыв прав, лимиты 16 KiB/32 KiB и ограниченный Go working set. Полный обход остаётся последовательностью страниц; равенство скорости с одной неограниченной выдачей не обещается.</p></section>
+ 
+@@ -62,14 +62,14 @@
+ <p><a href="../../internal/storage/event_authority.go">ValidateAuthorityTickets</a> делает по запросу на каждый из максимум 16 источников в одной свежей read-only repeatable-read транзакции. SQL-микрозамер на 16 корректных синтетических grants, включая begin/commit: медиана <strong>0,876 мс для 16 запросов</strong> против <strong>0,185 мс для одного запроса</strong>. Это 4,74× для данной проверки, а не для всего обхода. В R6 wide эта фаза занимает 25,7%; устранение большей части её стоимости даёт ориентир около 20% общего времени при неизменных остальных фазах, но это ещё не end-to-end замер.</p>
+ <p>Пакетный вариант соединяет явный набор expected tuples с connections/calendars/sync-state, проверяя те же revision, receipt, статус, can_read и auth/permission fence. Эксперимент проверил только корректные grants; негативные случаи обязательны при внедрении. <a href="../experiments/calendar-runtime-performance-20261117/postgres-sql-results.json">Сырые PostgreSQL-замеры</a>.</p></section>
+ 
+-<section id="implementation"><h2>6. Предлагаемый первый этап внедрения</h2>
++<section id="implementation"><h2>6. Согласованный первый этап внедрения</h2>
+ <div class="scroll"><table><thead><tr><th>Шаг / файлы</th><th>Изменение и критерий</th><th>Исполнение / приёмка</th></tr></thead><tbody>
+-<tr><td>A. <code>internal/storage/event_pages.go</code>, <code>event_pages_test.go</code></td><td>Для SQLite выбрать top page_size+1 ключей/строк до построения summary JSON; guards и лимит 32 KiB оставить внутри SQL до передачи драйверу. Отсеять master до LIMIT. Cursor predicate выполнять раньше дорогого master JSON там, где это подтверждает план. Проверить план и фактическое число проекций ≤ page_size+1. PostgreSQL-путь сохранить.</td><td>Предлагается Terra для связанного SQL/безопасности и тестов, затем сильная проверка фактического diff. Только после согласования этого этапа.</td></tr>
+-<tr><td>B. <code>internal/storage/event_authority.go</code>, соответствующие SQLite/PostgreSQL тесты</td><td>Один запрос финальной проверки для всего expected scope, свежая отдельная транзакция после Pack. Сохранить точные tuple-проверки, обработку дубликатов входных tickets и fail-closed для отсутствующего/изменённого источника. Не заменять проверку старым снимком.</td><td>Предлагается Terra последовательным bounded unit; интеграция и приёмка сильным координатором. Не требует изменения page/cursor контракта.</td></tr>
++<tr><td>A. <code>internal/storage/event_pages.go</code>, <code>event_pages_test.go</code></td><td>Для SQLite выбрать top page_size+1 ключей/строк до построения summary JSON; guards и лимит 32 KiB оставить внутри SQL до передачи драйверу. Отсеять master до LIMIT. Cursor predicate выполнять раньше дорогого master JSON там, где это подтверждает план. Проверить план и фактическое число проекций ≤ page_size+1. PostgreSQL-путь сохранить.</td><td>Выполнено Terra high; координатор проверил фактический diff и результаты.</td></tr>
++<tr><td>B. <code>internal/storage/event_authority.go</code>, соответствующие SQLite/PostgreSQL тесты</td><td>Один запрос финальной проверки для всего expected scope, свежая отдельная транзакция после Pack. Сохранить точные tuple-проверки, обработку дубликатов входных tickets и fail-closed для отсутствующего/изменённого источника. Не заменять проверку старым снимком.</td><td>Выполнено Terra high последовательно после A; интеграция и приёмка координатором. Page/cursor контракт сохранён.</td></tr>
+ <tr><td>C. Существующие measurement/results scripts и этот документ</td><td>До/после на одном источнике и 16 источниках, 400/4000 событий; SQL-only отдельно от SDK. Прогон без фона и с прежним фоном. Сохранить raw результаты, факт паритета и ограничения; принять только измеренное улучшение.</td><td>Проверки последовательно во избежание взаимного влияния измерений. Общая приёмка по реальным исходникам и результатам.</td></tr>
+ </tbody></table></div>
+ <p>Внешний API, cursor binding/expiry, auth/notification/provider behavior, schema, SQL indexes и размеры пула остаются прежними. Все соединения должны освобождаться до HTTP output. Новых кешей, backfill и фоновых очередей нет.</p>
+-<p>Нынешняя диагностика выполнена координатором без новых subagents: она была одним адаптивным исследованием, где каждый эксперимент зависел от предыдущего. Модельные назначения выше — предложение для будущего согласованного исполнения, не утверждение о проведённой делегации.</p></section>
++<p>Нынешняя диагностика выполнена координатором без новых subagents: она была одним адаптивным исследованием, где каждый эксперимент зависел от предыдущего. После согласования storage-изменения A+B выполнены одним агентом Terra high (r7_storage), последовательными шагами. Координатор подготовил frozen baseline, провёл сравнения и проверил итоговый diff.</p></section>
+ 
+ <section id="verification"><h2>7. Проверки, риски и откат</h2>
+ <p><strong>Уже выполнено:</strong> сравнение 159 source hashes; пересчёт фаз из 24 R6 speed cases; SQLite SQL parity трёх измеренных обходов на вариант после прогрева; подсчёт JSON-вычислений в начале/середине/конце; один текущий SDK-обход без фона; PostgreSQL EXPLAIN и authority microbenchmark. Старые raw evidence не изменялись.</p>
+@@ -81,7 +81,17 @@
+ <section id="deferred"><h2>8. Следующие возможности и gate</h2>
+ <p><strong>Следом по профилю:</strong> разделить timed/date keyset SQL и ограничить сканирование курсором через существующие индексы; уменьшить повторное декодирование невыданных строк при byte-limited page; сократить повторные сериализации Pack/handler. На dense SQLite Pack занимает лишь 0,4% — начинать с него невыгодно; на wide PostgreSQL 13,2% делает его более интересным.</p>
+ <p>Объединение initial authority и data-read в одну read-сессию может убрать дублированную metadata и один вход в пул, но требует отдельного контракта владения соединением. Сессия должна закончиться <em>до Pack</em>, а финальная проверка — остаться свежей после Pack. Удержание единственного SQLite-соединения через Pack способно блокировать конкурентный отзыв прав; оно исключено из первого этапа. Смена частоты фоновых UI-чтений также исключена.</p>
+-<p><strong>Gate:</strong> пользователь пока запросил диагностику. Согласование этой revision разрешит только шаги A–C, локальные синтетические проверки и обновление этого документа. По AGENTS.md изменения auth/SQL runtime требуют HTML approval plan до реализации. Commit, push, PR, merge, deploy и real-data действия требуют отдельного явного разрешения.</p>
++<p><strong>Gate / approval:</strong> 17 ноября пользователь явно согласовал внедрение SQLite-оптимизации и пакетной проверки прав по этому плану, включая сравнение полного обхода до/после. Разрешены шаги A–C, локальные синтетические проверки и обновление этого документа. По AGENTS.md изменения auth/SQL runtime требуют HTML approval plan до реализации. Commit, push, PR, merge, deploy и real-data действия требуют отдельного явного разрешения.</p>
+ <p><a href="../experiments/calendar-runtime-performance-20261117/diagnosis-summary.json">Сводка и ограничения</a> · <a href="../experiments/calendar-runtime-performance-20261117/source-validation.json">Сохранность runtime</a> · <a href="../experiments/calendar-runtime-performance-20261117/artifact-manifest.json">Хеши доказательств</a></p>
+ </section>
++<section id="implementation-results"><h2>9. Результат внедрения</h2>
++<p><strong>Implemented / local acceptance:</strong> SQLite выбирает ограниченный набор до guarded JSON-проекции; финальная authority проверяет весь набор expected tuples одним SQL в свежей транзакции после Pack. Добавлен internal query-builder для проверки фактического SQL; внешний контракт не изменён. Кеши, индексы, миграции и пул не добавлялись.</p>
++<div class="scroll"><table><thead><tr><th>Полный SDK-обход</th><th>До, мс</th><th>После, мс</th><th>Ускорение</th></tr></thead><tbody><tr><td>sqlite / events4000-s1-c1-p25-bg0</td><td>5630.32</td><td>2103.97</td><td>2.68×</td></tr><tr><td>sqlite / events4000-s1-c1-p25-bg1</td><td>10109.28</td><td>6262.32</td><td>1.61×</td></tr><tr><td>sqlite / events4000-s16-c1-p25-bg0</td><td>12554.38</td><td>5156.41</td><td>2.43×</td></tr><tr><td>sqlite / events4000-s16-c1-p25-bg1</td><td>21452.93</td><td>14177.20</td><td>1.51×</td></tr><tr><td>postgres / events400-s16-c1-p25-bg1</td><td>102.21</td><td>87.57</td><td>1.17×</td></tr><tr><td>postgres / events4000-s16-c1-p25-bg1</td><td>1340.78</td><td>1141.53</td><td>1.17×</td></tr></tbody></table></div>
++<p>Это свежие замеры двух frozen pagination-бинарников, а не сравнение с неограниченной выдачей из раздела2: три парных полных обхода в чередующемся порядке AB/BA, одинаковая синтетическая fixture, отдельные процессы, natural GC. Всего34 случая, включая page_size25/50,C1/C4,jumbo/master. Stress4000/C4/2KiB имеет только один парный раунд: медиана четырёх workers32658 →11217мс,2,91×; это не распределение независимых раундов.</p>
++<p>Отдельная фаза SQL+драйвер/Scan SQLite: 5437.44 → 1923.22мс (2.83×),4000событий/1источник; фактический Store из before/final source copies, прогрев+3обхода, без authority/Pack/HTTP.</p>
++<p>Проверены711 Go race cases и102 storage cases с integration, включая11 явных PostgreSQL-backed тестов; skips0; vet/build прошли. Все34 парных случая сохранили count/digests и лимит16KiB; projection probe подтверждает≤page_size+1, проходит-count=2; возврат старого SQL ломает его. Все16 SLO первой страницы прошли. Runtime-исходники не менялись во время итоговых checks.</p>
++<p>SQLite: основной набор1,27–2,68×; PostgreSQL для16источников1,17–1,26×, для1источника примерно без изменения (в отдельных случаях до1,9%медленнее). Max sampled RSS парных candidate-процессов51,27MiB SQLite /41,72MiB PostgreSQL; guard256MiB не срабатывал. RSS PostgreSQL-сервера отдельно не измерялся; строгая граница памяти SQL executor не доказана. Три полных обхода не дают p95; фон5мс остаётся синтетическим стрессом.</p>
++<p>Первый полный checker выявил отсутствие build-ignore tags у трёх самостоятельных диагностических Go-программ из предыдущего этапа. Теги исправлены; второй полный checker прошёл. Исходные неудачные результаты сохранены. После проверок временный PostgreSQL остановлен. Commit/push/deploy не выполнялись.</p>
++<p><a href="../verification/calendar-performance-20261117/REPORT.md">Полный отчёт и таблица</a> · <a href="../verification/calendar-performance-20261117/acceptance.json">Acceptance</a> · <a href="../verification/calendar-performance-20261117/implementation.patch">Diff относительно dirty baseline</a> · <a href="../verification/calendar-performance-20261117/artifact-manifest.json">Manifest</a></p>
++</section>
+ </main></body></html>
+--- /dev/null
++++ scripts/measure_cached_page_sql.go
+@@ -0,0 +1,71 @@
++//go:build ignore
++
++// This command measures the actual Store reader on an already seeded fixture.
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"flag"
++	"fmt"
++	"os"
++	"strings"
++	"time"
++
++	"calendar-mcp/internal/storage"
++)
++
++func main() {
++	var database string
++	flag.StringVar(&database, "database-url", "", "explicit seeded disposable SQLite fixture")
++	flag.Parse()
++	if !strings.HasPrefix(database, "sqlite:///private/tmp/calendar-r6-") || strings.Contains(database, "?") {
++		panic("only explicit temporary calendar-r6 SQLite fixtures are allowed")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	store, err := storage.Open(ctx, database)
++	if err != nil {
++		panic(err)
++	}
++	defer store.Close()
++	if err := store.CheckSchema(ctx); err != nil {
++		panic(err)
++	}
++	start := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
++	req := storage.CachedPageRequest{CalendarIDs: []string{"google:r6-fixture:calendar-00"}, Start: start, End: start.Add(24 * time.Hour), PageSize: 25}
++	var measurements []map[string]any
++	for round := -1; round < 3; round++ {
++		var after *storage.CachedPagePosition
++		var sqlNS int64
++		pages, items := 0, 0
++		started := time.Now()
++		for {
++			page, err := store.ReadCachedPage(ctx, req, after)
++			if err != nil {
++				panic(err)
++			}
++			pages++
++			sqlNS += page.Stats.SQLEventsNS
++			n := min(len(page.Rows), req.PageSize)
++			items += n
++			if len(page.Rows) <= req.PageSize {
++				break
++			}
++			position := page.Rows[n-1].Position
++			after = &position
++		}
++		if items != 4000 || pages != 160 {
++			panic(errors.New("expected the explicitly seeded 4000-event fixture"))
++		}
++		if round >= 0 {
++			measurements = append(measurements, map[string]any{"round": round, "items": items, "pages": pages,
++				"sql_events_ms": float64(sqlNS) / 1e6, "store_wall_ms": float64(time.Since(started).Nanoseconds()) / 1e6})
++		}
++	}
++	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"synthetic_only": true, "provider_calls": 0, "pool_tuning": false,
++		"scope": "actual Store.ReadCachedPage; SQL events timing excludes metadata, JSON decoding, authority, Pack and HTTP; one warmup then three walks", "measurements": measurements}); err != nil {
++		panic(fmt.Errorf("write measurements: %w", err))
++	}
++}
+--- /dev/null
++++ scripts/verify_cached_event_pages_comparison.py
+@@ -0,0 +1,117 @@
++#!/usr/bin/env python3
++"""Compare two frozen cached-page binaries on isolated, identical fixtures."""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import statistics
++from urllib.parse import urlparse
++
++from verify_cached_event_pages_measurements import fixture_database, run
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--before", type=Path, required=True)
++    parser.add_argument("--after", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--postgres-base")
++    parser.add_argument("--case", help="Run one named case, preserving its parameters")
++    args = parser.parse_args()
++    if args.postgres_base:
++        parsed = urlparse(args.postgres_base)
++        if (parsed.hostname not in ("127.0.0.1", "::1") or parsed.username != "calendar_r6"
++                or not parsed.path.startswith("/calendar_r6_")
++                or parsed.scheme not in ("postgres", "postgresql")):
++            parser.error("Only an explicit disposable loopback calendar_r6 database is allowed")
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=False)
++    binaries = {key: getattr(args, key).resolve() for key in ("before", "after")}
++    env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
++    env.update(TMPDIR="/private/tmp", LC_ALL="C", TZ="UTC")
++    cases = [
++        (f"events{count}-s{sources}-c1-p25-bg{int(bg)}", "ordinary", count, sources, 1, 25, bg, 512, 3)
++        for count in (400, 4000) for sources in (1, 16) for bg in (False, True)
++    ] + [
++        (f"events400-s{sources}-c{concurrency}-p{size}-bg1", "ordinary", 400,
++         sources, concurrency, size, True, 512, 3)
++        for sources in (1, 16) for concurrency, size in ((1, 50), (4, 25), (4, 50))
++    ] + [
++        (f"{scenario}-c1", scenario, 400, 1, 1, 25, False, 2048, 3)
++        for scenario in ("jumbo", "jumbo-master")
++    ] + [("memory4000-c4-p50", "ordinary", 4000, 1, 4, 50, False, 2048, 1)]
++    if args.case:
++        cases = [case for case in cases if case[0] == args.case]
++        if not cases:
++            parser.error("Unknown case")
++    results, summaries = [], []
++    for index, (name, scenario, count, sources, concurrency, size, bg, body, rounds) in enumerate(cases):
++        with fixture_database(args.postgres_base, env) as database:
++            common = ["-database-url", database, "-scenario", scenario, "-events", str(count),
++                      "-sources", str(sources), "-concurrency", str(concurrency),
++                      "-page-size", str(size), "-body-bytes", str(body)]
++            seed = run(binaries["before"], ["-mode", "seed", *common], output, name + "-seed", env)
++            results.append(seed)
++            if seed["exit_code"]:
++                raise RuntimeError("Synthetic seed failed")
++            expected = None
++            grouped = {key: [] for key in binaries}
++            # Alternate AB / BA between rounds and invert the first order between cases.
++            # Every invocation is a fresh process with natural GC and one complete walk.
++            for round_index in range(rounds):
++                order = ("before", "after") if (round_index + index) % 2 == 0 else ("after", "before")
++                for version in order:
++                    command = ["-mode", "candidate", *common, "-walks", "1"]
++                    if bg:
++                        command.append("-background")
++                    row = run(binaries[version], command, output,
++                              f"{name}-{version}-round{round_index}", env, guard_mib=256)
++                    results.append(row)
++                    if row["exit_code"] or row["rss_guard_exceeded"] or not row["measurement"]:
++                        raise RuntimeError("Comparison process failed; raw evidence retained")
++                    measurement = row["measurement"]
++                    assert measurement["provider_calls"] == 0 and measurement["pool_tuning"] is False
++                    samples = measurement["samples"]
++                    assert len(samples) == concurrency
++                    for sample in samples:
++                        parity = tuple(sample[key] for key in ("Items", "Markers", "Digest", "TitlesDigest", "ReferenceDigest"))
++                        expected = parity if expected is None else expected
++                        assert parity == expected, (name, "parity mismatch")
++                        assert sample["Items"] == count - (scenario == "jumbo-master")
++                        assert sample["MaxSDKBytes"] <= 16384
++                    grouped[version].append({"round": round_index, "samples": samples,
++                                             "peak_rss_bytes": row["external_rss_peak_bytes"],
++                                             "background_reads": measurement["background_reads"],
++                                             "background_writes": measurement["background_sync_page_writes"]})
++            summary = {"name": name, "rounds": rounds, "concurrency": concurrency,
++                       "background": bg, "events": count, "sources": sources, "page_size": size,
++                       "description_bytes": body, "parity": "verified", "versions": {}}
++            for version, records in grouped.items():
++                values = [sample["WalkMS"] for record in records for sample in record["samples"]]
++                group_values = [max(sample["WalkMS"] for sample in record["samples"]) for record in records]
++                summary["versions"][version] = {
++                    "worker_walk_median_ms": statistics.median(values), "worker_walk_range_ms": [min(values), max(values)],
++                    "group_max_walk_median_ms": statistics.median(group_values),
++                    "pages": records[0]["samples"][0]["Pages"],
++                    "peak_sampled_rss_bytes": max(record["peak_rss_bytes"] or 0 for record in records),
++                    "records": records}
++            summary["speedup"] = (summary["versions"]["before"]["worker_walk_median_ms"]
++                                  / summary["versions"]["after"]["worker_walk_median_ms"])
++            summaries.append(summary)
++            (output / "comparison.json").write_text(json.dumps({"cases": summaries, "results": results}, indent=2) + "\n")
++    report = {"synthetic_only": True, "new_caches": False, "pool_tuning": False,
++              "binaries": {key: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
++                           for key, path in binaries.items()},
++              "backend": "postgres" if args.postgres_base else "sqlite", "cases": summaries,
++              "method": "Three alternating paired fresh-process full walks per C1/C4 case; one paired round for memory4000. Per-worker medians and ranges, not p95. Identical fixture; seed exits first. Natural GC, best-effort RSS sample/256MiB guard. Background is the existing 5ms UI-read/sync-write loop.",
++              "limitations": ["No pure network timing; client wall includes SDK validation and hashes.",
++                              "Single-round memory4000 is a stress check, not a latency distribution.",
++                              "RSS sampling may miss peaks; no hard SQL-executor memory bound."]}
++    (output / "comparison-summary.json").write_text(json.dumps(report, indent=2) + "\n")
++    print("Completed", len(summaries), "paired cases", flush=True)
++
++
++if __name__ == "__main__":
++    main()

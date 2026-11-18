@@ -695,11 +695,7 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 		return uiEventsResponse{}, err
 	}
 	disabled := make(map[string]bool)
-	primaries := make(map[string]bool)
 	for _, item := range control.Calendars {
-		if item.googlePrimary {
-			primaries[item.ID] = true
-		}
 		if item.CanRead && !item.Enabled {
 			disabled[item.ID] = true
 		}
@@ -715,6 +711,10 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 	events, sources, err := s.app.ListCachedEvents(ctx, calendarIDs, start, end)
 	if err != nil {
 		return uiEventsResponse{}, err
+	}
+	primaries := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		primaries[source.CalendarID] = source.GooglePrimary
 	}
 	response := uiEventsResponse{Items: make([]uiEvent, 0, len(events)), Sources: make([]uiSourceStatus, 0, len(calendarIDs)), Complete: true}
 	for _, event := range events {
@@ -741,8 +741,8 @@ func (s *Server) listCachedUIEvents(ctx context.Context, calendarIDs []string, s
 			response.Sources = append(response.Sources, uiSourceStatus{Provider: uiCalendarProvider(calendarID), CalendarID: calendarID, Status: "disabled", Complete: true})
 			continue
 		}
-		// A readable calendar with no durable state has not been warmed yet.
-		response.Sources = append(response.Sources, uiSourceStatus{Provider: uiCalendarProvider(calendarID), CalendarID: calendarID, Status: "pending", Stale: true})
+		// Missing authority status must fail closed.
+		response.Sources = append(response.Sources, uiSourceStatus{CalendarID: calendarID, Status: "unavailable", Stale: true})
 	}
 	for _, source := range response.Sources {
 		if (source.Status != "ready" && source.Status != "disabled") || source.Stale {
@@ -1272,7 +1272,7 @@ func normalizeCachedUIEvent(event calendar.EventV2) calendar.EventV2 {
 
 func isUISyncStatus(value string) bool {
 	switch value {
-	case "pending", "syncing", "ready", "failed", "parked", "degraded":
+	case "pending", "syncing", "ready", "failed", "parked", "degraded", "unavailable":
 		return true
 	default:
 		return false

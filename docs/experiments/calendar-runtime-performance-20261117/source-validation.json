@@ -1,0 +1,8 @@
+{
+  "comparison_source": "docs/verification/calendar-runtime-r6-20261117-final/source-manifest.json",
+  "compared_files": 159,
+  "changed": [],
+  "runtime_implementation_changed": false,
+  "new_work": "diagnostics, evidence and approval plan only",
+  "postgres_temporary_cluster_stopped": true
+}

@@ -1,0 +1,106 @@
+{
+  "date": "2026-11-17",
+  "approval": "User approved R0-R4 revision 6 local runtime implementation in delegated chat",
+  "status": "implemented_and_locally_accepted_with_documented_limits",
+  "baseline": {
+    "branch": "codex/google-orphan-occurrence",
+    "head": "24c8e163b7e301040922f29b5f39ace150e3083d",
+    "tracked_and_untracked_files": 2770,
+    "inventory_including_ignored_files": 12486,
+    "location": "/private/tmp/calendar-runtime-r6-baseline-20261117",
+    "preserved_dirty_work": true
+  },
+  "baseline_checks": {
+    "root_race_suite": {
+      "command": "env -i PATH=... HOME=... TMPDIR=... GOCACHE=/private/tmp/calendar-r6-go-cache go test -race -count=1 ./...",
+      "result": "passed all root packages",
+      "scope": "unchanged source copied before implementation",
+      "initial_sandbox_attempt": "failed local httptest listener bind; rerun with approved loopback access passed"
+    },
+    "postgres_storage": {
+      "command": "go test -race -tags integration -count=1 -json ./internal/storage",
+      "version": "PostgreSQL 17.11",
+      "database": "disposable calendar_r6_baseline on loopback port 55467",
+      "passed_named_tests": 67,
+      "failed": 0,
+      "skipped": 0,
+      "raw": "/private/tmp/calendar-r6-baseline-storage-test.jsonl"
+    }
+  },
+  "implementation_checks": {
+    "bundle": "calendar-runtime-r6-20261117-final",
+    "root_race_named_passes": 706,
+    "skips": 0,
+    "vet": "passed",
+    "build": "passed",
+    "frontend_passes": 26,
+    "speed_cases": 24,
+    "candidate_memory_cases": 28,
+    "max_sdk_bytes": 16288,
+    "candidate_sampled_rss_mib": 39.234375,
+    "candidate_self_max_rss_mib": 39.4375,
+    "source_drift": [],
+    "astra": "ACCEPTED for isolated local R0-R4, with documented limits",
+    "storage_integration_suite_named_passes": 97,
+    "explicit_postgres_named_cases": 11
+  },
+  "remaining_gates": [],
+  "external_actions": {
+    "real_credentials_or_provider_calls": false,
+    "application_database": false,
+    "production_or_deploy": false,
+    "gateway_acl_clients": false,
+    "git_publication": false
+  },
+  "unpassed_checks": {
+    "full_result_baseline_memory_guard": [
+      {
+        "backend": "sqlite",
+        "case": "events4000-p25-c4-baseline",
+        "sampled_rss_bytes": 328794112,
+        "exit_code": -15
+      },
+      {
+        "backend": "sqlite",
+        "case": "events4000-p50-c4-baseline",
+        "sampled_rss_bytes": 384139264,
+        "exit_code": -15
+      },
+      {
+        "backend": "postgres",
+        "case": "events4000-p25-c4-baseline",
+        "sampled_rss_bytes": 408223744,
+        "exit_code": -15
+      },
+      {
+        "backend": "postgres",
+        "case": "events4000-p50-c4-baseline",
+        "sampled_rss_bytes": 467730432,
+        "exit_code": -15
+      }
+    ]
+  },
+  "not_run_not_authorized": [
+    "real provider/account/credential validation",
+    "application database/production/rollout soak",
+    "Gateway/ACL/client activation",
+    "commit/push/PR/merge"
+  ],
+  "preservation": {
+    "branch": "codex/google-orphan-occurrence",
+    "head": "24c8e163b7e301040922f29b5f39ace150e3083d",
+    "same_branch_and_head": true,
+    "baseline_files": 2770,
+    "complete_inventory_files": 12486,
+    "runtime_source_manifest_entries": 159,
+    "runtime_source_drift": [],
+    "historical_experiment_changes": [],
+    "historical_verification_changes": [],
+    "revision5_and_prior_html_unchanged": true,
+    "protected_unrelated_wip_changes": []
+  },
+  "cleanup": {
+    "disposable_postgres_cluster": "stopped",
+    "application_services_touched": false
+  }
+}

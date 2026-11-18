@@ -585,6 +585,29 @@ func TestUIAPIEventReadModelIsConfigDrivenAndUsesCacheWithoutProviderReads(t *te
 	if !strings.Contains(response, `"id":"google:cached"`) || !strings.Contains(response, `"status":"ready"`) || !strings.Contains(response, `"complete":true`) {
 		t.Fatalf("cached response = %s", response)
 	}
+	for _, bounds := range []string{
+		"start=2026-08-22T09:30:00Z&end=2026-08-22T09:45:00Z",
+		"start=2026-08-22T11:30:00%2B02:00&end=2026-08-22T11:45:00%2B02:00",
+		"start=2026-08-22T04:00:00-05:30&end=2026-08-22T04:15:00-05:30",
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/ui/events?calendar_id=google:primary&"+bounds, nil)
+		req.Header.Set("X-authentik-username", "alexey")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"google:cached"`) {
+			t.Fatalf("equivalent cached range %s: %d %s", bounds, rec.Code, rec.Body.String())
+		}
+	}
+	if len(provider.listCalls) != 0 {
+		t.Fatalf("equivalent cached ranges called provider: %d", len(provider.listCalls))
+	}
+}
+
+func TestCachedUISourceReportsUnavailableGrant(t *testing.T) {
+	source := toCachedUISource(storage.CachedSourceStatus{CalendarID: "google:revoked", Status: "unavailable", Stale: true})
+	if source.Status != "unavailable" || source.Complete || !source.Stale {
+		t.Fatalf("unavailable source was not reported as incomplete: %+v", source)
+	}
 }
 
 func TestUIAPIDisabledReadModelLeavesMutationsProjectionFree(t *testing.T) {
@@ -640,6 +663,29 @@ func TestUIAPICachedDisabledCalendarIsNeutral(t *testing.T) {
 		if !strings.Contains(response, want) {
 			t.Fatalf("disabled response missing %s: %s", want, response)
 		}
+	}
+}
+
+func TestUIAPIEventReadModelReportsPreviouslyRevokedSource(t *testing.T) {
+	provider := uiProvider()
+	enabled := true
+	handler, store := newUIAPIHandlerWithStore(t, Config{TrustForwardAuth: true, EventReadModelEnabled: &enabled, EventReadModelWindow: testEventReadModelWindow()}, provider)
+	prepareCachedCalendar(t, store, "google:primary")
+	now := time.Now().UTC()
+	if err := store.UpsertCalendar(t.Context(), storage.Calendar{ID: "google:revoked", ConnectionID: "account", ProviderCalendarID: "revoked", Name: "private name", DiscoveredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertCachedEvent(t.Context(), calendar.EventV2{ID: "healthy", CalendarID: "google:primary", Provider: "google", Start: calendar.EventTime{Date: "2026-08-22"}, End: calendar.EventTime{Date: "2026-08-23"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	response := listUIEventsResponse(t, handler, "calendar_id=google:primary&calendar_id=google:revoked")
+	for _, want := range []string{`"id":"google:healthy"`, `"calendar_id":"google:revoked"`, `"status":"unavailable"`, `"complete":false`} {
+		if !strings.Contains(response, want) {
+			t.Fatalf("response missing %s: %s", want, response)
+		}
+	}
+	if strings.Contains(response, "private name") || len(provider.listCalls) != 0 {
+		t.Fatalf("unexpected metadata or provider read: %s", response)
 	}
 }
 

@@ -40,6 +40,9 @@ func (s *Store) EnableCachedRuleIfReady(ctx context.Context, id string, now time
 	if err != nil || len(ids) != 2 {
 		return ErrCacheExecutionIneligible
 	}
+	if err = lockCalendarConnection(ctx, s, tx, source); err != nil {
+		return err
+	}
 	if err = lockMutationCalendars(ctx, s, tx, ids); err != nil {
 		return err
 	}

@@ -155,11 +155,20 @@ func (s *Service) ImportEvent(ctx context.Context, request calendar.ImportEventR
 func (s *Service) searchEventsFanOut(ctx context.Context, request calendar.SearchEventsRequestV2) calendar.Page[calendar.EventV2] {
 	results := make(chan fanOutResult)
 	var wg sync.WaitGroup
-	for _, provider := range s.registry.Providers() {
+	providers, err := s.registry.ProvidersContext(ctx)
+	if err != nil {
+		return calendar.Page[calendar.EventV2]{Complete: false, Sources: []calendar.SourceStatus{failedSource("", "", err).status}}
+	}
+	for _, provider := range providers {
 		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			provider, err := s.registry.RefreshProvider(ctx, provider)
+			if err != nil {
+				results <- failedSource("", "", err)
+				return
+			}
 			search, ok := provider.(calendar.SearchProviderV2)
 			if !ok {
 				results <- failedSource(provider.Name(), "", unsupported(provider.Name(), "", "event search is not supported"))
