@@ -63,8 +63,15 @@ func (s *Service) RefreshAppleCalendarTimezones(ctx context.Context, connectionI
 		if !selected {
 			continue
 		}
-		if updates[i].Timezone != "" || calendar.CollectionLocation("apple", item.Timezone) == nil {
+		location := calendar.CollectionLocation("apple", item.Timezone)
+		if updates[i].Timezone != "" || location == nil {
 			return 0, errors.New("Apple calendar timezone could not be verified uniquely")
+		}
+		// An IANA match over sampled transitions does not establish coverage
+		// for the whole cached window. Limit this repair to fixed definitions.
+		start, end := s.now().In(location).ZoneBounds()
+		if !start.IsZero() || !end.IsZero() {
+			return 0, errors.New("Apple calendar timezone refresh requires a fixed offset")
 		}
 		updates[i].Timezone = item.Timezone
 	}

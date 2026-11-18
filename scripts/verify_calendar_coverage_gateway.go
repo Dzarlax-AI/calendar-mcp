@@ -232,13 +232,19 @@ func main() {
 			if counts.Verified != 2 || counts.Updated != want {
 				panic(fmt.Sprintf("verified/updated %d/%d synthetic Apple zones, want 2/%d", counts.Verified, counts.Updated, want))
 			}
+			for i, offset := range []string{"UTC+05:30:17", "UTC-00:19:32"} {
+				got, err := s.RepairCalendarTimeZone(ctx, ids[i])
+				must(err)
+				if got != offset {
+					panic(fmt.Sprintf("stored synthetic timezone %q, want %q", got, offset))
+				}
+			}
 		}
 		rows, err := s.ListCalendars(ctx, appleConnection)
 		must(err)
-		for _, row := range rows {
-			if row.ID == disabledID && (row.Enabled || row.Timezone != "") {
-				panic("disabled Apple calendar changed during refresh")
-			}
+		i := slices.IndexFunc(rows, func(row storage.Calendar) bool { return row.ID == disabledID })
+		if i < 0 || rows[i].Enabled || rows[i].Timezone != "" {
+			panic("disabled Apple calendar changed during refresh")
 		}
 	}
 	reader, e := cachedpages.NewService(s, cipher, cachedpages.Options{Window: window})

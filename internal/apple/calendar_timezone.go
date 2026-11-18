@@ -1,7 +1,9 @@
 package apple
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,8 +14,13 @@ import (
 )
 
 func calendarTimezone(value string) string {
-	data, err := ical.NewDecoder(strings.NewReader(strings.TrimSpace(value))).Decode()
+	input := bufio.NewReader(strings.NewReader(strings.TrimSpace(value)))
+	data, err := ical.NewDecoder(input).Decode()
 	if err != nil {
+		return ""
+	}
+
+	if _, err := input.Peek(1); err != io.EOF {
 		return ""
 	}
 
@@ -36,7 +43,7 @@ func calendarTimezone(value string) string {
 
 	location, _ := time.LoadLocation(tzid)
 	namedMatches := location != nil
-	var firstObservation, lastObservation time.Time
+	var firstTransition, lastTransition time.Time
 	transitions := make(map[time.Time]struct{})
 	var firstOffset int
 	fixed, hasObservance := true, false
@@ -62,14 +69,17 @@ func calendarTimezone(value string) string {
 					namedMatches = false
 					break
 				}
-				if from != to {
-					transitions[at] = struct{}{}
+				// Validate no-op observances without extending the span of
+				// actual transitions verified from the bounded samples.
+				if from == to {
+					continue
 				}
-				if firstObservation.IsZero() || at.Before(firstObservation) {
-					firstObservation = at
+				transitions[at] = struct{}{}
+				if firstTransition.IsZero() || at.Before(firstTransition) {
+					firstTransition = at
 				}
-				if lastObservation.IsZero() || at.After(lastObservation) {
-					lastObservation = at
+				if lastTransition.IsZero() || at.After(lastTransition) {
+					lastTransition = at
 				}
 			}
 		}
@@ -91,7 +101,7 @@ func calendarTimezone(value string) string {
 		}
 		return calendar.FormatCollectionOffset(firstOffset)
 	}
-	if namedMatches && len(transitions) > 0 && calendarTimezoneTransitionsMatch(location, firstObservation, lastObservation, transitions) {
+	if namedMatches && len(transitions) > 0 && calendarTimezoneTransitionsMatch(location, firstTransition, lastTransition, transitions) {
 		return tzid
 	}
 	return ""

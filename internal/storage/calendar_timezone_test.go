@@ -152,6 +152,10 @@ func runAppleTimezoneRefresh(t *testing.T, s *Store) {
 	for i := range updates {
 		want := updates[i].Before
 		want.Timezone = updates[i].Timezone
+		if after[i].DetailReceipt == want.DetailReceipt || after[i].DetailReceipt == "" {
+			t.Fatal("timezone change did not rotate the source receipt")
+		}
+		want.DetailReceipt = after[i].DetailReceipt
 		if after[i] != want {
 			t.Fatalf("refresh changed other metadata: %+v, want %+v", after[i], want)
 		}
@@ -159,6 +163,48 @@ func runAppleTimezoneRefresh(t *testing.T, s *Store) {
 	}
 	if count, err := s.UpdateAppleCalendarTimezones(ctx, snapshot, updates); err != nil || count != 0 {
 		t.Fatalf("idempotent refresh: %d %v", count, err)
+	}
+	const restoredZone = "UTC"
+	stale := []AppleCalendarTimezoneUpdate{{Before: after[0], Timezone: restoredZone}}
+	if count, err := s.UpdateAppleCalendarTimezones(ctx, snapshot, stale); err != nil || count != 1 {
+		t.Fatalf("intervening change: %d %v", count, err)
+	}
+	rows, err = s.ListCalendars(ctx, conn)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("list changed sources: %d %v", len(rows), err)
+	}
+	if count, err := s.UpdateAppleCalendarTimezones(ctx, snapshot, []AppleCalendarTimezoneUpdate{{Before: rows[0], Timezone: east}}); err != nil || count != 1 {
+		t.Fatalf("restore original offset: %d %v", count, err)
+	}
+	if _, err := s.UpdateAppleCalendarTimezones(ctx, snapshot, stale); !errors.Is(err, ErrAuthorityChanged) {
+		t.Fatalf("stale refresh accepted after timezone restoration: %v", err)
+	}
+	assertZone(first.ID, east)
+
+	// An intervening change from ordinary Apple discovery must fence the same
+	// in-flight refresh when the zone cycles back to the original value.
+	rows, err = s.ListCalendars(ctx, conn)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("list restored sources: %d %v", len(rows), err)
+	}
+	stale[0].Before = rows[0]
+	for _, zone := range []string{restoredZone, east} {
+		row := rows[0]
+		row.Timezone = zone
+		if err := s.UpsertCalendar(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UpdateAppleCalendarTimezones(ctx, snapshot, stale); !errors.Is(err, ErrAuthorityChanged) {
+		t.Fatalf("stale refresh accepted after ordinary discovery restored the timezone: %v", err)
+	}
+	assertZone(first.ID, east)
+	rows, err = s.ListCalendars(ctx, conn)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("list sources before credential change: %d %v", len(rows), err)
+	}
+	for i := range updates {
+		updates[i].Before = rows[i]
 	}
 	if err := s.CompareAndSwapCredentials(ctx, snapshot, []byte("replaced"), now); err != nil {
 		t.Fatal(err)

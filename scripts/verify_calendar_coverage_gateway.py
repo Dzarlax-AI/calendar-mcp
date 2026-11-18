@@ -147,12 +147,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fixture', default='/tmp/calendar-coverage-fixture')
     parser.add_argument('--gateway', default='/tmp/mcp-gateway')
-    parser.add_argument('--calendar-cli', default='/tmp/calendar-apple-offset-cli')
+    parser.add_argument('--calendar-cli', help='path to a calendar binary built in your checkout or a private build directory')
     parser.add_argument('--warm-walks', type=int, default=5)
     scenario = parser.add_mutually_exclusive_group()
     scenario.add_argument('--all-ready', action='store_true')
     scenario.add_argument('--apple-offsets', action='store_true')
     args = parser.parse_args()
+    if args.apple_offsets and not args.calendar_cli:
+        parser.error('--apple-offsets requires --calendar-cli')
     assert 1 <= args.warm_walks <= 100
     processes = []
     logs = []

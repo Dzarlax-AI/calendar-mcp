@@ -524,8 +524,11 @@ func upsertCalendarWithAuthority(ctx context.Context, s *Store, db execer, provi
  ON CONFLICT(connection_id, provider_calendar_id) DO UPDATE SET
  name=excluded.name, timezone=CASE WHEN excluded.timezone<>'' THEN excluded.timezone ELSE calendars.timezone END, can_read=excluded.can_read, can_write=excluded.can_write,
  supports_recurrence=excluded.supports_recurrence, discovered_at=excluded.discovered_at, google_primary=excluded.google_primary,
- detail_receipt=CASE WHEN (SELECT provider FROM connections WHERE id=excluded.connection_id)<>'google' AND (calendars.can_read<>excluded.can_read OR calendars.detail_receipt='') THEN excluded.detail_receipt ELSE calendars.detail_receipt END`
-	_, err := db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone, c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary, c.ConnectionID, uuid.NewString())
+ detail_receipt=CASE
+ WHEN (SELECT provider FROM connections WHERE id=excluded.connection_id)<>'google' AND (calendars.can_read<>excluded.can_read OR calendars.detail_receipt='') THEN excluded.detail_receipt
+ WHEN ?='apple' AND excluded.timezone<>'' AND calendars.timezone<>excluded.timezone THEN excluded.detail_receipt
+ ELSE calendars.detail_receipt END`
+	_, err := db.ExecContext(ctx, s.query(q), c.ID, c.ConnectionID, c.ProviderCalendarID, c.Name, c.Timezone, c.CanRead, c.CanWrite, c.SupportsRecurrence, c.DiscoveredAt, c.GooglePrimary, c.ConnectionID, uuid.NewString(), provider)
 	if err != nil {
 		return fmt.Errorf("upsert calendar: %w", err)
 	}

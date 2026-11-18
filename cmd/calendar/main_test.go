@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestRunDispatchesCommands(t *testing.T) {
 				worker: func(context.Context) error { called = "worker"; return nil },
 				refreshAppleTimezones: func(_ context.Context, args []string, _ io.Writer) error {
 					called = "refresh-apple-timezones"
-					if len(args) != 3 || args[2] != "apple:fixture:calendar" {
+					if !slices.Equal(args, []string{"--connection", "fixture", "apple:fixture:calendar"}) {
 						t.Fatalf("refresh args = %#v", args)
 					}
 					return nil

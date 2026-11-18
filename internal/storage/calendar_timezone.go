@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"calendar-mcp/internal/calendar"
 )
 
@@ -80,7 +82,9 @@ func (s *Store) UpdateAppleCalendarTimezones(ctx context.Context, snapshot Crede
 			return 0, ErrAuthorityChanged
 		}
 		if c.Timezone != update.Timezone {
-			if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendars SET timezone=? WHERE id=?`), update.Timezone, c.ID); err != nil {
+			// Rotate the source receipt even if this change restores a previous
+			// zone. Older refreshes and coverage cursors must stay invalid.
+			if _, err = tx.ExecContext(ctx, s.query(`UPDATE calendars SET timezone=?, detail_receipt=? WHERE id=?`), update.Timezone, uuid.NewString(), c.ID); err != nil {
 				return 0, err
 			}
 			changed++

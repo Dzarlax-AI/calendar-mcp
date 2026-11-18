@@ -14,8 +14,12 @@ func TestCalendarTimezoneValidatesObservances(t *testing.T) {
 	}
 	named := wrapZone("Europe/Belgrade", standard+daylight)
 
+	oldRules := strings.NewReplacer("20261025", "20101031", "20260329", "20100328").Replace(standard + daylight)
+	noOp := strings.NewReplacer("20260101", "20200101", "+0200", "+0100").Replace(fixed)
 	for _, tc := range []struct{ name, components, want string }{
 		{"named zone", named, "Europe/Belgrade"},
+		{"named zone with a later no-op beyond recurrence sample", wrapZone("Europe/Belgrade", oldRules+noOp), "Europe/Belgrade"},
+		{"named zone with a later contradictory no-op", wrapZone("Europe/Belgrade", oldRules+strings.ReplaceAll(noOp, "+0100", "+0200")), ""},
 		{"extension alongside timezone", named + "BEGIN:X-VENDOR\nX-INFO:value\nEND:X-VENDOR\n", "Europe/Belgrade"},
 		{"duplicate timezone", named + named, ""},
 		{"no observances", wrapZone("Europe/Belgrade", ""), ""},
@@ -39,5 +43,17 @@ func TestCalendarTimezoneValidatesObservances(t *testing.T) {
 				t.Errorf("calendarTimezone = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCalendarTimezoneRejectsTrailingObject(t *testing.T) {
+	const fixed = "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VTIMEZONE\nTZID:Fixture\nBEGIN:STANDARD\nDTSTART:20000101T000000\nTZOFFSETFROM:+053017\nTZOFFSETTO:+053017\nEND:STANDARD\nEND:VTIMEZONE\nEND:VCALENDAR\n"
+	if got := calendarTimezone(fixed + " \n\t"); got != "UTC+05:30:17" {
+		t.Fatalf("single calendar with trailing whitespace = %q", got)
+	}
+	for _, trailing := range []string{strings.ReplaceAll(fixed, "+053017", "+053018"), "BEGIN:VCALENDAR\n", "unexpected"} {
+		if got := calendarTimezone(fixed + trailing); got != "" {
+			t.Errorf("calendar with trailing content accepted: %q", got)
+		}
 	}
 }

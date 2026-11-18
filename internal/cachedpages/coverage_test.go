@@ -3,7 +3,6 @@ package cachedpages
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -16,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"calendar-mcp/internal/calendar"
 	"calendar-mcp/internal/credentials"
@@ -273,14 +274,8 @@ func coveragePostgresURL(t *testing.T) string {
 	if databaseURL == "" {
 		t.Skip("TEST_POSTGRES_URL is not configured")
 	}
-	u, err := url.Parse(databaseURL)
-	if err != nil || u.Hostname() != "127.0.0.1" || !strings.HasPrefix(u.Path, "/calendar_r6_") || u.User.Username() != "calendar_r6" {
-		t.Fatal("coverage integration requires a disposable loopback calendar_r6 database")
-	}
-	admin, err := sql.Open("pgx", databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	u, config := coveragePostgresConfig(t, databaseURL)
+	admin := stdlib.OpenDB(*config)
 	schema := "coverage_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
 		_ = admin.Close()
@@ -298,6 +293,32 @@ func coveragePostgresURL(t *testing.T) string {
 	query.Set("search_path", schema)
 	u.RawQuery = query.Encode()
 	return u.String()
+}
+
+// Restrict connection options before pgx parses them. Explicit URL coordinates
+// take precedence over environment and service defaults when the store reparses.
+func coveragePostgresConfig(t *testing.T, databaseURL string) (*url.URL, *pgx.ConnConfig) {
+	t.Helper()
+	u, err := url.Parse(databaseURL)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Hostname() != "127.0.0.1" ||
+		u.Port() == "" || u.User.Username() != "calendar_r6" || !strings.HasPrefix(u.Path, "/calendar_r6_") {
+		t.Fatal("coverage integration requires a disposable loopback calendar_r6 database and an explicit port")
+	}
+	for key := range u.Query() {
+		if key != "sslmode" {
+			t.Fatal("unsupported coverage database connection option")
+		}
+	}
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil || config.Host != u.Hostname() || config.User != u.User.Username() || config.Database != u.Path[1:] {
+		t.Fatal("effective coverage database does not match the disposable URL")
+	}
+	for _, fallback := range config.Fallbacks {
+		if fallback.Host != config.Host || fallback.Port != config.Port {
+			t.Fatal("coverage PostgreSQL fallback must use the disposable endpoint")
+		}
+	}
+	return u, config
 }
 
 func verifyCoverageWithBackground(t *testing.T, f serviceFixture) {
@@ -495,16 +516,34 @@ func runCoverageAppleTimezoneRefresh(t *testing.T, databaseURL string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := f.store.ListCalendars(ctx, "conn-05")
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("select Apple calendar: %v (%d)", err, len(rows))
+	update := func(zone string, want int) {
+		t.Helper()
+		rows, err := f.store.ListCalendars(ctx, "conn-05")
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("select Apple calendar: %v (%d)", err, len(rows))
+		}
+		updates := []storage.AppleCalendarTimezoneUpdate{{Before: rows[0], Timezone: zone}}
+		if n, err := f.store.UpdateAppleCalendarTimezones(ctx, snapshot, updates); err != nil || n != want {
+			t.Fatalf("update %s: %d %v", zone, n, err)
+		}
 	}
-	updates := []storage.AppleCalendarTimezoneUpdate{{Before: rows[0], Timezone: "UTC-00:19:32"}}
-	if n, err := f.store.UpdateAppleCalendarTimezones(ctx, snapshot, updates); err != nil || n != 1 {
-		t.Fatalf("update: %d %v", n, err)
-	}
+	const fixed = "UTC-00:19:32"
+	update(fixed, 1)
 	if _, _, err := f.svc.ReadCoverage(f.ctx, f.page, first.NextPageToken); !errors.Is(err, ErrCursorUnavailable) {
 		t.Fatalf("old cursor accepted: %v", err)
+	}
+	update("UTC", 1)
+	if _, _, err := f.svc.ReadCoverage(f.ctx, f.page, first.NextPageToken); !errors.Is(err, ErrCursorUnavailable) {
+		t.Fatalf("old cursor accepted after restoration: %v", err)
+	}
+	update(fixed, 1)
+	current, _, err := f.svc.ReadCoverage(f.ctx, f.page, "")
+	if err != nil || current.NextPageToken == "" {
+		t.Fatalf("current page: %+v %v", current, err)
+	}
+	update(fixed, 0)
+	if _, _, err := f.svc.ReadCoverage(f.ctx, f.page, current.NextPageToken); err != nil {
+		t.Fatalf("no-op refresh invalidated a current cursor: %v", err)
 	}
 
 	token := ""
