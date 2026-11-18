@@ -23,7 +23,7 @@ type calendarDiscoveryProps struct {
 		Calendar *struct{} `xml:"urn:ietf:params:xml:ns:caldav calendar"`
 	} `xml:"DAV: resourcetype"`
 	DisplayName *string    `xml:"DAV: displayname"`
-	Timezone    *string    `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
+	Timezone    []string   `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
 	Other       []struct{} `xml:",any"`
 }
 
@@ -104,9 +104,7 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 			if stat.Props.DisplayName != nil {
 				props.DisplayName = stat.Props.DisplayName
 			}
-			if stat.Props.Timezone != nil {
-				props.Timezone = stat.Props.Timezone
-			}
+			props.Timezone = append(props.Timezone, stat.Props.Timezone...)
 		}
 		if props.ResourceType == nil {
 			return nil, false, fmt.Errorf("calendar PROPFIND entry is missing resourcetype")
@@ -121,8 +119,8 @@ func (p *Provider) findCalendars(ctx context.Context, homeSet string) ([]calenda
 		if props.DisplayName != nil {
 			item.Name = *props.DisplayName
 		}
-		if props.Timezone != nil {
-			item.Timezone = calendarTimezone(*props.Timezone)
+		if len(props.Timezone) == 1 {
+			item.Timezone = calendarTimezone(props.Timezone[0])
 		}
 		calendars = append(calendars, item)
 	}

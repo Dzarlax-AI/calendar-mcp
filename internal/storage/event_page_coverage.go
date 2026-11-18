@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"calendar-mcp/internal/calendar"
 )
 
 // ErrExplicitCachedPageScope identifies a default selection that must be narrowed.
@@ -136,8 +138,8 @@ func (s *Store) cachedPageCoverage(ctx context.Context, tx *sql.Tx, req CachedPa
 			(status == "ready" || status == "degraded" || status == "syncing" || status == "failed")
 		switch {
 		case !grant.Read:
-		case req.Start.Before(start.Time) || req.End.After(end.Time) || !civilRangeCovered(req.StartDate, req.EndDate, timezone.String, start.Time, end.Time) ||
-			(!req.TargetWindow.Start.IsZero() && !civilRangeCovered(req.StartDate, req.EndDate, timezone.String, req.TargetWindow.Start, req.TargetWindow.End)):
+		case req.Start.Before(start.Time) || req.End.After(end.Time) || !civilRangeCovered(grant.Provider, req.StartDate, req.EndDate, timezone.String, start.Time, end.Time) ||
+			(!req.TargetWindow.Start.IsZero() && !civilRangeCovered(grant.Provider, req.StartDate, req.EndDate, timezone.String, req.TargetWindow.Start, req.TargetWindow.End)):
 			source.Coverage = "outside_window"
 		case status == "ready":
 			source.Coverage = "covered"
@@ -158,12 +160,12 @@ func (s *Store) cachedPageCoverage(ctx context.Context, tx *sql.Tx, req CachedPa
 
 // civilRangeCovered requires the entire requested all-day selection to fit
 // inside the provider's instant window in its own calendar timezone.
-func civilRangeCovered(startDate, endDate, zone string, windowStart, windowEnd time.Time) bool {
-	if zone == "" || zone == "Local" || startDate == "" || endDate == "" || endDate <= startDate {
+func civilRangeCovered(provider, startDate, endDate, zone string, windowStart, windowEnd time.Time) bool {
+	if startDate == "" || endDate == "" || endDate <= startDate {
 		return false
 	}
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
+	loc := calendar.CollectionLocation(provider, zone)
+	if loc == nil {
 		return false
 	}
 	start, err := time.ParseInLocation("2006-01-02", startDate, loc)

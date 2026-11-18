@@ -34,6 +34,7 @@ func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 		fmt.Fprint(w, entry("/home/forbidden/", base+propstat("403 Forbidden", "<C:calendar-timezone/>")))
 		fmt.Fprint(w, entry("/home/invalid/", base+propstat("200 OK", "<C:calendar-timezone>not an iCalendar value</C:calendar-timezone>")))
 		fmt.Fprint(w, entry("/home/omitted/", base))
+		fmt.Fprint(w, entry("/home/ambiguous/", base+propstat("200 OK", "<C:calendar-timezone>"+ical+"</C:calendar-timezone><C:calendar-timezone>invalid</C:calendar-timezone>")))
 		fmt.Fprint(w, "</D:multistatus>")
 	}))
 	t.Cleanup(server.Close)
@@ -43,7 +44,7 @@ func TestFindCalendarsReadsOptionalTimezone(t *testing.T) {
 		t.Fatal(err)
 	}
 	calendars, _, err := p.findCalendars(t.Context(), "/home/")
-	if err != nil || len(calendars) != 5 {
+	if err != nil || len(calendars) != 6 {
 		t.Fatalf("findCalendars = %v, %v", calendars, err)
 	}
 	if calendars[0].ID != "/home/has zone/" || calendars[0].Timezone != zone || calendars[0].Name != "Synthetic" {

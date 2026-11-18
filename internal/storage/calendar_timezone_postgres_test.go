@@ -22,3 +22,7 @@ func TestPostgresDiscoveryTimezonePreservation(t *testing.T) {
 	}
 	runDiscoveryTimezonePreservation(t, s)
 }
+
+func TestPostgresAppleTimezoneRefresh(t *testing.T) {
+	runAppleTimezoneRefresh(t, newAuthorityPostgresStore(t, SchemaVersion))
+}

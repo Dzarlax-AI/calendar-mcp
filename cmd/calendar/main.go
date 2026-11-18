@@ -16,18 +16,19 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-const usage = "Usage: calendar <serve|worker|import-legacy>"
+const usage = "Usage: calendar <serve|worker|import-legacy|refresh-apple-timezones>"
 
-var errUsage = errors.New("usage: calendar <serve|worker|import-legacy>")
+var errUsage = errors.New("usage: calendar <serve|worker|import-legacy|refresh-apple-timezones>")
 
 type commandSet struct {
-	serve        func(context.Context) error
-	worker       func(context.Context) error
-	importLegacy func(context.Context, []string, io.Writer) error
+	serve                 func(context.Context) error
+	worker                func(context.Context) error
+	importLegacy          func(context.Context, []string, io.Writer) error
+	refreshAppleTimezones func(context.Context, []string, io.Writer) error
 }
 
 func main() {
-	commands := commandSet{serve: appruntime.Serve, worker: appruntime.Worker, importLegacy: runLegacyImport}
+	commands := commandSet{serve: appruntime.Serve, worker: appruntime.Worker, importLegacy: runLegacyImport, refreshAppleTimezones: runAppleTimezoneRefresh}
 	if err := run(context.Background(), os.Args[1:], commands, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
@@ -59,6 +60,11 @@ func run(ctx context.Context, args []string, commands commandSet, out io.Writer)
 			return errors.New("legacy import command is unavailable")
 		}
 		return commands.importLegacy(ctx, args[1:], out)
+	case "refresh-apple-timezones":
+		if commands.refreshAppleTimezones == nil {
+			return errors.New("Apple timezone refresh command is unavailable")
+		}
+		return commands.refreshAppleTimezones(ctx, args[1:], out)
 	default:
 		return fmt.Errorf("%w: unknown command %q", errUsage, args[0])
 	}

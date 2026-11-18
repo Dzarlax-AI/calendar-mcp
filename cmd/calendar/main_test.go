@@ -16,6 +16,7 @@ func TestRunDispatchesCommands(t *testing.T) {
 	}{
 		{name: "serve", args: []string{"serve"}, want: "serve"},
 		{name: "worker", args: []string{"worker"}, want: "worker"},
+		{name: "refresh Apple timezones", args: []string{"refresh-apple-timezones", "--connection", "fixture", "apple:fixture:calendar"}, want: "refresh-apple-timezones"},
 		{name: "import legacy", args: []string{"import-legacy", "--preview"}, want: "import-legacy"},
 	}
 
@@ -25,6 +26,13 @@ func TestRunDispatchesCommands(t *testing.T) {
 			commands := commandSet{
 				serve:  func(context.Context) error { called = "serve"; return nil },
 				worker: func(context.Context) error { called = "worker"; return nil },
+				refreshAppleTimezones: func(_ context.Context, args []string, _ io.Writer) error {
+					called = "refresh-apple-timezones"
+					if len(args) != 3 || args[2] != "apple:fixture:calendar" {
+						t.Fatalf("refresh args = %#v", args)
+					}
+					return nil
+				},
 				importLegacy: func(_ context.Context, args []string, _ io.Writer) error {
 					called = "import-legacy"
 					if len(args) != 1 || args[0] != "--preview" {

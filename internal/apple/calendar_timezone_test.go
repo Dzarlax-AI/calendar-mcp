@@ -25,7 +25,13 @@ func TestCalendarTimezoneValidatesObservances(t *testing.T) {
 		{"named zone with contradicting recurrence", wrapZone("Europe/Belgrade", strings.ReplaceAll(standard, "BYDAY=-1SU", "BYDAY=4SU")+daylight), ""},
 		{"extra IANA transitions between observances", wrapZone("Europe/Belgrade", strings.ReplaceAll(standard, "FREQ=YEARLY;", "FREQ=YEARLY;INTERVAL=2;")+strings.ReplaceAll(daylight, "FREQ=YEARLY;", "FREQ=YEARLY;INTERVAL=2;")), ""},
 		{"named zone with fixed definition", wrapZone("America/New_York", fixed), "Etc/GMT-2"},
-		{"fixed definition with unsupported fractional offset", wrapZone("America/New_York", strings.ReplaceAll(fixed, "+0200", "+0230")), ""},
+		{"fractional hour", wrapZone("America/New_York", strings.ReplaceAll(fixed, "+0200", "+0230")), "UTC+02:30:00"},
+		{"positive seconds", wrapZone("Synthetic", strings.ReplaceAll(fixed, "+0200", "+053017")), "UTC+05:30:17"},
+		{"negative seconds", wrapZone("Synthetic", strings.ReplaceAll(fixed, "+0200", "-001932")), "UTC-00:19:32"},
+		{"negative zero", wrapZone("Synthetic", strings.ReplaceAll(fixed, "+0200", "-000000")), ""},
+		{"invalid seconds", wrapZone("Synthetic", strings.ReplaceAll(fixed, "+0200", "+053060")), ""},
+		{"named zone with only conflicting no-op observances", wrapZone("Europe/Belgrade", strings.ReplaceAll(fixed, "+0200", "+0100")+strings.ReplaceAll(fixed, "20260101", "20260701")), ""},
+		{"contradictory fixed observances", wrapZone("Synthetic", fixed+strings.ReplaceAll(fixed, "+0200", "+020001")), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := "BEGIN:VCALENDAR\nPRODID:-//Synthetic//Timezone//EN\nVERSION:2.0\n" + tc.components + "END:VCALENDAR\n"

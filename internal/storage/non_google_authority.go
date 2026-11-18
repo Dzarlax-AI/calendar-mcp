@@ -71,7 +71,7 @@ func (s *Store) CompleteNonGoogleAuthorization(ctx context.Context, snapshot Cre
 		}
 	}
 	for _, c := range staged {
-		if err = upsertCalendarWithAuthority(ctx, s, tx, c); err != nil {
+		if err = upsertCalendarWithAuthority(ctx, s, tx, snapshot.Provider, c); err != nil {
 			return err
 		}
 	}
