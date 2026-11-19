@@ -335,7 +335,7 @@ def verify_authority_adapters(info, gateway):
 
     def check_family_and_sibling():
         before = fixture_state(control)
-        out = response_data(point(family, 'apple:/home/family/event.ics'))
+        out = response_data(point(family, 'apple:/home/family/event@fixture.ics'))
         assert out['title'] == 'Real fallback fixture' and out['calendar_id'] == family, out
         assert response_data(point(sibling))['calendar_id'] == sibling
         out = response_data(call('get_events', base))

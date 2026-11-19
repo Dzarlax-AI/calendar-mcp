@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -488,5 +489,45 @@ func TestGatewayEventListingReusesMasterAcrossPagesAndUsesListTimeZone(t *testin
 		if masterReads.Load() != snapshot || metadataReads.Load() != 0 {
 			t.Fatalf("after snapshot %d: master GETs=%d metadata GETs=%d", snapshot, masterReads.Load(), metadataReads.Load())
 		}
+	}
+}
+
+func TestGatewayGooglePublicationUsesFullPageSizeWithoutChangingLiveListing(t *testing.T) {
+	var mu sync.Mutex
+	var sizes []string
+	provider, closeServer := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sizes = append(sizes, r.URL.Query().Get("maxResults"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("singleEvents") == "false" && r.URL.Query().Get("pageToken") == "" {
+			_, _ = io.WriteString(w, `{"items":[],"nextPageToken":"series-continuation"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[]}`)
+	})
+	defer closeServer()
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	request := calendar.ListEventsRequestV2{CalendarID: "primary", Start: start,
+		End: start.AddDate(0, 0, 1), View: calendar.RecurrenceBoth, MaxResults: 250, AvailabilityStrict: true}
+	list := provider.NewGatewayEventListing()
+	first, err := list(t.Context(), request)
+	if err != nil || !first.Complete || first.NextPageToken == "" {
+		t.Fatalf("empty first page must continue: %+v err=%v", first, err)
+	}
+	request.PageToken = first.NextPageToken
+	last, err := list(t.Context(), request)
+	if err != nil || !last.Complete || last.NextPageToken != "" {
+		t.Fatalf("expected end of both streams: %+v err=%v", last, err)
+	}
+	request.PageToken = ""
+	request.AvailabilityStrict = false
+	if _, err := provider.ListEventsV2(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(sizes, ","); got != "250,250,250,125,125" {
+		t.Fatalf("provider request sizes = %s", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"calendar-mcp/internal/calendar"
@@ -12,41 +13,84 @@ import (
 	"calendar-mcp/internal/storage"
 )
 
-// runGatewayPublication keeps optional provider listings off the rule-job and
-// event-sync loop. Durable successful sync state is the input queue, so a
-// restart does not lose work. The cursor only orders attempts for fairness.
+const (
+	gatewayPublicationSlots = 3
+	gatewayPublicationRetry = time.Minute
+)
+
+// The worker owns one queue of eligible sync generations. A slow provider
+// occupies one slot while the others continue from the same round-robin cursor.
 func runGatewayPublication(ctx context.Context, store *storage.Store, factory providerBuilder, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var running sync.WaitGroup
+	defer running.Wait()
+
+	type attempt struct {
+		id  string
+		err error
+	}
+	finished := make(chan attempt, gatewayPublicationSlots)
+	active := make(map[string]bool, gatewayPublicationSlots)
+	retryAt := make(map[string]time.Time)
 	var after string
 	for {
-		call, cancel := context.WithTimeout(ctx, gatewayAuthorityTimeout)
-		err := refreshNextGatewayPublication(call, store, factory, &after)
-		cancel()
-		if err != nil && !errors.Is(err, storage.ErrAuthorityChanged) && ctx.Err() == nil {
-			// Provider details and page tokens stay out of worker logs.
-			log.Print("gateway event snapshot refresh failed")
+		now := time.Now()
+		for id, at := range retryAt {
+			if !now.Before(at) {
+				delete(retryAt, id)
+			}
+		}
+		if len(active) < gatewayPublicationSlots && ctx.Err() == nil {
+			read, cancel := context.WithTimeout(ctx, interval)
+			ids, err := store.GatewayPublicationCandidates(read, after, now)
+			cancel()
+			if err != nil {
+				ids = nil
+				if ctx.Err() == nil {
+					log.Print("gateway event snapshot queue read failed")
+				}
+			}
+			for _, id := range ids {
+				if active[id] || now.Before(retryAt[id]) {
+					continue
+				}
+				after = id
+				active[id] = true
+				running.Go(func() {
+					call, cancel := context.WithTimeout(ctx, gatewayAuthorityTimeout)
+					defer cancel()
+					finished <- attempt{id, refreshGatewayPublication(call, store, factory, id)}
+				})
+				if len(active) == gatewayPublicationSlots {
+					break
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case done := <-finished:
+			delete(active, done.id)
+			if done.err != nil {
+				// A generation or authority change can become eligible again
+				// on the next normal tick. Avoid immediately retrying it.
+				delay := interval
+				if !errors.Is(done.err, storage.ErrAuthorityChanged) {
+					delay = gatewayPublicationRetry
+					if ctx.Err() == nil {
+						log.Print("gateway event snapshot refresh failed")
+					}
+				}
+				retryAt[done.id] = time.Now().Add(delay)
+			}
 		}
 	}
 }
 
-func refreshNextGatewayPublication(ctx context.Context, store *storage.Store, factory providerBuilder, after *string) error {
-	now := time.Now().UTC()
-	id, err := store.NextGatewayPublication(ctx, *after, now)
-	if err == nil && id == "" && *after != "" {
-		*after = ""
-		id, err = store.NextGatewayPublication(ctx, "", now)
-	}
-	if err != nil || id == "" {
-		return err
-	}
-	*after = id
-	ticket, err := store.CaptureGatewayPublication(ctx, id, now)
+func refreshGatewayPublication(ctx context.Context, store *storage.Store, factory providerBuilder, id string) error {
+	ticket, err := store.CaptureGatewayPublication(ctx, id, time.Now().UTC())
 	if err != nil {
 		return err
 	}

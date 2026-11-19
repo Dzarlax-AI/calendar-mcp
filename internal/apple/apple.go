@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	pathpkg "path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -361,47 +363,78 @@ func (p *Provider) getCalendarObjectsFallback(ctx context.Context, calendarID st
 
 // Strict callers cannot treat a vanished object as a proven complete snapshot.
 func (p *Provider) getCalendarObjectsFallbackWithCompleteness(ctx context.Context, calendarID string, strict bool) ([]caldav.CalendarObject, error) {
-	paths, err := p.propfindCalendarObjects(ctx, calendarID)
+	collection, err := url.Parse(p.caldavURL)
 	if err != nil {
-		return nil, fmt.Errorf("apple PROPFIND fallback for %s: %w", calendarID, err)
+		return nil, fmt.Errorf("invalid CalDAV fallback origin")
 	}
-	if len(paths) == 0 {
-		return nil, nil
+	collection.Path = strings.TrimSuffix(calendarID, "/") + "/"
+	collection.RawPath = ""
+	client := *p.httpClient
+	// The authentication transport sets Basic auth on every request. Only
+	// send it to the configured origin, including after a redirect response.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	responses, err := readAppleFallbackInventory(ctx, &client, collection.String())
+	if err != nil {
+		return nil, err
 	}
+	objectsByPath := make(map[string]string, len(responses))
+	var endpoints []*url.URL
+	for _, item := range responses {
+		href := strings.TrimSpace(item.Href)
+		pathHint := href
+		if end := strings.IndexAny(href, "?#"); end >= 0 {
+			pathHint = href[:end]
+		}
+		decoded, err := url.PathUnescape(pathHint)
+		if err != nil {
+			return nil, fmt.Errorf("Apple fallback returned malformed href")
+		}
+		if !strings.HasSuffix(strings.ToLower(decoded), ".ics") {
+			continue
+		}
 
-	log.Printf("apple: GET fallback for %s: fetching %d objects (concurrency=%d)", calendarID, len(paths), fallbackConcurrency)
+		endpoint, err := appleFallbackObjectURL(collection, href)
+		if err != nil {
+			return nil, err
+		}
+		if strict {
+			if err := checkAppleFallbackStatus(item); err != nil {
+				return nil, err
+			}
+		}
+		if existing, seen := objectsByPath[endpoint.Path]; seen {
+			if existing != endpoint.EscapedPath() && strict {
+				return nil, fmt.Errorf("Apple fallback has conflicting object hrefs")
+			}
+			continue
+		}
+		objectsByPath[endpoint.Path] = endpoint.EscapedPath()
+		endpoints = append(endpoints, endpoint)
+	}
 
 	type slot struct {
 		object  *caldav.CalendarObject
 		err     error
 		missing bool
 	}
-	results := make([]slot, len(paths))
+	results := make([]slot, len(endpoints))
 	sem := make(chan struct{}, fallbackConcurrency)
 	var wg sync.WaitGroup
 
-	for i, path := range paths {
-		validatedPath, err := appleObjectPath(calendarID, path)
-		if err != nil {
-			return nil, fmt.Errorf("apple PROPFIND fallback returned unsafe href: %w", err)
+	for i, endpoint := range endpoints {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return nil, ctx.Err()
 		}
 		wg.Add(1)
-		go func(i int, path string) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
-
-			obj, err := p.client.GetCalendarObject(ctx, path)
-			if err != nil {
-				if isMissingCalendarObject(err) {
-					results[i].missing = true
-					return
-				}
-				results[i].err = fmt.Errorf("GET %s: %w", path, err)
-				return
-			}
-			results[i] = slot{object: obj}
-		}(i, validatedPath)
+			object, missing, err := readAppleFallbackObject(ctx, &client, endpoint)
+			results[i] = slot{object: object, missing: missing, err: err}
+		}()
 	}
 
 	wg.Wait()
@@ -432,59 +465,124 @@ func (p *Provider) getCalendarObjectsFallbackWithCompleteness(ctx context.Contex
 	return objects, nil
 }
 
-func isMissingCalendarObject(err error) bool {
-	if err == nil {
-		return false
+func appleFallbackObjectURL(collection *url.URL, href string) (*url.URL, error) {
+	ref, err := url.Parse(href)
+	if err != nil || ref.Opaque != "" || ref.User != nil || ref.ForceQuery || ref.RawQuery != "" || strings.Contains(href, "#") ||
+		(ref.Scheme != "" && (ref.Scheme != collection.Scheme || !strings.EqualFold(ref.Host, collection.Host))) ||
+		(ref.Host != "" && !strings.EqualFold(ref.Host, collection.Host)) {
+		return nil, fmt.Errorf("Apple fallback returned unsafe object href")
 	}
-	message := err.Error()
-	return strings.HasPrefix(message, "404 Not Found") || strings.HasPrefix(message, "410 Gone")
+	escaped := strings.ToLower(ref.EscapedPath())
+	if strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c") || strings.Contains(ref.Path, "\\") ||
+		strings.Contains("/"+ref.Path+"/", "/../") || strings.Contains("/"+ref.Path+"/", "/./") {
+		return nil, fmt.Errorf("Apple fallback returned unsafe object path")
+	}
+	endpoint := collection.ResolveReference(ref)
+	if pathpkg.Dir(endpoint.Path) != strings.TrimSuffix(collection.Path, "/") ||
+		!strings.HasSuffix(strings.ToLower(endpoint.Path), ".ics") {
+		return nil, fmt.Errorf("Apple fallback object is outside the collection")
+	}
+	return endpoint, nil
 }
 
-// propfindCalendarObjects does a PROPFIND Depth:1 and returns paths of all
-// .ics objects in the given calendar collection.
-func (p *Provider) propfindCalendarObjects(ctx context.Context, calendarPath string) ([]string, error) {
-	url := p.caldavURL + calendarPath
-	body := []byte(`<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`)
+func checkAppleFallbackStatus(item appleSyncResponse) error {
+	if item.Status != "" && webDAVStatus(item.Status)/100 != 2 {
+		return fmt.Errorf("Apple fallback returned an unsuccessful object status")
+	}
+	for _, prop := range item.PropStats {
+		switch webDAVStatus(prop.Status) {
+		case http.StatusOK, http.StatusNotFound:
+			// A 404 propstat says getetag was absent. The object's
+			// existence still needs to be checked with GET.
+		default:
+			return fmt.Errorf("Apple fallback returned an unsuccessful property status")
+		}
+	}
+	return nil
+}
 
-	req, err := http.NewRequestWithContext(ctx, "PROPFIND", url, bytes.NewReader(body))
+func readAppleFallbackObject(ctx context.Context, client *http.Client, endpoint *url.URL) (*caldav.CalendarObject, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid CalDAV object request")
+	}
+	req.Header.Set("Accept", ical.MIMEType)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusNotFound, http.StatusGone:
+		return nil, true, nil
+	case http.StatusOK:
+	default:
+		return nil, false, fmt.Errorf("CalDAV fallback GET returned HTTP %d", resp.StatusCode)
+	}
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, ical.MIMEType) {
+		return nil, false, fmt.Errorf("CalDAV fallback GET returned an invalid content type")
+	}
+	data, err := ical.NewDecoder(resp.Body).Decode()
+	if err != nil {
+		return nil, false, err
+	}
+	object := &caldav.CalendarObject{Path: endpoint.Path, Data: data}
+	if raw := resp.Header.Get("ETag"); raw != "" {
+		object.ETag, err = strconv.Unquote(raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("CalDAV fallback GET returned an invalid ETag")
+		}
+	}
+	return object, false, nil
+}
+
+// propfindCalendarObjects is used by ordinary event sync. It preserves the
+// raw href spelling used by the existing sync inventory.
+func (p *Provider) propfindCalendarObjects(ctx context.Context, calendarPath string) ([]string, error) {
+	responses, err := readAppleFallbackInventory(ctx, p.httpClient, p.caldavURL+calendarPath)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, item := range responses {
+		if strings.HasSuffix(item.Href, ".ics") {
+			paths = append(paths, item.Href)
+		}
+	}
+	return paths, nil
+}
+
+func readAppleFallbackInventory(ctx context.Context, client *http.Client, endpoint string) ([]appleSyncResponse, error) {
+	body := []byte(`<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`)
+	req, err := http.NewRequestWithContext(ctx, "PROPFIND", endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", "1")
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 207 {
 		return nil, fmt.Errorf("PROPFIND returned HTTP %d", resp.StatusCode)
 	}
 
+	var ms struct {
+		XMLName   xml.Name            `xml:"DAV: multistatus"`
+		Responses []appleSyncResponse `xml:"DAV: response"`
+	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-
-	var ms struct {
-		XMLName   xml.Name `xml:"DAV: multistatus"`
-		Responses []struct {
-			Href string `xml:"DAV: href"`
-		} `xml:"DAV: response"`
-	}
 	if err := xml.Unmarshal(data, &ms); err != nil {
 		return nil, fmt.Errorf("PROPFIND parse: %w", err)
 	}
-
-	var paths []string
-	for _, r := range ms.Responses {
-		if strings.HasSuffix(r.Href, ".ics") {
-			paths = append(paths, r.Href)
-		}
-	}
-	return paths, nil
+	return ms.Responses, nil
 }
 
 func convertEvent(ev ical.Event, calendarID, path string) calendar.Event {

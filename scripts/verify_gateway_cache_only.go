@@ -205,7 +205,7 @@ func (f *authorityTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 					`<D:response><D:href>/home/blocked/</D:href><D:status>HTTP/1.1 503 Service Unavailable</D:status></D:response>`)
 			case "/home/family/", "/home/sibling/":
 				if r.Header.Get("Depth") == "1" && raw == "/home/family/" {
-					return dav(entry(raw+"event.ics", `<D:getetag>"fixture"</D:getetag>`))
+					return dav(entry(raw+"event%40fixture.ics", `<D:getetag>"fixture"</D:getetag>`))
 				}
 				if r.Header.Get("Depth") == "0" {
 					return dav(entry(raw, `<D:owner><D:href>/delegate/</D:href></D:owner><D:current-user-privilege-set><D:privilege><D:read/></D:privilege></D:current-user-privilege-set>`))
@@ -220,7 +220,7 @@ func (f *authorityTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 				return dav("")
 			}
 		}
-		if r.Method == "GET" && raw == "/home/family/event.ics" {
+		if r.Method == "GET" && r.URL.EscapedPath() == "/home/family/event%40fixture.ics" {
 			f.familyReads.Add(1)
 			return response(200, "text/calendar", f.ics)
 		}
