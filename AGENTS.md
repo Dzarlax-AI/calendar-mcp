@@ -8,7 +8,7 @@ Unified Calendar MCP server (Go + mcp-go). Aggregates Google Calendar, Microsoft
 go build -o server ./cmd/server       # Build
 go test -race -count=1 ./...          # Full Go test suite
 go vet ./...                          # Lint
-API_KEY=test ./server                 # Run locally (add provider env vars as needed)
+API_KEY=test LISTEN_ADDR=127.0.0.1:8080 REST_LISTEN_ADDR=127.0.0.1:8081 ./server  # Local REST (add provider credentials)
 ```
 
 Go version: 1.27.3 (from go.mod)
