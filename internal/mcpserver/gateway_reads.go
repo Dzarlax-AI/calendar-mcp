@@ -25,8 +25,7 @@ type gatewayCatalogReader interface {
 }
 
 func registerGatewayReads(s *server.MCPServer, reader gatewayCatalogReader) {
-	// Use the registered public schemas for the replacement handlers. The
-	// separate modern and compatibility server instances remain live.
+	// Preserve the registered tool schemas when replacing the read handlers.
 	replace := func(name, description string, fn server.ToolHandlerFunc) {
 		tool := s.GetTool(name).Tool
 		if description != "" {
@@ -34,7 +33,7 @@ func registerGatewayReads(s *server.MCPServer, reader gatewayCatalogReader) {
 		}
 		s.AddTool(tool, fn)
 	}
-	replace("list_calendars", "List calendars from the locally verified calendar inventory.", func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(mcp.NewTool("list_calendars", mcp.WithDescription("List calendars from the locally verified calendar inventory.")), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		items, err := reader.GatewayListCalendars(ctx)
 		if err != nil {
 			return gatewayReadError(err), nil

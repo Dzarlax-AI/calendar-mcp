@@ -6,50 +6,47 @@ import (
 	"time"
 )
 
-func TestMCPCatalogConfiguration(t *testing.T) {
-	for _, test := range []struct {
-		name, mode string
-		v2         bool
-		wantErr    bool
+func TestRemovedMCPSettings(t *testing.T) {
+	for _, key := range []string{"MCP_CATALOG_MODE", "GATEWAY_CACHED_READS_ONLY", "GATEWAY_CACHED_READS_PREPARE"} {
+		t.Setenv(key, "")
+	}
+	for _, tc := range []struct {
+		key, value string
+		wantError  bool
 	}{
-		{name: "empty keeps compatibility"},
-		{name: "compat without V2", mode: "compat"},
-		{name: "compat with V2", mode: "compat", v2: true},
-		{name: "modern", mode: "modern", v2: true},
-		{name: "modern requires V2", mode: "modern", wantErr: true},
-		{name: "unknown rejected", mode: "modren", v2: true, wantErr: true},
-		{name: "case not silently normalized", mode: "MODERN", v2: true, wantErr: true},
+		{"MCP_CATALOG_MODE", "", false},
+		{"MCP_CATALOG_MODE", "modern", false},
+		{"MCP_CATALOG_MODE", "compat", true},
+		{"MCP_CATALOG_MODE", "modren", true},
+		{"GATEWAY_CACHED_READS_ONLY", "true", false},
+		{"GATEWAY_CACHED_READS_ONLY", "false", true},
+		{"GATEWAY_CACHED_READS_ONLY", "fales", true},
+		{"GATEWAY_CACHED_READS_PREPARE", "true", false},
+		{"GATEWAY_CACHED_READS_PREPARE", "off", true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("MCP_CATALOG_MODE", test.mode)
-			t.Setenv("ENABLE_V2", "false")
-			if test.v2 {
-				t.Setenv("ENABLE_V2", "true")
-			}
-			cfg := Load()
-			wantMode := test.mode
-			if wantMode == "" {
-				wantMode = "compat"
-			}
-			if cfg.MCPCatalogMode != wantMode {
-				t.Fatalf("catalog = %q, want %q", cfg.MCPCatalogMode, wantMode)
-			}
-			if err := cfg.ValidateMCPCatalog(); (err != nil) != test.wantErr {
-				t.Fatalf("ValidateMCPCatalog() = %v, want error %t", err, test.wantErr)
-			}
-			// Validate must enforce this before provider initialization/listeners.
-			cfg.APIKey = "fixture-key"
-			cfg.DatabaseURL = ""
-			cfg.NativeAppToken, cfg.ReadOnlyToken = "", ""
-			cfg.NativeAppWritesEnabled = false
-			if err := cfg.Validate(); (err != nil) != test.wantErr {
-				t.Fatalf("Validate() = %v, want error %t", err, test.wantErr)
+		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			err := ValidateRemovedMCPSettings(false)
+			if (err != nil) != tc.wantError || err != nil && !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("obsolete setting error = %v, want error %t", err, tc.wantError)
 			}
 		})
 	}
-	// Existing callers constructing Config directly also retain compatibility.
-	if err := (&Config{}).ValidateMCPCatalog(); err != nil {
-		t.Fatal(err)
+	t.Setenv("GATEWAY_CACHED_READS_PREPARE", "true")
+	if err := ValidateRemovedMCPSettings(true); err == nil {
+		t.Fatal("accepted a preparation-only API configuration as already migrated")
+	}
+	t.Setenv("GATEWAY_CACHED_READS_ONLY", "true")
+	if err := ValidateRemovedMCPSettings(true); err != nil {
+		t.Fatalf("already strict API configuration: %v", err)
+	}
+	t.Setenv("ENABLE_V2", "false")
+	if Load().EnableV2 {
+		t.Fatal("REST V2 flag was ignored")
+	}
+	t.Setenv("ENABLE_V2", "true")
+	if !Load().EnableV2 {
+		t.Fatal("REST V2 flag was ignored")
 	}
 }
 

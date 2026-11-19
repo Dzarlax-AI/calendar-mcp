@@ -16,28 +16,17 @@ func TestMutationOutcomeUnknownIsNotRetryable(t *testing.T) {
 		if !result.IsError || !strings.Contains(body, string(calendar.ErrorMutationOutcomeUnknown)) || !strings.Contains(body, "Check the calendar") || !strings.Contains(body, `"retryable":false`) || strings.Contains(body, "private-") {
 			t.Fatalf("v2 body=%s", body)
 		}
-		result = legacyMutationError(err)
-		data, _ = json.Marshal(result)
-		body = string(data)
-		if !result.IsError || !strings.Contains(body, "Check the calendar") || !strings.Contains(body, `"retryable":false`) || strings.Contains(body, "private-") {
-			t.Fatalf("legacy body=%s", body)
-		}
 	}
 }
 
 func TestProtectionErrorTakesPriorityOverUnknownOutcome(t *testing.T) {
 	guarded := calendar.NewProviderMutationProtectionError(fmt.Errorf("private-secret: %w", calendar.ErrProviderMutationOutcomeUnknown))
 	for _, value := range []error{guarded, fmt.Errorf("private-wrapper: %w", guarded)} {
-		for _, legacy := range []bool{false, true} {
-			result := v2Error(value)
-			if legacy {
-				result = legacyMutationError(value)
-			}
-			data, _ := json.Marshal(result)
-			body := string(data)
-			if !result.IsError || strings.Contains(body, "private-") || strings.Contains(body, string(calendar.ErrorMutationOutcomeUnknown)) || !strings.Contains(body, "calendar mutation protection unavailable") {
-				t.Fatalf("legacy=%v body=%s", legacy, body)
-			}
+		result := v2Error(value)
+		data, _ := json.Marshal(result)
+		body := string(data)
+		if !result.IsError || strings.Contains(body, "private-") || strings.Contains(body, string(calendar.ErrorMutationOutcomeUnknown)) || !strings.Contains(body, "calendar mutation protection unavailable") {
+			t.Fatalf("body=%s", body)
 		}
 	}
 }

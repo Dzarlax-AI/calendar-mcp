@@ -50,8 +50,11 @@ func Worker(ctx context.Context) error {
 	if cfg.DatabaseURL == "" {
 		return errWorkerNotConfigured
 	}
-	if err := cfg.ValidateGatewayCachePreparation(); err != nil {
+	if err := config.ValidateRemovedMCPSettings(false); err != nil {
 		return err
+	}
+	if removed := config.RemovedMCPSettings(); len(removed) > 0 {
+		log.Printf("calendar: remove obsolete MCP settings: %v", removed)
 	}
 	if cfg.EventReadModelEnabled {
 		if err := cfg.ValidateEventReadModel(); err != nil {
@@ -96,7 +99,7 @@ func Worker(ctx context.Context) error {
 	factory := providerfactory.NewFactory(cfg, store, connections.New(store, cipher))
 	waitCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if cfg.GatewayCachedReadsPrepare {
+	if cfg.EventReadModelEnabled {
 		writeDone := make(chan struct{})
 		go func() {
 			defer close(writeDone)
