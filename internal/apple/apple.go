@@ -380,6 +380,12 @@ func (p *Provider) getCalendarObjectsFallbackWithCompleteness(ctx context.Contex
 	objectsByPath := make(map[string]string, len(responses))
 	var endpoints []*url.URL
 	for _, item := range responses {
+		// The collection itself can report a failure without listing any objects.
+		if strict {
+			if err := checkAppleFallbackStatus(item); err != nil {
+				return nil, err
+			}
+		}
 		href := strings.TrimSpace(item.Href)
 		pathHint := href
 		if end := strings.IndexAny(href, "?#"); end >= 0 {
@@ -396,11 +402,6 @@ func (p *Provider) getCalendarObjectsFallbackWithCompleteness(ctx context.Contex
 		endpoint, err := appleFallbackObjectURL(collection, href)
 		if err != nil {
 			return nil, err
-		}
-		if strict {
-			if err := checkAppleFallbackStatus(item); err != nil {
-				return nil, err
-			}
 		}
 		if existing, seen := objectsByPath[endpoint.Path]; seen {
 			if existing != endpoint.EscapedPath() && strict {

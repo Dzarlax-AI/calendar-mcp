@@ -340,3 +340,42 @@ func TestAppleFallbackDoesNotFollowRedirect(t *testing.T) {
 		t.Fatal("redirect was accepted")
 	}
 }
+
+func TestAppleStrictFallbackChecksEmptyCollectionStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		wantError    bool
+	}{
+		{"successful empty collection", "<D:status>HTTP/1.1 200 OK</D:status>", false},
+		{"failed collection", "<D:status>HTTP/1.1 500 Internal Server Error</D:status>", true},
+		{"failed collection property", "<D:propstat><D:status>HTTP/1.1 500 Internal Server Error</D:status></D:propstat>", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const collection = "/calendar/"
+			p, err := New("fixture", "fixture", "https://fixture.invalid")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.httpClient.Transport.(*basicAuthTransport).base = gatewayAppleRoundTrip(func(r *http.Request) (*http.Response, error) {
+				status, body := http.StatusInternalServerError, "<D:error"
+				switch r.Method {
+				case "REPORT":
+				case "PROPFIND":
+					status = http.StatusMultiStatus
+					body = `<D:multistatus xmlns:D="DAV:"><D:response><D:href>` + collection + "</D:href>" + tc.status + "</D:response></D:multistatus>"
+				default:
+					t.Errorf("unexpected request: %s", r.Method)
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			start := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
+			page, err := p.ListEventsV2(t.Context(), calendar.ListEventsRequestV2{
+				CalendarID: collection, Start: start, End: start.Add(time.Hour),
+				View: calendar.RecurrenceBoth, AvailabilityStrict: true,
+			})
+			if (err != nil) != tc.wantError || page.Complete == tc.wantError || len(page.Items) != 0 {
+				t.Fatalf("empty listing: complete=%t items=%d error=%v, want error=%t", page.Complete, len(page.Items), err, tc.wantError)
+			}
+		})
+	}
+}
