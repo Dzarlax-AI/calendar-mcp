@@ -509,12 +509,7 @@ func main() {
 	mux := http.NewServeMux()
 	app := application.New(reg)
 	authOptions := auth.Options{APIKey: "synthetic-upstream-key"}
-	options := mcpserver.Options{EnableV2: true, CatalogMode: mcpserver.CatalogModern, EventReadModelEnabled: true, CachedEvents: svc}
-	baseline := http.NewServeMux()
-	require(mcpserver.RegisterWithOptions(baseline, reg, app, authOptions, options))
-	mux.Handle("/fixture/pre-cutover/", http.StripPrefix("/fixture/pre-cutover", baseline))
-	options.GatewayCachedReadsOnly = true
-	require(mcpserver.RegisterWithOptions(mux, reg, app, authOptions, options))
+	require(mcpserver.Register(mux, app, authOptions, svc))
 	var busyDone chan struct{}
 	var busy atomic.Bool
 	if pendingWrite {
@@ -689,7 +684,7 @@ func main() {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	info := map[string]any{"endpoint": server.URL + "/mcp", "control": server.URL + "/fixture/state",
-		"start": day, "end": day.AddDate(0, 0, 1), "affected": ids[0], "healthy": ids[1], "pre_cutover": server.URL + "/fixture/pre-cutover/mcp"}
+		"start": day, "end": day.AddDate(0, 0, 1), "affected": ids[0], "healthy": ids[1]}
 	if pendingWrite || graphRecovery {
 		info["destination"] = ids[2]
 		info["sibling"] = ids[3]

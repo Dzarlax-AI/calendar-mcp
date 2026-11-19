@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 from verify_calendar_coverage_gateway import ALLOWED, DENIED, UPSTREAM, result, rpc, tools_at
@@ -68,17 +69,17 @@ def verify(info, gateway):
         return {event['calendar_id'] for event in page['items']}
 
     strict = tools_at(endpoint)
-    modern = tools_at(f'{endpoint}/modern')
-    compat = tools_at(f'{endpoint}/compat')
-    assert set(READS) <= set(strict)
-    for name in READS:
-        if name != 'get_events':
-            assert strict[name]['inputSchema'] == modern[name]['inputSchema']
-            assert strict[name].get('annotations') == modern[name].get('annotations')
+    assert len(strict) == 12 and set(READS) <= set(strict)
+    assert not any(name.endswith('_v2') for name in strict)
     assert strict['get_events']['annotations']['readOnlyHint']
     assert 'calendar_ids' in strict['get_events']['inputSchema']['properties']
-    assert 'calendar_id' in modern['get_events']['inputSchema']['properties']
-    assert 'get_event_v2' in compat
+    for retired in ('/modern', '/compat'):
+        try:
+            urllib.request.urlopen(endpoint + retired, timeout=5)
+        except urllib.error.HTTPError as error:
+            assert error.code == 404, error.code
+        else:
+            raise AssertionError('retired catalog is still reachable')
 
     def phase_assertions(active):
         before = fixture_state(info['control'])['calls']
@@ -380,17 +381,13 @@ def go_json(value, *, sort_keys=False):
     return text.encode()
 
 
-def classifications(endpoint, baseline):
-    main, previous = tools_at(endpoint), tools_at(baseline)
+def classifications(endpoint):
+    definitions = {name: tool for name, tool in tools_at(endpoint).items() if name in READS}
+    assert set(definitions) == set(READS)
     binding = hashlib.sha256(go_json(dict(
         ID='calendar', URL=endpoint, Header='', Source=chr(0) + 'FIXTURE_UPSTREAM',
         Token=UPSTREAM, Allowlist=None,
     ))).hexdigest()
-    for name in READS:
-        for field in ('inputSchema', 'outputSchema'):
-            assert main[name].get(field) == previous[name].get(field), (name, field)
-        assert main[name].get('annotations', {}).get('readOnlyHint') == previous[name].get('annotations', {}).get('readOnlyHint'), name
-    definitions = {name: previous[name] for name in READS}
     return {name: {'enabled': True, 'access_mode': 'shared', 'operation_kind': 'read',
                    'operation_contract_hash': hashlib.sha256(go_json({
                        'name': name, 'inputSchema': definition['inputSchema'],
@@ -437,7 +434,7 @@ def main():
                 write_tools = {name: {'enabled': True, 'access_mode': 'shared', 'operation_kind': 'write'} for name in writes}
                 registry = {'registry_version': 2, 'servers': {
                     'calendar': {'url': info['endpoint'], 'token_env': 'FIXTURE_UPSTREAM', 'enabled': True,
-                                 'tools': {**classifications(info['endpoint'], info['pre_cutover']), **write_tools}},
+                                 'tools': {**classifications(info['endpoint']), **write_tools}},
                 }, 'principals': {
                     'allowed': {'token_env': 'FIXTURE_ALLOWED', 'access_policy': 'restricted',
                                 'tool_allowlist': {'calendar': [*READS, *writes]}, 'grants': {}},

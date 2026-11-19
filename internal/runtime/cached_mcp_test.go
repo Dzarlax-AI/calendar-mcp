@@ -43,14 +43,14 @@ func TestRuntimeCachedMCPDependencyRequiresAllPrerequisites(t *testing.T) {
 			case "no_primary_key":
 				cfg.APIKey = ""
 			}
-			opts, err := runtimeMCPOptions(cfg, db, key, func() time.Time { return time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC) })
+			reader, err := runtimeMCPReader(cfg, db, key, func() time.Time { return time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC) })
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (opts.CachedEvents != nil) != (name == "ready") {
-				t.Fatalf("cached dependency presence=%v", opts.CachedEvents != nil)
+			if (reader != nil) != (name == "ready" || name == "no_v2") {
+				t.Fatalf("cached dependency presence=%v", reader != nil)
 			}
-			if name == "ready" && !opts.CachedEvents.Ready() {
+			if (name == "ready" || name == "no_v2") && !reader.Ready() {
 				t.Fatal("configured dependency not ready")
 			}
 		})
@@ -70,8 +70,8 @@ func TestRuntimeCachedReaderUsesLiveClock(t *testing.T) {
 	now := time.Date(2026, 11, 17, 23, 59, 0, 0, time.UTC)
 	calls := 0
 	cfg := &config.Config{EnableV2: true, EventReadModelEnabled: true, APIKey: "synthetic-primary", EventCacheLookbackDays: 1, EventCacheLookaheadDays: 2}
-	opts, err := runtimeMCPOptions(cfg, store, cipher, func() time.Time { calls++; return now })
-	if err != nil || opts.CachedEvents == nil {
+	reader, err := runtimeMCPReader(cfg, store, cipher, func() time.Time { calls++; return now })
+	if err != nil || reader == nil {
 		t.Fatalf("reader: %v", err)
 	}
 	var ctx context.Context
@@ -82,7 +82,7 @@ func TestRuntimeCachedReaderUsesLiveClock(t *testing.T) {
 	calls = 0
 	now = now.Add(2 * time.Minute)
 	window := eventReadModelWindow(cfg, now)
-	_, _, _ = opts.CachedEvents.Read(ctx, cachedpages.Request{CalendarIDs: []string{"google:conn:primary"}, Start: window.Start, End: window.Start.Add(time.Hour)}, "")
+	_, _, _ = reader.Read(ctx, cachedpages.Request{CalendarIDs: []string{"google:conn:primary"}, Start: window.Start, End: window.Start.Add(time.Hour)}, "")
 	if calls == 0 {
 		t.Fatal("runtime reader did not consult the live clock")
 	}

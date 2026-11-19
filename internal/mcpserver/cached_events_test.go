@@ -1,3 +1,5 @@
+//go:build calendar_mcp_legacy_fixture
+
 package mcpserver
 
 import (

@@ -56,7 +56,7 @@ Authentik ─────────▶│  web UI + OAuth        │
                     Google / Microsoft / Apple
 ```
 
-`serve` owns schema migration. `worker` checks the schema version and stays unavailable when it does not match the binary. Both processes use the same persisted provider connections and account-scoped provider registry, so calendars connected in the UI are immediately available to MCP and REST.
+`serve` owns schema migration. `worker` checks the schema version and stays unavailable when it does not match the binary. Both processes use the same persisted provider connections and account-scoped provider registry. MCP reads use the grants and event publications produced by the worker. REST uses its configured provider paths.
 
 ## Provider and synchronization support
 
@@ -211,13 +211,11 @@ Health endpoints:
 | `NATIVE_APP_WRITES_ENABLED` | `false` | Explicitly permits event writes for the native API token; leave disabled to retain the read-only contract |
 | `NATIVE_APP_TRUSTED_PROXY` | `false` | Explicitly confirms that a public native API is reachable only through a trusted HTTPS reverse proxy |
 | `ALLOW_UNAUTHENTICATED` | `false` | Explicit local-only escape hatch when no API key is configured |
-| `ENABLE_V2` | `false` | Enables typed lifecycle MCP tools and REST V2 routes; required for the modern MCP catalog |
-| `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; modern requires `ENABLE_V2=true` |
-| `GATEWAY_CACHED_READS_PREPARE` | `false` | Warms local Calendar rights and event publications in the platform worker. Requires `EVENT_READ_MODEL_ENABLED=true`. |
-| `GATEWAY_CACHED_READS_ONLY` | `false` | Switches all six read tools on the main `/mcp` catalog together. Requires preparation, modern V2, platform storage, and a primary API key. |
+| `ENABLE_V2` | `false` | Enables typed internal REST routes under `/api/v2` |
+| `EVENT_READ_MODEL_ENABLED` | `false` | Enables the platform event read model and background publications. Set to `true` to serve `/mcp`. |
 | `TOKEN_DIR` | `/app/data` | Legacy standalone OAuth token-file directory |
 
-Schema version 7 records Google primary-calendar discovery. An older binary rejects this newer schema, so rollback requires a separately planned database recovery as well as a compatible binary.
+Migration 007 records Google primary-calendar discovery. Migration 030 adds strict MCP grants, event publications, and write receipts. Use a binary that supports the stored schema. Restoring an older schema requires a separate recovery plan.
 
 The API fails closed when `API_KEY`, `NATIVE_APP_TOKEN`, and `READ_ONLY_TOKEN` are all empty unless `ALLOW_UNAUTHENTICATED=true` is explicitly set. During key rotation, set `API_KEY_LEGACY` to the previous key so existing MCP and REST clients continue to work while new clients move to `API_KEY`. Remove `API_KEY_LEGACY` after every client has migrated; it never replaces the mandatory primary key.
 
@@ -293,41 +291,34 @@ These settings affect only `get_events` calls without an explicit `calendar_id`.
 
 ## MCP API
 
-MCP uses Streamable HTTP. Each connection selects one catalog:
+Connect to `/mcp` using Streamable HTTP and the Calendar API key. The trailing-slash form serves the same catalog. MCP requires platform storage, its encryption key, and `EVENT_READ_MODEL_ENABLED=true`. Run `calendar worker` to verify rights and publish event snapshots. Direct MCP clients and proxies use the same contract.
 
-| Service path (with or without trailing slash) | Catalog |
-|---|---|
-| `/mcp` | Selected by `MCP_CATALOG_MODE`; defaults to `compat` |
-| `/mcp/modern` | Modern lifecycle tools, requires `ENABLE_V2=true` |
-| `/mcp/compat` | Original catalog, including the original V2 names when enabled |
-
-Set `MCP_CATALOG_MODE=modern` only when clients using `/mcp` have migrated to the modern schemas; it requires `ENABLE_V2=true`. An unset or empty mode preserves compatibility. Invalid modes fail startup. With V2 disabled, `/mcp/modern` returns 404 after authentication. Unknown MCP subpaths do not select a catalog. All paths use the existing API-key middleware and request body limit. These are service paths; check reverse-proxy rewrites before using them as external URLs. The UI connection link remains `/mcp` and follows its configured mode. REST and native API contracts are unchanged.
-
-### Cached listing on the main endpoint
-
-With `MCP_CATALOG_MODE=modern` and a ready event read model, `/mcp` exposes the cached `get_events` contract. It uses the existing V2, platform store, cipher, and primary API key prerequisites. The explicit `/mcp/modern` and `/mcp/compat` paths retain their previous contracts. After the new Calendar build serves the cached contract at the existing `/mcp` address, refresh and verify the Gateway schema before resuming traffic. The explicit `/mcp/modern` path serves the previous live contract.
+### Event reads and coverage
 
 `get_events` requires RFC3339 `start` and `end`. Omit `calendar_ids` to use the enabled and readable platform selection with the existing fan-out exclusions, or pass up to 16 unique canonical IDs. `page_size` defaults to 25 and caps each page at 50 before enforcing the 16 KiB SDK result budget. Continue with the same arguments and the opaque `next_page_token`. Timed events sort first by start, followed by all-day events by date. The date filter uses the requested offsets for all-day boundaries and requires a nonempty civil-date range. Source coverage requires the sync window to span both the timed interval and those complete civil days in the source timezone. The cache can change between pages.
 
-The response describes coverage and freshness per source. A known source parked on permission contributes status and no events. A terminal page is complete only when every selected range is covered and the traversal has no known omissions. `get_event` uses the existing detail path for full descriptions and checks after mutations.
+The response describes coverage and freshness per source. Fan-out omits sources with expired grants and marks the response incomplete. A terminal page is complete only when every selected range is covered and the traversal has no known omissions.
 
-For a worker rollout, quiesce the old projection workers before starting the new build. Snapshots and staged pages with conference evidence use payload version 2. Before starting an older worker that only accepts version 1, verify that every page and snapshot it can read is compatible. Use a verified compatible backup or a separately approved rebuild of affected projections. Keep affected sync rules paused until their projections have been verified.
+### Local cache and worker
 
-### Strict cached reads on the main endpoint
+`list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, and `search_events` read local grants and publications. These reads do not call Google, Microsoft Graph, or CalDAV, refresh an OAuth token, or enqueue work. The worker refreshes grants and publications independently of client requests.
 
-In strict mode, `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, and `search_events` read local publications. The background worker refreshes grants and event data. The existing input schemas, explicit modern and compatibility endpoints, and live write handlers still apply. Search matches a case-insensitive substring in authorized title, description, or location. Omitted search bounds use the configured cache window.
+- `get_events` returns compact summaries and per-source coverage. Point reads, recurrence reads, and search use the publication for full event data. Search matches a case-insensitive substring in authorized titles, descriptions, or locations. Omitted search bounds use the cache window.
+- Missing or indeterminate local evidence is exposed as an unavailable result or partial coverage. A successful empty source can still count as covered. The final page reports `complete=true` only when the entire requested selection is covered.
+- The publication queue follows completed ordinary sync generations. It runs up to three publications per worker, with one active attempt per source and a 45-second deadline per attempt. The worker checks the grant, sync generation, range, and write fence before accepting a publication.
+- Google reads series and expanded instances separately, with up to 250 results per provider page during publication. It reuses recurring masters within the same snapshot. Apple can fall back from a failed full CalDAV report to inventory and object reads on the configured origin. The fallback preserves escaped paths and rejects ambiguous inventory or missing objects in strict mode. Microsoft Graph can establish cancellation coverage for a series from a fresh series-master cancellation list. A missing event or a delta removal alone leaves deletion coverage incomplete.
 
 Rights checks target five-minute intervals. Each calendar proof lasts 15 minutes from the start of its last successful check. An inconclusive Apple or Graph calendar probe retains only that calendar’s previous deadline while successful siblings renew independently. A check already in progress before expiry can keep that proof available for up to 60 additional seconds while it retains its lease. A failed or denied attempt ends the extension. A new check started after expiry cannot extend the expired proof. Event fields have a separate 15-minute publication limit. Event fan-out omits expired grants. Calendar listing returns a readiness error when it cannot certify the complete inventory. Apple closes the prior grant on confirmed account authentication failure and removes private access immediately when it observes a different collection owner. A fresh Graph proof triggers a replacement sync after an authorization failure.
 
-Strict cursors bind the tool, arguments, verified server credential, and the source grant and content versions. Restart at the first page if any of those change. Mutation fences hide an affected publication until the background refresh catches up.
+MCP cursors bind the tool, arguments, verified server credential, and the source grant and content versions. Restart at the first page if any of those change. Mutation fences hide an affected publication until the background refresh catches up.
 
-Strict writes reserve a durable operation before dispatch. A confirmed provider result can be read by event ID while the full snapshot catches up. Recovery reads the stored receipt or verifies a provider marker for create, supported import, and direct update. A dedicated background loop releases a write with inconclusive evidence after five minutes, records an unknown outcome, and schedules fresh snapshots for its affected calendars. A separate loop reads provider markers, so a slow marker lookup cannot delay expiration. The receipt transaction checks the deadline after acquiring its database lock. Recovery never replays a provider mutation.
+MCP writes reserve a durable operation before sending the request to the provider. A confirmed provider result can be read by event ID while the full snapshot catches up. Recovery reads the stored receipt or verifies a provider marker for create, supported import, and direct update. A dedicated background loop releases a write with inconclusive evidence after five minutes, records an unknown outcome, and schedules fresh snapshots for its affected calendars. A separate loop reads provider markers, so a slow marker lookup cannot delay expiration. The receipt transaction checks the deadline after acquiring its database lock. Recovery never replays a provider mutation.
 
-For Microsoft Graph, a fresh series-master cancellation list can establish complete cancellation coverage for that series. A missing event or a delta removal alone leaves deleted-event coverage incomplete.
+The [warmup report](docs/ai-plans/2026-11-19-strict-mcp-warmup.html) records the Apple fallback diagnostics, Google page-size comparison, and Gateway coverage checks. A five-run production sample for the same 27-event day had a median of 145 ms directly against the Calendar API on the VPS and 1.93 s for all three pages through the Gateway connector. The latter includes three request round trips and connector overhead.
 
-### Modern catalog
+### Tools
 
-Use `/mcp/modern` for new connections during migration. It exposes 12 base tools and no `_v2` aliases:
+Calendar MCP exposes 12 tools with typed lifecycle contracts.
 
 | Tool | Purpose |
 |---|---|
@@ -335,30 +326,27 @@ Use `/mcp/modern` for new connections during migration. It exposes 12 base tools
 | `get_calendar_capabilities` | Exact operations, fields, scopes, and notification policies |
 | `get_events`, `get_event` | Typed recurrence-aware event reads |
 | `get_event_instances` | Bounded recurring instances |
-| `search_events` | Calendar search or provider fan-out; Apple requires both `start` and `end` |
+| `search_events` | Case-insensitive search over locally authorized event fields |
 | `create_event` | Typed event creation with notification policy |
 | `update_event`, `delete_event` | Series, single-instance, and supported following mutations |
 | `respond_to_event` | RSVP through Google |
 | `move_event` | Move supported Google events between calendars |
 | `import_event` | Import an external event into Google using `ical_uid` |
 
-These are the existing typed V2 contracts under stable tool names. The application handlers, input schemas, structured/text outputs, typed errors, notification policies, and provider capabilities are unchanged. `list_calendars` uses the same handler in both catalogs.
-
-Example arguments for modern `get_events`:
+Example arguments for `get_events`:
 
 ```json
 {
-  "calendar_id": "google:primary",
+  "calendar_ids": ["google:synthetic-account:primary"],
   "start": "2026-10-24T00:00:00+02:00",
   "end": "2026-10-25T00:00:00+02:00",
-  "view": "expanded",
-  "max_results": 50
+  "page_size": 25
 }
 ```
 
-Read `items`, `complete`, `sources`, and `next_page_token` from the structured result. Follow continuation tokens with the same query parameters; a partial empty page does not establish that no events exist. The result is a page object, whereas compatibility `get_events` returns a legacy list.
+Read `items`, `complete`, `sources`, and `next_page_token` from the structured result. Continue with the same filters. A partial empty page does not establish that the calendar has no events.
 
-Example arguments for modern `create_event` on an isolated test calendar (a write operation):
+Example arguments for `create_event` on an isolated test calendar (a write operation):
 
 ```json
 {
@@ -374,24 +362,7 @@ Example arguments for modern `create_event` on an isolated test calendar (a writ
 
 Check capabilities before mutations. Preserve explicit scopes, ETags, operation IDs, and preview support when adapting update/delete clients. Test real writes only after verifying isolated data and disabled invitations/notifications.
 
-### Cached Google summaries
-
-`get_cached_events` is an additive thirteenth modern tool when `ENABLE_V2=true`, `EVENT_READ_MODEL_ENABLED=true`, platform database/encryption, a primary `API_KEY`, and the narrow cached reader are configured. It is absent from compat and unauthenticated mode. Existing live `get_events`, REST and native contracts keep their own behavior.
-
-```json
-{
-  "calendar_ids": ["google:synthetic-account:primary"],
-  "start": "2026-11-17T00:00:00Z",
-  "end": "2026-11-18T00:00:00Z",
-  "page_size": 25
-}
-```
-
-Select 1–16 unique canonical platform Google calendar IDs. Every selected source must be enabled, have a verified local detail receipt and have a sync state, and the range must fit its target cache window. Missing, unsupported, denied or unavailable sources reject the whole request. The tool never calls a provider, queues synchronization or falls back to live events.
-
-The result contains bounded summaries (`items`), source freshness/target-window metadata, `consistency: "cached_weak"`, `partial`, `complete` and optional `next_page_token`. Descriptions, attendees and raw payloads are not loaded by this reader. `page_size` is an upper bound of 1–50, default 25; the complete SDK tool result, including text and structured copies, is at most 16 KiB. An oversized summary becomes an explicit reference/time marker. Complete means the end of the current cached selection; target windows and degraded `last_success_at` do not prove provider coverage.
-
-Pass `next_page_token` with the same arguments only while more events are needed. Cursors expire after 300 seconds and bind the verified API credential, key configuration, normalized filters, local authorization receipts, service configuration and process boot nonce. They survive ordinary token refresh, but not authorization changes, restart, key/configuration/cipher rotation or tampering. A shared Gateway key identifies that credential, not its end users. A cursor error does not silently restart a query. Cached reads reflect locally known rights; remote ACL changes remain unknown until observed by ordinary provider activity.
+### Cache storage and authorization
 
 Migration 029 separates authorization revisions from token refresh timestamps/ciphertext. Google verification closes and purges old projection before constructing a snapshot-bound provider, then publishes complete role discovery atomically. The existing worker makes one automatic attempt for each eligible legacy Google account, at most one account per cycle. Failure, cancellation or a crash stays closed until explicit reconnect; UI/native cached data can remain unavailable until reconnect and fresh sync. Google reconnect requires its own refresh token before modifying an existing account. Ordinary refresh assumes the same grant when scope evidence is absent; explicit insufficient scope evidence closes the current grant. Lossless concurrent external refresh-token rotation is not guaranteed.
 
@@ -399,25 +370,18 @@ A newly listed Google calendar on a verified account receives live metadata. Rec
 
 Before a separately authorized activation, stop/quiesce every old API, worker and cache writer. Already running old binaries are not fenced by startup schema checks. Do not mix old unfenced writers with the new reader. Keep schema 029 with a compatible binary when disabling the feature; an older binary rejects the newer schema. Deployment, Gateway ACL/schema changes and client migration are separate operations.
 
-Local synthetic verification uses the actual Store, OAuth/factory/services, middleware and MCP SDK with fake HTTP and disposable databases. See the [revision 6 implementation and evidence](docs/ai-plans/2026-11-16-calendar-synthetic-pagination-pilot.html#revision-6). The harness in `scripts/verify_cached_event_pages_runtime.go` never starts `runtime.Serve`, has no provider, and accepts only explicit disposable database URLs. Its full-result baseline is a harness-only wrapper around the existing cached Store read, not a replacement production MCP contract.
+Local synthetic verification uses the actual Store, OAuth/factory/services, middleware and MCP SDK with fake HTTP and disposable databases. See the [revision 6 implementation and evidence](docs/ai-plans/2026-11-16-calendar-synthetic-pagination-pilot.html#revision-6). The historical harness in `scripts/verify_cached_event_pages_runtime.go` requires the `calendar_mcp_legacy_fixture` build tag, never starts `runtime.Serve`, and accepts only explicit disposable database URLs. Its full-result baseline is a harness-only wrapper around the existing cached Store read, not a replacement production MCP contract.
 
 SQLite selects at most `page_size+1` rows before building guarded summary JSON, while excluding series masters before the limit. The final rights check validates all expected source tuples in one fresh transaction after packing; duplicate tickets retain their original meaning. These changes add no cache, index, migration or pool capacity. See the [full traversal comparison](docs/ai-plans/2026-11-17-cached-traversal-performance.html#implementation-results) for paired before/after measurements and limits. `scripts/verify_cached_event_pages_comparison.py` compares frozen binaries on isolated fixtures; `scripts/measure_cached_page_sql.go` measures the Store SQL phase separately.
 
 SQLite now reads timed/date page ranges through existing covering indexes with native cursor bounds. A same-snapshot preflight preserves the previous query's malformed timestamp handling. Full cached UI reads release SQL rows before decoding when the complete raw result fits a per-call 8 MiB/8192-row buffer; overflow uses streaming, and PostgreSQL keeps its streaming path. The buffer is never reused between requests. The [range and contention results](docs/ai-plans/2026-11-17-sqlite-range-and-contention.html#implementation-results) compare the unchanged pool before, after SQL changes, and after both changes, including large-payload fallback limits.
 
-### Compatibility catalog and migration
+### Upgrading MCP clients
 
-The compatibility catalog preserves the original five tools: `list_calendars`, `get_events`, `create_event`, `update_event`, and `delete_event`. With `ENABLE_V2=true` it also preserves `get_calendar_capabilities`, `get_events_v2`, `get_event_v2`, `get_event_instances_v2`, `search_events_v2`, `create_event_v2`, `update_event_v2`, `delete_event_v2`, `respond_to_event_v2`, `move_event_v2`, and `import_event_v2`. Existing names, schemas, outputs, and behavior remain available on `/mcp/compat` and on the default `/mcp` in compat mode.
-
-1. Update the service with `MCP_CATALOG_MODE=compat` (the default); current `/mcp` clients keep their contracts.
-2. Inventory direct and Gateway consumers, tool names, expected schemas, and permissions before migrating them. Keep one calendar connection per assistant to avoid exposing both catalogs again.
-3. Move a selected client to `/mcp/modern`, updating its argument and result schemas. Legacy `get_events` and modern `get_events` have different contracts: changing the URL alone is insufficient. Existing V2 clients remove suffixes and keep their typed schemas.
-4. For Gateway consumers, create a separate modern service identity and explicitly map authorized operations. Do not reuse legacy schema caches or infer permission grants from identical tool names. Reconnect and refresh discovery through the client's normal procedure; verify initialize, tools/list, pagination, and completeness with safe reads.
-5. Pin remaining compatibility clients to `/mcp/compat`. Only after the inventory and verification are complete, explicitly switch the main endpoint with `MCP_CATALOG_MODE=modern`. No automatic cutover or compatibility removal occurs.
-
-Deployment, proxy/Gateway/ACL changes, and client reconfiguration require their own authorization. To roll back a client, restore its previous compatibility connection and schemas. Before rolling back the binary, move modern clients to a supported compatibility contract: older binaries do not serve the explicit paths. Changing the default mode can affect clients already using `/mcp` as modern; explicit catalog paths remain stable across mode changes.
-
-Apple search expands recurring events in the requested time window and matches a case-insensitive substring in the title, description, or location. It requires both `start` and `end`, supports `show_deleted`, and paginates with `max_results` and `page_token`. Only the `default` event type is available. Continuation tokens belong to the same calendar, query, bounds, deletion policy, and event-type filter; pagination does not provide a snapshot across external edits. Malformed calendar objects fail search rather than producing a misleading complete result. Searching without a time window leaves the Apple source incomplete with `unsupported_capability` and no retry recommendation. Provider-wide failures remain visible in `sources`; an empty partial result does not prove that there are no matching events.
+- Move clients on `/mcp/compat` and `/mcp/modern` to `/mcp`. The former paths return 404. Refresh tool discovery, remove `_v2` suffixes from migrated calls, and verify each input schema.
+- Migrate legacy event lists and `get_cached_events` to `get_events`. Use `calendar_ids`, RFC3339 bounds, and the new page and coverage fields. Clients that need the dedicated native summary API can keep using `GET /api/native/v1/cached-events` with its own token.
+- Remove `MCP_CATALOG_MODE`, `GATEWAY_CACHED_READS_ONLY`, and `GATEWAY_CACHED_READS_PREPARE` from configuration. During migration, the old strict values are accepted with a warning. Old compatibility and preparation-only values fail startup with migration guidance. `ENABLE_V2` remains available for REST.
+- Verify clients through their normal read path after the worker publishes current data. Proxy ACLs and deployment stay under their own operational controls.
 
 Google `following` is a recoverable composite workflow, not an atomic provider operation. It uses preview, ETag protection, operation markers, compensation, and explicit partial-failure metadata. `RDATE`-based series are rejected because they cannot currently be split unambiguously.
 
@@ -480,19 +444,20 @@ that an omitted provider has no busy events.
 
 Keep this listener internal unless an external client explicitly requires it.
 
-## Standalone compatibility mode
+## Standalone REST
 
-When `DATABASE_URL` is empty, `calendar serve` runs the original MCP/REST service without the web control plane or worker. Configure providers through environment variables and legacy token files:
+Without `DATABASE_URL`, `calendar serve` requires an explicit `REST_LISTEN_ADDR` and provider credentials from environment variables or legacy token files:
 
 ```bash
 API_KEY=change-me \
+REST_LISTEN_ADDR=127.0.0.1:8081 \
 GOOGLE_CLIENT_ID=... \
 GOOGLE_CLIENT_SECRET=... \
 GOOGLE_REFRESH_TOKEN=... \
 ./calendar serve
 ```
 
-At least one provider must be configured in this mode. The worker requires platform storage and will refuse to start without `DATABASE_URL`.
+This profile provides REST only. For MCP, use the platform installation with storage and the worker.
 
 ## Sync rule lifecycle
 
@@ -579,9 +544,9 @@ No deployment or provider grant change is performed by building this repository.
 
 MIT
 
-## Calendar listing performance
+## Provider discovery performance
 
-`list_calendars` reads connected accounts concurrently with at most four provider
+The regular provider registry used by REST and discovery reads connected accounts concurrently with at most four provider
 calls per aggregate request. This is a per-request limit, not a global service
 admission limit. Results retain provider/calendar order and canonical IDs; a
 provider error returns an error rather than an incomplete successful list.
@@ -600,12 +565,12 @@ a later invocation can rediscover. Other event transport behavior is unchanged.
 Synthetic local comparison (no real credentials or providers):
 
 ```bash
-go run scripts/measure_calendar_listing.go
-go build -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go
+go run -tags calendar_mcp_legacy_fixture scripts/measure_calendar_listing.go
+go build -tags calendar_mcp_legacy_fixture -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go
 python3 scripts/verify_calendar_listing_gateway.py
 ```
 
-The integration script additionally needs the local gateway test binary at
+The historical integration script additionally needs the local gateway test binary at
 `/tmp/mcp-gateway-read-batch`; it creates disposable synthetic configuration and
 terminates its fixture processes. Production deployment is a separate action.
 

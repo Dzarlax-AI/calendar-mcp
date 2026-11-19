@@ -135,7 +135,7 @@ const (
 	toolImport       = "import_event"
 )
 
-var modernToolNames = map[string]string{
+var catalogToolNames = map[string]string{
 	toolCapabilities: "get_calendar_capabilities",
 	toolGetEvents:    "get_events",
 	toolGetEvent:     "get_event",
@@ -147,20 +147,6 @@ var modernToolNames = map[string]string{
 	toolRespond:      "respond_to_event",
 	toolMove:         "move_event",
 	toolImport:       "import_event",
-}
-
-var compatV2ToolNames = map[string]string{
-	toolCapabilities: "get_calendar_capabilities",
-	toolGetEvents:    "get_events_v2",
-	toolGetEvent:     "get_event_v2",
-	toolCreateEvent:  "create_event_v2",
-	toolUpdateEvent:  "update_event_v2",
-	toolDeleteEvent:  "delete_event_v2",
-	toolInstances:    "get_event_instances_v2",
-	toolSearch:       "search_events_v2",
-	toolRespond:      "respond_to_event_v2",
-	toolMove:         "move_event_v2",
-	toolImport:       "import_event_v2",
 }
 
 func registerToolsV2(s *server.MCPServer, app *application.Service, names map[string]string) {

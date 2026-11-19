@@ -8,7 +8,7 @@ Unified Calendar MCP server (Go + mcp-go). Aggregates Google Calendar, Microsoft
 go build -o server ./cmd/server       # Build
 go test -race -count=1 ./...          # Full Go test suite
 go vet ./...                          # Lint
-API_KEY=test ./server                 # Run locally (add provider env vars as needed)
+API_KEY=test LISTEN_ADDR=127.0.0.1:8080 REST_LISTEN_ADDR=127.0.0.1:8081 ./server  # Local REST (add provider credentials)
 ```
 
 Go version: 1.27.3 (from go.mod)
@@ -33,20 +33,15 @@ Go version: 1.27.3 (from go.mod)
 
 ## MCP Tools
 
-- `/mcp/modern` exposes 12 base tools with typed lifecycle contracts: `list_calendars`, `get_calendar_capabilities`, `get_events`, `get_event`, `get_event_instances`, `search_events`, `create_event`, `update_event`, `delete_event`, `respond_to_event`, `move_event`, `import_event`. Requires `ENABLE_V2=true`; no `_v2` aliases.
-- `/mcp/compat` preserves the original five tools and adds the original eleven V2 tools when `ENABLE_V2=true`.
-- `/mcp` follows `MCP_CATALOG_MODE=compat|modern`, default `compat`. Empty mode keeps compatibility; invalid mode or modern with V2 disabled fails startup. Trailing-slash variants use the same catalog.
-- Identical names across catalogs can have different schemas/results: modern `get_events` returns the V2 page; compat `get_events` returns the legacy list. Never auto-detect a contract from arguments or silently retry another catalog.
-- Share lifecycle handlers and explicit registration names; preserve notification/preview/ETag/scope behavior. REST/native APIs are unchanged. Existing `Register` remains a compatibility wrapper for synthetic scripts.
-- Migrate one connection per client. Gateway modern identity, schema caches, ACL mapping, and proxy paths require explicit review; do not silently reuse legacy permissions or switch production defaults.
+- `/mcp` and `/mcp/` expose one catalog of 12 typed tools. The six reads use local publications and authorization. Writes retain notification, preview, ETag, scope, and write receipt behavior.
+- MCP requires platform storage/cipher, the event read model and a primary API key. Workers with the event read model enabled refresh grants and publications. Explicit REST-only and native deployments retain their own contracts.
+- Preserve wire schemas and bound event pages to 16 KiB including both SDK result copies. Preserve complete and partial coverage semantics, pagination bindings, and provider-free reads.
+- Standalone and retired catalog paths are unavailable for MCP. The `calendar_mcp_legacy_fixture` tag enables historical synthetic harnesses only. Gateway ACLs and routes require separate verification.
 
 Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>` (canonical multi-account IDs also remain supported).
 
-### Cached Google summaries
+### Platform cache and authorization
 
-- `get_cached_events` adds a thirteenth modern tool only with `ENABLE_V2`, `EVENT_READ_MODEL_ENABLED`, platform Store/cipher, primary API key and a ready narrow reader. Compat and live/REST/native contracts remain separate.
-- Require 1–16 unique explicit canonical platform Google IDs, RFC3339 start/end within every source's target window, page size 25 by default (1–50), optional opaque cursor up to 4 KiB. Unknown or unavailable sources close the whole request; never call providers or start synchronization from this tool.
-- Bound the full SDK result (text plus structured output) to 16 KiB and each transferred SQL summary to 32 KiB. Preserve whole summaries or emit explicit oversized markers. Cursor continuation uses the last emitted row; complete means the end of the cached selection, not provider completeness.
 - Migration 029 adds server-generated `authorization_revision` and role-bound `detail_receipt`. Google Begin fences leases/generations and purges before provider construction; only complete staged discovery opens receipts. Normal OAuth refresh preserves authorization and uses snapshot CAS. Each actual HTTP request captures the token binding under the existing TokenSource mutex.
 - Writer tickets must precede provider I/O. Late sync/repair/application responses and stale token errors cannot acquire current authority. Keep connection → sync-state lock order. Keep Google scalar event timestamps in UTC; preserve original payload offsets/timezones. SQLite range UNION arms must stay covering; apply timed precedence before LIMIT outside the date arm.
 - SQLite cached pages select at most page_size+1 rows before guarded summary JSON projection in a separate materialized stage; keep cursor filtering before costly master JSON checks and master exclusion before LIMIT. Final authority validation batches every expected tuple in one fresh transaction after Pack, preserving duplicate-ticket semantics and all receipt/revision checks. Do not hold a connection through Pack or HTTP output.
@@ -61,8 +56,8 @@ Calendar IDs are prefixed: `google:primary`, `microsoft:<id>`, `apple:<path>` (c
 |----------|---------|---------|
 | `LISTEN_ADDR` | `:8080` | MCP server listen address |
 | `REST_LISTEN_ADDR` | _(empty)_ | Internal REST API (optional) |
-| `ENABLE_V2` | `false` | Enable typed lifecycle tools and REST V2; required for the modern MCP catalog |
-| `MCP_CATALOG_MODE` | `compat` | Catalog at `/mcp`: `compat` or `modern`; explicit catalog paths remain stable |
+| `ENABLE_V2` | `false` | Enable internal REST V2 |
+| `EVENT_READ_MODEL_ENABLED` | `false` | Enable the platform read model required by MCP |
 | `API_KEY` | _(empty)_ | Auth key for MCP endpoints |
 | `NATIVE_APP_TOKEN` | _(empty)_ | Dedicated token for the read-only native app API; requires platform storage |
 | `READ_ONLY_TOKEN` | _(empty)_ | Token restricted to cached events and the read-only calendar catalog for HomeDash; requires platform storage |
@@ -100,4 +95,4 @@ Health check: `GET /health`
 - ListCalendars takes one provider snapshot and uses at most four workers per request. Preserve input order/canonical IDs, copy provider data before prefixing, and return no partial list on provider errors. No global admission contract is added.
 - Apple discovery cache is provider-instance scoped with fixed ten-minute TTL measured from successful discovery completion; only principal/home-set is cached, never calendars/events. Waiting callers share discovery success/error and can cancel independently; an initiating caller cancellation aborts that flight.
 - Observe original 401/403/404/410 statuses in listing contexts before transport normalization; invalidate discovery, return error, and do not retry the invocation. New provider instances start empty. Event fallback normalization remains unchanged.
-- Local synthetic benchmark: go run scripts/measure_calendar_listing.go. Gateway integration: go build -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go then python3 scripts/verify_calendar_listing_gateway.py; requires a local /tmp/mcp-gateway-read-batch binary. No real credentials/data.
+- Local synthetic benchmark: go run -tags calendar_mcp_legacy_fixture scripts/measure_calendar_listing.go. Gateway integration: go build -tags calendar_mcp_legacy_fixture -o /tmp/calendar-listing-fixture scripts/measure_calendar_listing.go then python3 scripts/verify_calendar_listing_gateway.py; requires a local /tmp/mcp-gateway-read-batch binary. No real credentials/data.

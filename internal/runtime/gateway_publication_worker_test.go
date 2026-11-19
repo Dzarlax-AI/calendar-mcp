@@ -52,7 +52,7 @@ func TestGatewayPublicationDoesNotBlockRuleJobs(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 	earlier := now.Add(-time.Minute)
-	cfg := &config.Config{GatewayCachedReadsPrepare: true, EventReadModelEnabled: true, EventCacheLookbackDays: 1, EventCacheLookaheadDays: 1,
+	cfg := &config.Config{EventReadModelEnabled: true, EventCacheLookbackDays: 1, EventCacheLookaheadDays: 1,
 		EventSyncAppleInterval: time.Minute, EventSyncGoogleInterval: time.Minute, EventSyncMicrosoftInterval: time.Minute}
 	must := func(err error) {
 		t.Helper()

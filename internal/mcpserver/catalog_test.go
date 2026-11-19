@@ -1,3 +1,5 @@
+//go:build calendar_mcp_legacy_fixture
+
 package mcpserver
 
 import (
@@ -74,7 +76,7 @@ func TestCatalogToolSetsAndCompatibilitySnapshots(t *testing.T) {
 		}
 	}
 	for key, oldName := range compatV2ToolNames {
-		modernTool := modern.GetTool(modernToolNames[key])
+		modernTool := modern.GetTool(catalogToolNames[key])
 		compatTool := compat.GetTool(oldName)
 		if string(modernTool.Tool.RawInputSchema) != string(compatTool.Tool.RawInputSchema) {
 			t.Errorf("modern %q schema differs from compat %q", modernTool.Tool.Name, oldName)

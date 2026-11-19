@@ -39,6 +39,12 @@ func Serve(_ context.Context) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("configuration: %w", err)
 	}
+	if cfg.DatabaseURL == "" && cfg.RESTListenAddr == "" {
+		return errors.New("calendar MCP requires platform storage; set DATABASE_URL or configure a standalone REST listener with REST_LISTEN_ADDR")
+	}
+	if removed := config.RemovedMCPSettings(); len(removed) > 0 {
+		log.Printf("calendar: remove obsolete MCP settings: %v", removed)
+	}
 	var platformStore *storage.Store
 	var connectionService *connections.Service
 	var credentialCipher *credentials.Cipher
@@ -134,12 +140,17 @@ func Serve(_ context.Context) error {
 		LegacyAPIKey:         cfg.LegacyAPIKey,
 		AllowUnauthenticated: cfg.AllowUnauthenticated,
 	}
-	mcpOptions, err := runtimeMCPOptions(cfg, platformStore, credentialCipher, time.Now)
+	mcpReader, err := runtimeMCPReader(cfg, platformStore, credentialCipher, time.Now)
 	if err != nil {
 		return fmt.Errorf("initialize cached MCP dependency: %w", err)
 	}
-	if err := mcpserver.RegisterWithOptions(mux, reg, appService, apiAuth, mcpOptions); err != nil {
-		return fmt.Errorf("initialize MCP catalogs: %w", err)
+	if mcpReader != nil {
+		if err := mcpserver.Register(mux, appService, apiAuth, mcpReader); err != nil {
+			return fmt.Errorf("initialize MCP endpoint: %w", err)
+		}
+	} else {
+		mux.Handle("/mcp", http.NotFoundHandler())
+		mux.Handle("/mcp/", http.NotFoundHandler())
 	}
 	if (cfg.NativeAppToken != "" || cfg.ReadOnlyToken != "") && platformStore != nil {
 		// Keep existing native reads and writes on appService. Only the dedicated
@@ -184,21 +195,17 @@ func Serve(_ context.Context) error {
 		log.Printf("calendar-mcp REST API listening on %s (internal only)", cfg.RESTListenAddr)
 	}
 
-	log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(calendarProviders))
+	if mcpReader != nil {
+		log.Printf("calendar-mcp MCP listening on %s (%d providers)", cfg.ListenAddr, len(calendarProviders))
+	}
 	return RunServers(servers)
 }
 
-func runtimeMCPOptions(cfg *config.Config, store *storage.Store, cipher *credentials.Cipher, now func() time.Time) (mcpserver.Options, error) {
-	opts := mcpserver.Options{EnableV2: cfg.EnableV2, CatalogMode: mcpserver.CatalogMode(cfg.MCPCatalogMode), EventReadModelEnabled: cfg.EventReadModelEnabled, GatewayCachedReadsOnly: cfg.GatewayCachedReadsOnly}
-	if !cfg.EnableV2 || !cfg.EventReadModelEnabled || store == nil || cipher == nil || cfg.APIKey == "" {
-		return opts, nil
+func runtimeMCPReader(cfg *config.Config, store *storage.Store, cipher *credentials.Cipher, now func() time.Time) (*cachedpages.Service, error) {
+	if !cfg.EventReadModelEnabled || store == nil || cipher == nil || cfg.APIKey == "" {
+		return nil, nil
 	}
-	reader, err := cachedpages.NewService(store, cipher, cachedpages.Options{Now: now, ExcludeCalendarIDs: cfg.ExcludeCalendarIDs, IncludeImportedCalendars: cfg.IncludeImportedCalendars, WindowAt: func(anchor time.Time) storage.SyncWindow { return eventReadModelWindow(cfg, anchor) }})
-	if err != nil {
-		return opts, err
-	}
-	opts.CachedEvents = reader
-	return opts, nil
+	return cachedpages.NewService(store, cipher, cachedpages.Options{Now: now, ExcludeCalendarIDs: cfg.ExcludeCalendarIDs, IncludeImportedCalendars: cfg.IncludeImportedCalendars, WindowAt: func(anchor time.Time) storage.SyncWindow { return eventReadModelWindow(cfg, anchor) }})
 }
 
 func webRuntimeConfig(cfg *config.Config, appService *application.Service, onProvidersChanged func([]calendar.Provider)) web.Config {

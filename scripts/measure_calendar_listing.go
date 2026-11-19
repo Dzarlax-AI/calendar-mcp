@@ -76,7 +76,7 @@ func main() {
 	if *serve {
 		reg := newRegistry()
 		mux := http.NewServeMux()
-		mcpserver.Register(mux, reg, application.New(reg), auth.Options{AllowUnauthenticated: true}, false)
+		mcpserver.RegisterLegacyFixture(mux, reg, application.New(reg), auth.Options{AllowUnauthenticated: true}, false)
 		mux.HandleFunc("GET /fixture/metrics", func(w http.ResponseWriter, _ *http.Request) {
 			json.NewEncoder(w).Encode(map[string]any{"apple_http_requests": calls.Load()})
 		})

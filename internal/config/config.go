@@ -24,7 +24,6 @@ type Config struct {
 	LegacyAPIKey           string
 	AllowUnauthenticated   bool
 	EnableV2               bool
-	MCPCatalogMode         string
 	TokenDir               string
 	DatabaseURL            string
 	EncryptionKey          string
@@ -45,8 +44,6 @@ type Config struct {
 	// Event read model is deliberately opt-in. It only reads provider event
 	// data; event mutations continue to use the existing notification-safe
 	// application path.
-	GatewayCachedReadsPrepare  bool
-	GatewayCachedReadsOnly     bool
 	EventReadModelEnabled      bool
 	EventCacheLookbackDays     int
 	EventCacheLookaheadDays    int
@@ -84,7 +81,6 @@ func Load() *Config {
 		LegacyAPIKey:           envStr("API_KEY_LEGACY", ""),
 		AllowUnauthenticated:   envBool("ALLOW_UNAUTHENTICATED", false),
 		EnableV2:               envBool("ENABLE_V2", false),
-		MCPCatalogMode:         envStr("MCP_CATALOG_MODE", "compat"),
 		TokenDir:               envStr("TOKEN_DIR", "/app/data"),
 		DatabaseURL:            envStr("DATABASE_URL", ""),
 		EncryptionKey:          envStr("CALENDAR_ENCRYPTION_KEY", ""),
@@ -97,8 +93,6 @@ func Load() *Config {
 		NativeAppTrustedProxy:  envBool("NATIVE_APP_TRUSTED_PROXY", false),
 		NativeAppWritesEnabled: envBool("NATIVE_APP_WRITES_ENABLED", false),
 
-		GatewayCachedReadsPrepare:  envBool("GATEWAY_CACHED_READS_PREPARE", false),
-		GatewayCachedReadsOnly:     envBool("GATEWAY_CACHED_READS_ONLY", false),
 		EventReadModelEnabled:      envBool("EVENT_READ_MODEL_ENABLED", false),
 		EventCacheLookbackDays:     envInt("EVENT_CACHE_LOOKBACK_DAYS", defaultEventCacheLookbackDays),
 		EventCacheLookaheadDays:    envInt("EVENT_CACHE_LOOKAHEAD_DAYS", defaultEventCacheLookaheadDays),
@@ -129,10 +123,8 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
-	if err := c.ValidateMCPCatalog(); err != nil {
-		return err
-	}
-	if err := c.ValidateGatewayCachePreparation(); err != nil {
+	servesMCP := c.DatabaseURL != "" && c.EventReadModelEnabled && c.APIKey != ""
+	if err := ValidateRemovedMCPSettings(servesMCP); err != nil {
 		return err
 	}
 	if c.APIKey == "" && c.NativeAppToken == "" && c.ReadOnlyToken == "" && !c.AllowUnauthenticated {
@@ -175,22 +167,6 @@ func (c *Config) Validate() error {
 		return c.ValidateEventReadModel()
 	}
 	return nil
-}
-
-// ValidateMCPCatalog preserves the compatibility catalog for existing callers
-// while requiring an explicit opt-in to change the default endpoint contract.
-func (c *Config) ValidateMCPCatalog() error {
-	switch c.MCPCatalogMode {
-	case "", "compat":
-		return nil
-	case "modern":
-		if !c.EnableV2 {
-			return fmt.Errorf("MCP_CATALOG_MODE=modern requires ENABLE_V2=true")
-		}
-		return nil
-	default:
-		return fmt.Errorf("MCP_CATALOG_MODE must be compat or modern")
-	}
 }
 
 func validateNativeAppTransport(publicURL string, trustedProxy bool) error {
@@ -313,12 +289,30 @@ func envList(key string) []string {
 	return out
 }
 
-func (c *Config) ValidateGatewayCachePreparation() error {
-	if c.GatewayCachedReadsOnly && (!c.GatewayCachedReadsPrepare || !c.EnableV2 || c.MCPCatalogMode != "modern") {
-		return fmt.Errorf("GATEWAY_CACHED_READS_ONLY requires preparation and the modern V2 catalog")
+// ValidateRemovedMCPSettings detects configuration that would otherwise
+// silently switch an existing installation onto the single cached catalog.
+func ValidateRemovedMCPSettings(servesMCP bool) error {
+	if value := os.Getenv("MCP_CATALOG_MODE"); value != "" && value != "modern" {
+		return fmt.Errorf("MCP_CATALOG_MODE was removed: migrate clients to the cached /mcp endpoint and remove the setting")
 	}
-	if c.GatewayCachedReadsPrepare && (c.DatabaseURL == "" || !c.EventReadModelEnabled) {
-		return fmt.Errorf("GATEWAY_CACHED_READS_PREPARE requires DATABASE_URL and EVENT_READ_MODEL_ENABLED=true")
+	for _, key := range []string{"GATEWAY_CACHED_READS_ONLY", "GATEWAY_CACHED_READS_PREPARE"} {
+		if value := os.Getenv(key); value != "" && !envBool(key, false) {
+			return fmt.Errorf("%s was removed: migrate to the single cached /mcp endpoint and remove the setting", key)
+		}
+	}
+	if servesMCP && len(RemovedMCPSettings()) > 0 && !envBool("GATEWAY_CACHED_READS_ONLY", false) {
+		return fmt.Errorf("obsolete MCP settings did not enable cache-only reads: migrate clients to the cached /mcp endpoint and remove the old settings")
 	}
 	return nil
+}
+
+// RemovedMCPSettings lists obsolete variables still set to a compatible value.
+func RemovedMCPSettings() []string {
+	var set []string
+	for _, key := range []string{"MCP_CATALOG_MODE", "GATEWAY_CACHED_READS_ONLY", "GATEWAY_CACHED_READS_PREPARE"} {
+		if os.Getenv(key) != "" {
+			set = append(set, key)
+		}
+	}
+	return set
 }
