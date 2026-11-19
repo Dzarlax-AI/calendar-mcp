@@ -208,7 +208,7 @@ func (p *Provider) listBothViews(ctx context.Context, request calendar.ListEvent
 		return calendar.Page[calendar.EventV2]{}, err
 	}
 	pageSize := googlePageSize(request.MaxResults)
-	if pageSize > 1 {
+	if snapshot == nil && pageSize > 1 {
 		pageSize /= 2
 	}
 	var items []calendar.EventV2

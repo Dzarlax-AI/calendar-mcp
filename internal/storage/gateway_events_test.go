@@ -106,7 +106,8 @@ func testGatewayPublication(t *testing.T, db *Store) {
 		t.Fatal("missing replacement sync after intent cleared")
 	}
 	at := resolvedAt.Add(time.Second)
-	must(db.ApplyEventSyncPage(ctx, *state, EventSyncBatch{}, true, at))
+	ordinaryDue := at.Add(time.Second)
+	must(db.ApplyEventSyncPage(ctx, *state, EventSyncBatch{NextSyncAt: &ordinaryDue}, true, at))
 	if err := db.PublishGatewayEvents(ctx, ticket, []calendar.EventV2{public}, true, at, at, nil); !errors.Is(err, ErrAuthorityChanged) {
 		t.Fatalf("old capture ticket survived resolved intent and replacement sync: %v", err)
 	}
@@ -118,5 +119,31 @@ func testGatewayPublication(t *testing.T, db *Store) {
 	point := project(at)
 	if len(point.Items) != 1 || point.Items[0].Event.Start.DateTime != point.Items[0].Event.End.DateTime {
 		t.Fatalf("zero-duration event was lost or changed: %#v", point)
+	}
+
+	// Ordinary sync changes the generation even in the absence of a write.
+	state, err = db.ClaimDueCalendarSync(ctx, "ordinary-refresh", ordinaryDue, ordinaryDue.Add(time.Minute))
+	must(err)
+	if state == nil || state.Generation <= fresh.State.Generation {
+		t.Fatalf("ordinary sync did not advance the generation: %+v", state)
+	}
+	readyAt := ordinaryDue.Add(time.Second)
+	must(db.ApplyEventSyncPage(ctx, *state, EventSyncBatch{}, true, readyAt))
+	if previous := project(readyAt); previous.Incomplete || len(previous.Items) != 1 {
+		t.Fatal("ordinary sync interrupted reads of a still-valid publication")
+	}
+	if err := db.PublishGatewayEvents(ctx, fresh, []calendar.EventV2{public}, true, at, readyAt, nil); !errors.Is(err, ErrAuthorityChanged) {
+		t.Fatalf("publish accepted a ticket from before ordinary sync: %v", err)
+	}
+	queued, err := db.GatewayPublicationCandidates(ctx, id, readyAt)
+	must(err)
+	if len(queued) != 1 || queued[0] != id {
+		t.Fatalf("current generation was not queued after wrapping: %v", queued)
+	}
+	current, err := db.CaptureGatewayPublication(ctx, id, readyAt)
+	must(err)
+	must(db.PublishGatewayEvents(ctx, current, []calendar.EventV2{public}, true, readyAt, readyAt, nil))
+	if resumed := project(readyAt); resumed.Incomplete || len(resumed.Items) != 1 {
+		t.Fatal("read did not resume after publishing the current generation")
 	}
 }

@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +112,113 @@ func TestGatewayPublicationDoesNotBlockRuleJobs(t *testing.T) {
 	must(err)
 	if len(runs) != 1 || runs[0].JobID != "job" || runs[0].Outcome != "succeeded" {
 		t.Fatalf("rule job was not finished while publication was blocked: %#v", runs)
+	}
+}
+
+type publicationQueueFixture struct {
+	blockedPublicationListing
+	starts chan string
+}
+
+func (*publicationQueueFixture) OwnsCalendar(string) bool { return true }
+
+func (p *publicationQueueFixture) ListEventsV2(ctx context.Context, request calendar.ListEventsRequestV2) (calendar.Page[calendar.EventV2], error) {
+	p.starts <- request.CalendarID
+	if strings.HasSuffix(request.CalendarID, "-slow") {
+		<-ctx.Done()
+		return calendar.Page[calendar.EventV2]{}, ctx.Err()
+	}
+	if request.CalendarID == "03-fails" {
+		return calendar.Page[calendar.EventV2]{}, errors.New("fixture provider unavailable")
+	}
+	return calendar.Page[calendar.EventV2]{Complete: true}, nil
+}
+
+func TestGatewayPublicationQueueIsolatesSlowAndFailedSources(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now().UTC()
+	earlier := now.Add(-time.Minute)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := storage.Open(ctx, "sqlite://"+filepath.Join(t.TempDir(), "concurrent.db"))
+	must(err)
+	defer store.Close()
+	must(store.Migrate(ctx))
+	cipher, err := credentials.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	must(err)
+	store.SetArtifactCipher(cipher)
+	must(store.CreateConnection(ctx, storage.Connection{ID: "fixture", Provider: "apple", Status: "connected",
+		EncryptedCredentials: []byte("fixture"), CredentialVersion: 1, ScopesJSON: "[]", CreatedAt: earlier, UpdatedAt: earlier}))
+
+	rawIDs := []string{"01-slow", "02-slow", "03-fails", "04-healthy", "05-healthy"}
+	proofs := make([]storage.GatewayCalendarProof, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id := calendar.AccountCalendarID("apple", "fixture", raw)
+		proofs = append(proofs, storage.GatewayCalendarProof{Metadata: calendar.Calendar{ID: id, Provider: "apple"},
+			Capabilities: calendar.CalendarCapabilities{CalendarID: id, Provider: "apple"}, Class: storage.GatewayEventAccess})
+	}
+	lease, err := store.ClaimGatewayAuthorityCheck(ctx, "fixture", earlier, time.Minute)
+	must(err)
+	must(store.PublishGatewayAuthority(ctx, lease, proofs, earlier))
+	must(store.EnsureCalendarSyncStates(ctx, earlier, storage.SyncWindow{Start: earlier, End: now.Add(time.Hour)}))
+	next := now.Add(time.Hour)
+	for range rawIDs {
+		state, err := store.ClaimDueCalendarSync(ctx, "seed", earlier, now.Add(time.Minute))
+		must(err)
+		if state == nil {
+			t.Fatal("missing ready fixture source")
+		}
+		must(store.ApplyEventSyncPage(ctx, *state, storage.EventSyncBatch{NextCursor: "seed", NextSyncAt: &next}, true, earlier))
+	}
+
+	provider := &publicationQueueFixture{starts: make(chan string, 32)}
+	run, cancel := context.WithCancel(ctx)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		runGatewayPublication(run, store, publicationProviderBuilder{provider}, 20*time.Millisecond)
+	}()
+	defer func() { cancel(); <-stopped }()
+
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	started := make(map[string]bool, len(rawIDs))
+	for len(started) < len(rawIDs) {
+		select {
+		case id := <-provider.starts:
+			if started[id] {
+				t.Fatalf("duplicate in-flight or backed-off source %s", id)
+			}
+			started[id] = true
+		case <-timeout.C:
+			t.Fatalf("slow or failed sources blocked the healthy ones: %v", started)
+		}
+	}
+	// Wait for completed publication, not just the start of the healthy jobs.
+	for {
+		ids, err := store.GatewayPublicationCandidates(ctx, "", time.Now())
+		must(err)
+		if len(ids) == 3 {
+			if !strings.HasSuffix(ids[0], ":01-slow") || !strings.HasSuffix(ids[1], ":02-slow") || !strings.HasSuffix(ids[2], ":03-fails") {
+				t.Fatalf("unexpected sources still awaiting publication: %v", ids)
+			}
+			break
+		}
+		select {
+		case id := <-provider.starts:
+			t.Fatalf("source unexpectedly retried: %s", id)
+		case <-timeout.C:
+			t.Fatal("healthy snapshots were not published")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	select {
+	case id := <-provider.starts:
+		t.Fatalf("source unexpectedly retried on scheduler tick: %s", id)
+	case <-time.After(80 * time.Millisecond):
 	}
 }
